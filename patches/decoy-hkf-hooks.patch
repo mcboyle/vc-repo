@@ -1,0 +1,136 @@
+--- a/src/Volume/VolumeHeader.cpp	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Volume/VolumeHeader.cpp	2026-07-16 17:18:15.092767514 +0000
+@@ -17,6 +17,9 @@
+ #include "EncryptionModeWolfCryptXTS.h"
+ #endif
+ #include "Pkcs5Kdf.h"
++#if defined(VC_ENABLE_HKF)
++#include "HardwareKeyFactorMix.h"
++#endif
+ #include "VolumeHeader.h"
+ #include "VolumeException.h"
+ #include "Common/Crypto.h"
+@@ -102,13 +105,28 @@
+ 		EncryptNew (headerBuffer, options.Salt, options.HeaderKey, options.Kdf);
+ 	}
+ 
+-	bool VolumeHeader::Decrypt (const ConstBufferPtr &encryptedData, const VolumePassword &password, int pim, shared_ptr <Pkcs5Kdf> kdf, const Pkcs5KdfList &keyDerivationFunctions, const EncryptionAlgorithmList &encryptionAlgorithms, const EncryptionModeList &encryptionModes)
++	bool VolumeHeader::Decrypt (const ConstBufferPtr &encryptedData, const VolumePassword &password, int pim, shared_ptr <Pkcs5Kdf> kdf, const Pkcs5KdfList &keyDerivationFunctions, const EncryptionAlgorithmList &encryptionAlgorithms, const EncryptionModeList &encryptionModes, bool applyHardwareFactor)
+ 	{
+ 		if (password.Size() < 1)
+ 			throw PasswordEmpty (SRC_POS);
+ 
+ 		ConstBufferPtr salt (encryptedData.GetRange (SaltOffset, SaltSize));
+ 
++#if defined(VC_ENABLE_HKF)
++		// Optional hardware key factor: derive an effective password with the token's response
++		// (computed over THIS header's salt) mixed in. With no factor configured this is 'password'.
++		shared_ptr <VolumePassword> hkfPassword;
++		const VolumePassword *effectivePasswordPtr = &password;
++		if (applyHardwareFactor && g_hkfActiveConfig && g_hkfActiveConfig->backend != HKF_BACKEND_NONE)
++		{
++			hkfPassword = HKFMixPassword (password, salt);
++			effectivePasswordPtr = hkfPassword.get();
++		}
++		const VolumePassword &effectivePassword = *effectivePasswordPtr;
++#else
++		const VolumePassword &effectivePassword = password;
++#endif
++
+ 		if (!kdf && EncryptionThreadPool::IsRunning() && keyDerivationFunctions.size() > 1)
+ 		{
+ 			typedef EncryptionThreadPool::KeyDerivationWorkItem KeyDerivationWorkItem;
+@@ -128,7 +146,7 @@
+ 				{
+ 					shared_ptr <KeyDerivationWorkItem> keyDerivationWorkItem (new KeyDerivationWorkItem (pkcs5, GetHeaderKeyDerivationSize (pkcs5)));
+ 					keyDerivationWorkItems.push_back (keyDerivationWorkItem);
+-					EncryptionThreadPool::BeginKeyDerivation (*keyDerivationWorkItem, password, pim, salt, keyDerivationCompletedEvent, noOutstandingWorkItemEvent, outstandingWorkItemCount, &abortKeyDerivation);
++					EncryptionThreadPool::BeginKeyDerivation (*keyDerivationWorkItem, effectivePassword, pim, salt, keyDerivationCompletedEvent, noOutstandingWorkItemEvent, outstandingWorkItemCount, &abortKeyDerivation);
+ 					++enqueuedWorkItemCount;
+ 				}
+ 
+@@ -185,7 +203,7 @@
+ 				continue;
+ 
+ 			SecureBuffer headerKey (GetHeaderKeyDerivationSize (pkcs5));
+-			int derivationResult = pkcs5->DeriveKey (headerKey, password, pim, salt);
++			int derivationResult = pkcs5->DeriveKey (headerKey, effectivePassword, pim, salt);
+ 			if (derivationResult != 0)
+ 			{
+ 				if (!kdf)
+--- a/src/Volume/Volume.cpp	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Volume/Volume.cpp	2026-07-16 17:18:34.214961745 +0000
+@@ -17,6 +17,11 @@
+ #include "Volume.h"
+ #include "VolumeHeader.h"
+ #include "VolumeLayout.h"
++#if defined(VC_ENABLE_HKF)
++extern "C" {
++#include "Common/HardwareKeyFactor.h"
++}
++#endif
+ #include "Common/Crypto.h"
+ 
+ namespace VeraCrypt
+@@ -185,7 +190,14 @@
+ 
+ 				shared_ptr <VolumeHeader> header = layout->GetHeader();
+ 
+-				if (header->Decrypt (headerBuffer, *passwordKey, pim, kdf, layout->GetSupportedKeyDerivationFunctions(), layoutEncryptionAlgorithms, layoutEncryptionModes))
++#if defined(VC_ENABLE_HKF)
++				// Factor gating: under HKF_APPLY_HIDDEN_ONLY the hardware factor is mixed only for the
++				// hidden layout, so the outer (decoy) header derives from the password alone.
++				bool hkfApply = HKFShouldApply (g_hkfActiveConfig, layout->GetType() == VolumeType::Hidden) != 0;
++#else
++				bool hkfApply = true;
++#endif
++				if (header->Decrypt (headerBuffer, *passwordKey, pim, kdf, layout->GetSupportedKeyDerivationFunctions(), layoutEncryptionAlgorithms, layoutEncryptionModes, hkfApply))
+ 				{
+ 					// Header decrypted
+ 
+--- a/src/Core/VolumeCreator.cpp	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Core/VolumeCreator.cpp	2026-07-16 17:19:04.921583746 +0000
+@@ -16,6 +16,9 @@
+ #include "Volume/EncryptionModeWolfCryptXTS.h"
+ #endif
+ #include "Core.h"
++#if defined(VC_ENABLE_HKF)
++#include "Volume/HardwareKeyFactorMix.h"
++#endif
+ 
+ #ifdef TC_UNIX
+ #include <sys/types.h>
+@@ -148,7 +151,16 @@
+ 				SecureBuffer backupHeaderSalt (VolumeHeader::GetSaltSize());
+ 				RandomNumberGenerator::GetData (backupHeaderSalt);
+ 
+-				int derivationResult = Options->VolumeHeaderKdf->DeriveKey (HeaderKey, *PasswordKey, Options->Pim, backupHeaderSalt);
++#if defined(VC_ENABLE_HKF)
++				// Gate by volume type: the hidden volume's headers get the factor; a decoy (Normal)
++				// outer volume under HKF_APPLY_HIDDEN_ONLY is created password-only.
++				shared_ptr <VolumePassword> creatorPassword =
++					HKFShouldApply (g_hkfActiveConfig, Options->Type == VolumeType::Hidden)
++						? HKFMixPassword (*PasswordKey, backupHeaderSalt) : PasswordKey;
++#else
++				shared_ptr <VolumePassword> creatorPassword = PasswordKey;
++#endif
++				int derivationResult = Options->VolumeHeaderKdf->DeriveKey (HeaderKey, *creatorPassword, Options->Pim, backupHeaderSalt);
+ 				if (derivationResult != 0)
+ 					throw ExternalException (SRC_POS, Options->VolumeHeaderKdf->GetDerivationFailureMessage (derivationResult));
+ 
+@@ -356,7 +368,14 @@
+ 			// Header key
+ 			HeaderKey.Allocate (VolumeHeader::GetHeaderKeyDerivationSize (options->VolumeHeaderKdf));
+ 			PasswordKey = Keyfile::ApplyListToPassword (options->Keyfiles, options->Password, options->EMVSupportEnabled);
+-			int derivationResult = options->VolumeHeaderKdf->DeriveKey (HeaderKey, *PasswordKey, options->Pim, salt);
++#if defined(VC_ENABLE_HKF)
++			shared_ptr <VolumePassword> creatorPassword =
++				HKFShouldApply (g_hkfActiveConfig, options->Type == VolumeType::Hidden)
++					? HKFMixPassword (*PasswordKey, salt) : PasswordKey;
++#else
++			shared_ptr <VolumePassword> creatorPassword = PasswordKey;
++#endif
++			int derivationResult = options->VolumeHeaderKdf->DeriveKey (HeaderKey, *creatorPassword, options->Pim, salt);
+ 			if (derivationResult != 0)
+ 				throw ExternalException (SRC_POS, options->VolumeHeaderKdf->GetDerivationFailureMessage (derivationResult));
+ 			headerOptions.HeaderKey = HeaderKey;

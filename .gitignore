@@ -1,0 +1,19 @@
+# build artifacts
+*.o
+*.a
+*.so
+*.dll
+*.exe
+*.obj
+src/Debug/
+src/Release/
+src/**/obj/
+# verification scratch
+/tmp/
+verification/*.out
+run_*
+# editor / OS
+.DS_Store
+*.swp
+.vscode/
+.idea/

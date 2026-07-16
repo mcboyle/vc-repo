@@ -1,0 +1,52 @@
+--- a/src/Volume/VolumeHeader.cpp	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Volume/VolumeHeader.cpp	2026-07-16 03:50:35.943257745 +0000
+@@ -17,6 +17,9 @@
+ #include "EncryptionModeWolfCryptXTS.h"
+ #endif
+ #include "Pkcs5Kdf.h"
++#if defined(VC_ENABLE_HKF)
++#include "HardwareKeyFactorMix.h"
++#endif
+ #include "VolumeHeader.h"
+ #include "VolumeException.h"
+ #include "Common/Crypto.h"
+@@ -109,6 +112,21 @@
+ 
+ 		ConstBufferPtr salt (encryptedData.GetRange (SaltOffset, SaltSize));
+ 
++#if defined(VC_ENABLE_HKF)
++		// Optional hardware key factor: derive an effective password with the token's response
++		// (computed over THIS header's salt) mixed in. With no factor configured this is 'password'.
++		shared_ptr <VolumePassword> hkfPassword;
++		const VolumePassword *effectivePasswordPtr = &password;
++		if (g_hkfActiveConfig && g_hkfActiveConfig->backend != HKF_BACKEND_NONE)
++		{
++			hkfPassword = HKFMixPassword (password, salt);
++			effectivePasswordPtr = hkfPassword.get();
++		}
++		const VolumePassword &effectivePassword = *effectivePasswordPtr;
++#else
++		const VolumePassword &effectivePassword = password;
++#endif
++
+ 		if (!kdf && EncryptionThreadPool::IsRunning() && keyDerivationFunctions.size() > 1)
+ 		{
+ 			typedef EncryptionThreadPool::KeyDerivationWorkItem KeyDerivationWorkItem;
+@@ -128,7 +146,7 @@
+ 				{
+ 					shared_ptr <KeyDerivationWorkItem> keyDerivationWorkItem (new KeyDerivationWorkItem (pkcs5, GetHeaderKeyDerivationSize (pkcs5)));
+ 					keyDerivationWorkItems.push_back (keyDerivationWorkItem);
+-					EncryptionThreadPool::BeginKeyDerivation (*keyDerivationWorkItem, password, pim, salt, keyDerivationCompletedEvent, noOutstandingWorkItemEvent, outstandingWorkItemCount, &abortKeyDerivation);
++					EncryptionThreadPool::BeginKeyDerivation (*keyDerivationWorkItem, effectivePassword, pim, salt, keyDerivationCompletedEvent, noOutstandingWorkItemEvent, outstandingWorkItemCount, &abortKeyDerivation);
+ 					++enqueuedWorkItemCount;
+ 				}
+ 
+@@ -185,7 +203,7 @@
+ 				continue;
+ 
+ 			SecureBuffer headerKey (GetHeaderKeyDerivationSize (pkcs5));
+-			int derivationResult = pkcs5->DeriveKey (headerKey, password, pim, salt);
++			int derivationResult = pkcs5->DeriveKey (headerKey, effectivePassword, pim, salt);
+ 			if (derivationResult != 0)
+ 			{
+ 				if (!kdf)

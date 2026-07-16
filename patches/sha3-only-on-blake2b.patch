@@ -1,0 +1,746 @@
+--- a/Crypto/Sha3.h	1970-01-01 00:00:00.000000000 +0000
++++ b/Crypto/Sha3.h	2026-07-15 21:14:42.112884824 +0000
+@@ -0,0 +1,45 @@
++/*
++ * SHA-3 (Keccak) — FIPS 202, SHA3-512 variant.
++ *
++ * Portable public-domain implementation for VeraCrypt. The Keccak-f[1600]
++ * permutation and sponge follow the reference specification; absorb/squeeze use
++ * explicit little-endian lane arithmetic so the code is correct on both little-
++ * and big-endian hosts (no reinterpretation of 64-bit lanes as raw bytes).
++ *
++ * SHA3-512: rate r = 72 bytes (576 bits), capacity c = 1024 bits, digest = 64 bytes.
++ * The HMAC block size for SHA3-512 is the rate, i.e. 72 bytes.
++ *
++ * This implementation is dedicated to the public domain (CC0). It carries no
++ * additional restrictions beyond those of the surrounding VeraCrypt distribution.
++ */
++
++#ifndef TC_HEADER_Crypto_Sha3
++#define TC_HEADER_Crypto_Sha3
++
++#include "Common/Tcdefs.h"
++
++#if defined(__cplusplus)
++extern "C" {
++#endif
++
++#define SHA3_512_BLOCKSIZE   72   /* rate in bytes (HMAC block size)   */
++#define SHA3_512_DIGESTSIZE  64   /* 512-bit output                    */
++
++typedef struct SHA3_CTX_struct
++{
++	uint64 st[25];   /* 1600-bit Keccak state as 25 little-endian lanes */
++	int pt;          /* current byte offset within the rate            */
++	int rsiz;        /* rate in bytes                                  */
++	int mdlen;       /* digest length in bytes                         */
++} SHA3_CTX;
++
++/* SHA3-512 streaming API (mirrors sha512_begin/hash/end and blake2s_init/update/final). */
++void sha3_512_init (SHA3_CTX *ctx);
++void sha3_512_update (SHA3_CTX *ctx, const unsigned char *in, size_t inlen);
++void sha3_512_final (SHA3_CTX *ctx, unsigned char *md);  /* writes SHA3_512_DIGESTSIZE bytes */
++
++#if defined(__cplusplus)
++}
++#endif
++
++#endif // TC_HEADER_Crypto_Sha3
+--- a/Crypto/Sha3.c	1970-01-01 00:00:00.000000000 +0000
++++ b/Crypto/Sha3.c	2026-07-15 21:15:01.820885555 +0000
+@@ -0,0 +1,121 @@
++/*
++ * SHA-3 (Keccak) — FIPS 202, SHA3-512 variant. Public domain (CC0).
++ * See Sha3.h for design notes (endian-portable absorb/squeeze).
++ */
++
++#include "Sha3.h"
++
++#define ROTL64(x, y) (((x) << (y)) | ((x) >> (64 - (y))))
++
++/* Keccak-f[1600] round constants (iota). */
++static const uint64 keccakf_rndc[24] =
++{
++	0x0000000000000001ULL, 0x0000000000008082ULL, 0x800000000000808aULL,
++	0x8000000080008000ULL, 0x000000000000808bULL, 0x0000000080000001ULL,
++	0x8000000080008081ULL, 0x8000000000008009ULL, 0x000000000000008aULL,
++	0x0000000000000088ULL, 0x0000000080008009ULL, 0x000000008000000aULL,
++	0x000000008000808bULL, 0x800000000000008bULL, 0x8000000000008089ULL,
++	0x8000000000008003ULL, 0x8000000000008002ULL, 0x8000000000000080ULL,
++	0x000000000000800aULL, 0x800000008000000aULL, 0x8000000080008081ULL,
++	0x8000000000008080ULL, 0x0000000080000001ULL, 0x8000000080008008ULL
++};
++
++/* Rho rotation offsets. */
++static const int keccakf_rotc[24] =
++{
++	1, 3, 6, 10, 15, 21, 28, 36, 45, 55, 2, 14,
++	27, 41, 56, 8, 25, 43, 62, 18, 39, 61, 20, 44
++};
++
++/* Pi lane permutation. */
++static const int keccakf_piln[24] =
++{
++	10, 7, 11, 17, 18, 3, 5, 16, 8, 21, 24, 4,
++	15, 23, 19, 13, 12, 2, 20, 14, 22, 9, 6, 1
++};
++
++static void keccakf (uint64 st[25])
++{
++	int i, j, r;
++	uint64 t, bc[5];
++
++	for (r = 0; r < 24; r++)
++	{
++		/* Theta */
++		for (i = 0; i < 5; i++)
++			bc[i] = st[i] ^ st[i + 5] ^ st[i + 10] ^ st[i + 15] ^ st[i + 20];
++
++		for (i = 0; i < 5; i++)
++		{
++			t = bc[(i + 4) % 5] ^ ROTL64 (bc[(i + 1) % 5], 1);
++			for (j = 0; j < 25; j += 5)
++				st[j + i] ^= t;
++		}
++
++		/* Rho and Pi */
++		t = st[1];
++		for (i = 0; i < 24; i++)
++		{
++			j = keccakf_piln[i];
++			bc[0] = st[j];
++			st[j] = ROTL64 (t, keccakf_rotc[i]);
++			t = bc[0];
++		}
++
++		/* Chi */
++		for (j = 0; j < 25; j += 5)
++		{
++			for (i = 0; i < 5; i++)
++				bc[i] = st[j + i];
++			for (i = 0; i < 5; i++)
++				st[j + i] ^= (~bc[(i + 1) % 5]) & bc[(i + 2) % 5];
++		}
++
++		/* Iota */
++		st[0] ^= keccakf_rndc[r];
++	}
++}
++
++void sha3_512_init (SHA3_CTX *ctx)
++{
++	int i;
++	for (i = 0; i < 25; i++)
++		ctx->st[i] = 0;
++	ctx->pt = 0;
++	ctx->rsiz = SHA3_512_BLOCKSIZE;    /* 72 */
++	ctx->mdlen = SHA3_512_DIGESTSIZE;  /* 64 */
++}
++
++void sha3_512_update (SHA3_CTX *ctx, const unsigned char *in, size_t inlen)
++{
++	size_t i;
++	int j = ctx->pt;
++
++	for (i = 0; i < inlen; i++)
++	{
++		/* XOR input byte into little-endian lane position j (endian-portable) */
++		ctx->st[j >> 3] ^= (uint64) in[i] << (8 * (j & 7));
++		j++;
++		if (j >= ctx->rsiz)
++		{
++			keccakf (ctx->st);
++			j = 0;
++		}
++	}
++	ctx->pt = j;
++}
++
++void sha3_512_final (SHA3_CTX *ctx, unsigned char *md)
++{
++	int i;
++
++	/* pad10*1 with SHA-3 domain separation (0x06 ... 0x80) */
++	ctx->st[ctx->pt >> 3] ^= (uint64) 0x06 << (8 * (ctx->pt & 7));
++	ctx->st[(ctx->rsiz - 1) >> 3] ^= (uint64) 0x80 << (8 * ((ctx->rsiz - 1) & 7));
++
++	keccakf (ctx->st);
++
++	/* squeeze: mdlen (64) <= rate (72), so a single squeeze suffices */
++	for (i = 0; i < ctx->mdlen; i++)
++		md[i] = (unsigned char) ((ctx->st[i >> 3] >> (8 * (i & 7))) & 0xFF);
++}
+--- a/Common/Crypto.h	2026-07-15 21:34:20.614238884 +0000
++++ b/Common/Crypto.h	2026-07-15 21:17:14.708509659 +0000
+@@ -67,6 +67,8 @@
+ 			// reuses the in-tree BLAKE2b primitive that ships with Argon2 (absent from
+ 			// the space-constrained DCS/UEFI bootloader). Non-boot PRF only.
+ #endif
++	SHA3_512,	// SHA3-512 (FIPS 202) HMAC/PBKDF2 PRF. Independent of Argon2 (own Keccak
++			// primitive in Crypto/Sha3.c). Non-boot PRF only; excluded under wolfCrypt.
+ 	HASH_ENUM_END_ID
+ };
+ 
+@@ -217,6 +219,7 @@
+ #ifndef TC_WINDOWS_BOOT
+ #	include "Sha2.h"
+ #	include "Whirlpool.h"
++#	include "Sha3.h"
+ #ifndef VC_DCS_DISABLE_ARGON2
+ #	include "argon2.h"
+ #	include "Crypto/Argon2/src/blake2/blake2b.h"
+--- a/Common/Crypto.c	2026-07-15 21:34:20.614518728 +0000
++++ b/Common/Crypto.c	2026-07-15 21:31:11.061476613 +0000
+@@ -137,6 +137,7 @@
+ 	{ ARGON2,		L"BLAKE2b-512",	FALSE,	FALSE },
+ 	{ BLAKE2B,		L"BLAKE2b",		FALSE,	FALSE },	// HMAC-BLAKE2b-512 PBKDF2 PRF (non-boot). Distinct label from Argon2's internal "BLAKE2b-512".
+ #endif
++	{ SHA3_512,		L"SHA3-512",	FALSE,	FALSE },	// HMAC-SHA3-512 PBKDF2 PRF (non-boot).
+     #endif
+         { 0, 0, 0 }
+ };
+--- a/Common/Pkcs5.h	2026-07-15 21:34:20.614676309 +0000
++++ b/Common/Pkcs5.h	2026-07-15 21:19:12.515663431 +0000
+@@ -41,6 +41,10 @@
+ void hmac_streebog (unsigned char *k, int lk, unsigned char *d, int ld);
+ void derive_key_streebog (const unsigned char *pwd, int pwd_len, const unsigned char *salt, int salt_len, uint32 iterations, unsigned char *dk, int dklen, long volatile *pAbortKeyDerivation);
+ 
++/* HMAC-SHA3-512 PRF (FIPS 202). Output written to d/input_digest which must be at least 64 bytes long. */
++void hmac_sha3_512 (unsigned char *k, int lk, unsigned char *d, int ld);
++void derive_key_sha3_512 (const unsigned char *pwd, int pwd_len, const unsigned char *salt, int salt_len, uint32 iterations, unsigned char *dk, int dklen, long volatile *pAbortKeyDerivation);
++
+ int get_pkcs5_iteration_count (int pkcs5_prf_id, int pim, BOOL bBoot, int* pMemoryCost);
+ wchar_t *get_kdf_name (int kdf_id);
+ 
+--- a/Common/Pkcs5.c	2026-07-15 21:34:20.614930580 +0000
++++ b/Common/Pkcs5.c	2026-07-15 21:19:00.056180295 +0000
+@@ -1015,6 +1015,212 @@
+ 
+ #endif // !defined(TC_WINDOWS_BOOT) && !defined(VC_DCS_DISABLE_ARGON2)
+ 
++/* ---- HMAC-SHA3-512 and PBKDF2-HMAC-SHA3-512 ----
++   Uses the FIPS 202 Keccak primitive in Crypto/Sha3.c. Non-boot PRF only.
++   SHA3-512's HMAC block size is its rate = 72 bytes (SHA3_512_BLOCKSIZE); like BLAKE2b this
++   exceeds the (PKCS5_SALT_SIZE + 4) scratch buffer, so a dedicated 72-byte pad buffer is used. */
++#ifndef TC_WINDOWS_BOOT
++
++typedef struct hmac_sha3_512_ctx_struct
++{
++	SHA3_CTX ctx;
++	SHA3_CTX inner_digest_ctx;	/* pre-computed inner digest context */
++	SHA3_CTX outer_digest_ctx;	/* pre-computed outer digest context */
++	unsigned char k[PKCS5_SALT_SIZE + 4];	/* holds (salt_len + 4) and also the 64-byte SHA3-512 hash */
++	unsigned char u[SHA3_512_DIGESTSIZE];
++} hmac_sha3_512_ctx;
++
++static void hmac_sha3_512_internal
++(
++	unsigned char *d,		/* input data; d is guaranteed to be at least 64 bytes long */
++	int ld,			/* length of input data in bytes */
++	hmac_sha3_512_ctx* hmac	/* HMAC-SHA3-512 context which holds temporary variables */
++)
++{
++	SHA3_CTX* ctx = &(hmac->ctx);
++
++	/**** Restore Precomputed Inner Digest Context ****/
++	memcpy (ctx, &(hmac->inner_digest_ctx), sizeof (SHA3_CTX));
++	sha3_512_update (ctx, d, ld);
++	sha3_512_final (ctx, d);	/* d = inner digest */
++
++	/**** Restore Precomputed Outer Digest Context ****/
++	memcpy (ctx, &(hmac->outer_digest_ctx), sizeof (SHA3_CTX));
++	sha3_512_update (ctx, d, SHA3_512_DIGESTSIZE);
++	sha3_512_final (ctx, d);	/* d = outer digest */
++}
++
++void hmac_sha3_512
++(
++	unsigned char *k,	/* secret key */
++	int lk,		/* length of the key in bytes */
++	unsigned char *d,	/* data */
++	int ld		/* length of data in bytes */
++)
++{
++	hmac_sha3_512_ctx hmac;
++	SHA3_CTX* ctx;
++	unsigned char pad[SHA3_512_BLOCKSIZE];	/* 72-byte HMAC key-pad block */
++	int b;
++	unsigned char key[SHA3_512_DIGESTSIZE];
++
++	/* If the key is longer than the hash block size, let key = sha3_512(key), per HMAC. */
++	if (lk > SHA3_512_BLOCKSIZE)
++	{
++		SHA3_CTX tctx;
++
++		sha3_512_init (&tctx);
++		sha3_512_update (&tctx, k, lk);
++		sha3_512_final (&tctx, key);
++
++		k = key;
++		lk = SHA3_512_DIGESTSIZE;
++
++		burn (&tctx, sizeof(tctx));	/* Prevent leaks */
++	}
++
++	/**** Precompute HMAC Inner Digest ****/
++	ctx = &(hmac.inner_digest_ctx);
++	sha3_512_init (ctx);
++
++	for (b = 0; b < lk; ++b)
++		pad[b] = (unsigned char) (k[b] ^ 0x36);
++	memset (&pad[lk], 0x36, SHA3_512_BLOCKSIZE - lk);
++
++	sha3_512_update (ctx, pad, SHA3_512_BLOCKSIZE);
++
++	/**** Precompute HMAC Outer Digest ****/
++	ctx = &(hmac.outer_digest_ctx);
++	sha3_512_init (ctx);
++
++	for (b = 0; b < lk; ++b)
++		pad[b] = (unsigned char) (k[b] ^ 0x5C);
++	memset (&pad[lk], 0x5C, SHA3_512_BLOCKSIZE - lk);
++
++	sha3_512_update (ctx, pad, SHA3_512_BLOCKSIZE);
++
++	hmac_sha3_512_internal (d, ld, &hmac);
++
++	/* Prevent leaks */
++	burn (&hmac, sizeof(hmac));
++	burn (pad, sizeof(pad));
++	burn (key, sizeof(key));
++}
++
++static void derive_u_sha3_512 (const unsigned char *salt, int salt_len, uint32 iterations, int b, hmac_sha3_512_ctx* hmac, volatile long *pAbortKeyDerivation)
++{
++	unsigned char* k = hmac->k;
++	unsigned char* u = hmac->u;
++	uint32 c;
++	int i;
++
++	c = iterations;
++
++	/* iteration 1 */
++	memcpy (k, salt, salt_len);	/* salt */
++
++	/* big-endian block number */
++	b = bswap_32 (b);
++	memcpy (&k[salt_len], &b, 4);
++
++	hmac_sha3_512_internal (k, salt_len + 4, hmac);
++	memcpy (u, k, SHA3_512_DIGESTSIZE);
++
++	/* remaining iterations */
++	while (c > 1)
++	{
++		/* CANCELLATION CHECK: check every 1024 iterations */
++		if (pAbortKeyDerivation && (c & 1023) == 0 && *pAbortKeyDerivation)
++			return;	/* Abort derivation */
++
++		hmac_sha3_512_internal (k, SHA3_512_DIGESTSIZE, hmac);
++		for (i = 0; i < SHA3_512_DIGESTSIZE; i++)
++		{
++			u[i] ^= k[i];
++		}
++		c--;
++	}
++}
++
++void derive_key_sha3_512 (const unsigned char *pwd, int pwd_len, const unsigned char *salt, int salt_len, uint32 iterations, unsigned char *dk, int dklen, volatile long *pAbortKeyDerivation)
++{
++	hmac_sha3_512_ctx hmac;
++	SHA3_CTX* ctx;
++	unsigned char pad[SHA3_512_BLOCKSIZE];	/* 72-byte HMAC key-pad block */
++	int b, l, r;
++	unsigned char key[SHA3_512_DIGESTSIZE];
++
++	/* If the password is longer than the hash block size, let pwd = sha3_512(pwd), per HMAC. */
++	if (pwd_len > SHA3_512_BLOCKSIZE)
++	{
++		SHA3_CTX tctx;
++
++		sha3_512_init (&tctx);
++		sha3_512_update (&tctx, pwd, pwd_len);
++		sha3_512_final (&tctx, key);
++
++		pwd = key;
++		pwd_len = SHA3_512_DIGESTSIZE;
++
++		burn (&tctx, sizeof(tctx));	/* Prevent leaks */
++	}
++
++	if (dklen % SHA3_512_DIGESTSIZE)
++	{
++		l = 1 + dklen / SHA3_512_DIGESTSIZE;
++	}
++	else
++	{
++		l = dklen / SHA3_512_DIGESTSIZE;
++	}
++
++	r = dklen - (l - 1) * SHA3_512_DIGESTSIZE;
++
++	/**** Precompute HMAC Inner Digest ****/
++	ctx = &(hmac.inner_digest_ctx);
++	sha3_512_init (ctx);
++
++	for (b = 0; b < pwd_len; ++b)
++		pad[b] = (unsigned char) (pwd[b] ^ 0x36);
++	memset (&pad[pwd_len], 0x36, SHA3_512_BLOCKSIZE - pwd_len);
++
++	sha3_512_update (ctx, pad, SHA3_512_BLOCKSIZE);
++
++	/**** Precompute HMAC Outer Digest ****/
++	ctx = &(hmac.outer_digest_ctx);
++	sha3_512_init (ctx);
++
++	for (b = 0; b < pwd_len; ++b)
++		pad[b] = (unsigned char) (pwd[b] ^ 0x5C);
++	memset (&pad[pwd_len], 0x5C, SHA3_512_BLOCKSIZE - pwd_len);
++
++	sha3_512_update (ctx, pad, SHA3_512_BLOCKSIZE);
++
++	/* first l - 1 blocks */
++	for (b = 1; b < l; b++)
++	{
++		derive_u_sha3_512 (salt, salt_len, iterations, b, &hmac, pAbortKeyDerivation);
++		if (pAbortKeyDerivation && *pAbortKeyDerivation)
++			goto cancelled;
++		memcpy (dk, hmac.u, SHA3_512_DIGESTSIZE);
++		dk += SHA3_512_DIGESTSIZE;
++	}
++
++	/* last block */
++	derive_u_sha3_512 (salt, salt_len, iterations, b, &hmac, pAbortKeyDerivation);
++	if (pAbortKeyDerivation && *pAbortKeyDerivation)
++		goto cancelled;
++	memcpy (dk, hmac.u, r);
++
++cancelled:
++	/* Prevent possible leaks. */
++	burn (&hmac, sizeof(hmac));
++	burn (pad, sizeof(pad));
++	burn (key, sizeof(key));
++}
++
++#endif // TC_WINDOWS_BOOT (SHA3-512)
++
+ #ifndef TC_WINDOWS_BOOT
+ 
+ typedef struct hmac_whirlpool_ctx_struct
+@@ -1441,6 +1647,9 @@
+ 	case STREEBOG:
+ 		return L"STREEBOG-PBKDF2";
+ 
++	case SHA3_512:
++		return L"SHA3-512-PBKDF2";
++
+ #ifndef VC_DCS_DISABLE_ARGON2
+ 	case ARGON2:
+ 		return L"Argon2";
+@@ -1494,6 +1703,11 @@
+ 				iteration_count = bBoot ? pim * 2048 : 15000 + pim * 1000;
+ 			break;
+ 
++		case SHA3_512:
++			// Non-boot PRF (no pre-boot authentication support), so no bBoot branch.
++			iteration_count = (pim == 0) ? 500000 : 15000 + pim * 1000;
++			break;
++
+ #ifndef VC_DCS_DISABLE_ARGON2
+ 		case ARGON2:
+ 			get_argon2_params (pim, &iteration_count, pMemoryCost);
+--- a/Common/Volumes.c	2026-07-15 21:34:20.615224964 +0000
++++ b/Common/Volumes.c	2026-07-15 21:20:35.568736276 +0000
+@@ -481,6 +481,10 @@
+ 				}
+ 				break;
+ #endif
++			case SHA3_512:
++				derive_key_sha3_512 (keyInfo->userKey, keyInfo->keyLength, keyInfo->salt,
++					PKCS5_SALT_SIZE, keyInfo->noIterations, dk, GetMaxPkcs5OutSize(), effectiveAbortKeyDerivation);
++				break;
+ #endif	
+                         default:
+ 				// Unknown/wrong ID
+@@ -1192,6 +1196,10 @@
+ 			}
+ 			break;
+ #endif
++		case SHA3_512:
++			derive_key_sha3_512 (keyInfo.userKey, keyInfo.keyLength, keyInfo.salt,
++				PKCS5_SALT_SIZE, keyInfo.noIterations, dk, GetMaxPkcs5OutSize(), NULL);
++			break;
+         #endif
+ 		default:
+ 			// Unknown/wrong ID
+--- a/Common/EncryptionThreadPool.c	2026-07-15 21:34:20.615412681 +0000
++++ b/Common/EncryptionThreadPool.c	2026-07-15 21:21:04.638670183 +0000
+@@ -287,6 +287,11 @@
+ 					workItem->KeyDerivation.IterationCount, workItem->KeyDerivation.Memorycost, workItem->KeyDerivation.DerivedKey, ARGON2_HEADER_KEYDATA_SIZE, workItem->KeyDerivation.pAbortKeyDerivation);
+ 				break;
+ 
++			case SHA3_512:
++				derive_key_sha3_512 (workItem->KeyDerivation.Password, workItem->KeyDerivation.PasswordLength, workItem->KeyDerivation.Salt, PKCS5_SALT_SIZE,
++					workItem->KeyDerivation.IterationCount, workItem->KeyDerivation.DerivedKey, GetMaxPkcs5OutSize(), workItem->KeyDerivation.pAbortKeyDerivation);
++				break;
++
+ 			default:
+ 				TC_THROW_FATAL_EXCEPTION;
+ 			}
+--- a/Common/Random.c	2026-07-15 21:34:20.615566019 +0000
++++ b/Common/Random.c	2026-07-15 21:25:13.160526719 +0000
+@@ -261,6 +261,7 @@
+ 		WHIRLPOOL_CTX	wctx;
+ 		blake2s_state   bctx;
+ 		blake2b_state   b2ctx;
++		SHA3_CTX		sha3ctx;
+ 		STREEBOG_CTX	stctx;
+         #endif
+ 		sha512_ctx		sctx;
+@@ -291,6 +292,10 @@
+ 				digestSize = BLAKE2B_DIGESTSIZE;
+ 				break;
+ #endif
++
++			case SHA3_512:
++				digestSize = SHA3_512_DIGESTSIZE;
++				break;
+ 	
+ 		case WHIRLPOOL:
+ 			digestSize = WHIRLPOOL_DIGESTSIZE;
+@@ -357,6 +362,12 @@
+ 				blake2b_final(&b2ctx, hashOutputBuffer, BLAKE2B_OUTBYTES);
+ 				break;
+ #endif
++
++			case SHA3_512:
++				sha3_512_init (&sha3ctx);
++				sha3_512_update (&sha3ctx, pRandPool, RNG_POOL_SIZE);
++				sha3_512_final (&sha3ctx, hashOutputBuffer);
++				break;
+ #endif
+ 			default:
+ 				// Unknown/wrong ID
+@@ -398,6 +409,16 @@
+ 		case STREEBOG:
+ 			burn (&stctx, sizeof(sctx));
+ 			break;
++
++#ifndef VC_DCS_DISABLE_ARGON2
++			case BLAKE2B:
++				burn (&b2ctx, sizeof(b2ctx));
++				break;
++#endif
++
++			case SHA3_512:
++				burn (&sha3ctx, sizeof(sha3ctx));
++				break;
+         #endif
+ 		default:
+ 			// Unknown/wrong ID
+--- a/Common/Tests.c	2026-07-15 21:34:20.615843326 +0000
++++ b/Common/Tests.c	2026-07-15 21:25:57.310653108 +0000
+@@ -1775,6 +1775,16 @@
+ 		return FALSE;
+ #endif
+ 
++	/* PKCS-5 test 1 with HMAC-SHA3-512 used as the PRF */
++	derive_key_sha3_512 ((unsigned char*)"password", 8, (unsigned char*)"\x12\x34\x56\x78", 4, 5, dk, 4, NULL);
++	if (memcmp (dk, "\x97\x1f\x87\x31", 4) != 0)
++		return FALSE;
++
++	/* PKCS-5 test 2 with HMAC-SHA3-512 used as the PRF (derives a key longer than the underlying hash) */
++	derive_key_sha3_512 ((unsigned char*)"password", 8, (unsigned char*)"\x12\x34\x56\x78", 4, 5, dk, 96, NULL);
++	if (memcmp (dk, "\x97\x1f\x87\x31\xbc\xd9\x8e\x20\x89\xfa\xb7\x03\xbe\x3f\x86\xb9\x3a\x9f\x83\xa5\x91\xa5\x7a\xd5\xbc\xb1\xca\xf6\xf1\xde\xb7\x08\x0c\x20\x11\xcb\x3c\xda\x71\x32\xa8\x4e\x91\xbc\x53\x6b\x35\x71\x35\x56\x8c\x18\x81\x0d\xef\x2e\x79\x1c\x6b\xd6\x22\xf0\x8a\x4f\x06\x19\xfb\x98\x68\xfd\xd5\x03\xbf\xaa\xb2\x04\x6f\x5a\x07\x11\xea\xb0\xe8\xcc\xb2\xa3\xcf\x31\xf4\x00\x09\x69\x8d\x11\xa0\x2c", 96) != 0)
++		return FALSE;
++
+ 	/* PKCS-5 test 1 with HMAC-Whirlpool used as the PRF */
+ 	derive_key_whirlpool ((unsigned char*)"password", 8, (unsigned char*)"\x12\x34\x56\x78", 4, 5, dk, 4, NULL);
+ 	if (memcmp (dk, "\x50\x7c\x36\x6f", 4) != 0)
+--- a/Volume/Hash.h	2026-07-15 21:34:20.605594230 +0000
++++ b/Volume/Hash.h	2026-07-15 21:26:20.548902278 +0000
+@@ -188,6 +188,29 @@
+ 		Streebog (const Streebog &);
+ 		Streebog &operator= (const Streebog &);
+ 	};
++
++	// SHA3-512 (FIPS 202)
++	class Sha3_512 : public Hash
++	{
++	public:
++		Sha3_512 ();
++		virtual ~Sha3_512 () { }
++
++		virtual void GetDigest (const BufferPtr &buffer);
++		virtual size_t GetBlockSize () const { return 72; }   // Keccak rate for SHA3-512
++		virtual size_t GetDigestSize () const { return 512 / 8; }
++		virtual wstring GetName () const { return L"SHA3-512"; }
++		virtual wstring GetAltName () const { return L"SHA3-512"; }
++		virtual shared_ptr <Hash> GetNew () const { return shared_ptr <Hash> (new Sha3_512); }
++		virtual void Init ();
++		virtual void ProcessData (const ConstBufferPtr &data);
++
++	protected:
++
++	private:
++		Sha3_512 (const Sha3_512 &);
++		Sha3_512 &operator= (const Sha3_512 &);
++	};
+     #endif
+ }
+ 
+--- a/Volume/Hash.cpp	2026-07-15 21:34:20.605576123 +0000
++++ b/Volume/Hash.cpp	2026-07-15 21:26:57.227234422 +0000
+@@ -17,6 +17,7 @@
+ #include "Crypto/Sha2.h"
+ #include "Crypto/Whirlpool.h"
+ #include "Crypto/Streebog.h"
++#include "Crypto/Sha3.h"
+ 
+ namespace VeraCrypt
+ {
+@@ -30,6 +31,7 @@
+ 		l.push_back (shared_ptr <Hash> (new Blake2s ()));
+ 		l.push_back (shared_ptr <Hash> (new Whirlpool ()));
+ 		l.push_back (shared_ptr <Hash> (new Streebog ()));
++		l.push_back (shared_ptr <Hash> (new Sha3_512 ()));
+         #endif
+ 		return l;
+ 	}
+@@ -192,5 +194,29 @@
+ 		if_debug (ValidateDataParameters (data));
+ 		STREEBOG_add ((STREEBOG_CTX *) Context.Ptr(), data.Get(), (int) data.Size());
+ 	}
++
++	// SHA3-512 (FIPS 202)
++	Sha3_512::Sha3_512 ()
++	{
++		Context.Allocate (sizeof (SHA3_CTX), 32);
++		Init();
++	}
++
++	void Sha3_512::GetDigest (const BufferPtr &buffer)
++	{
++		if_debug (ValidateDigestParameters (buffer));
++		sha3_512_final ((SHA3_CTX *) Context.Ptr(), buffer);
++	}
++
++	void Sha3_512::Init ()
++	{
++		sha3_512_init ((SHA3_CTX *) Context.Ptr());
++	}
++
++	void Sha3_512::ProcessData (const ConstBufferPtr &data)
++	{
++		if_debug (ValidateDataParameters (data));
++		sha3_512_update ((SHA3_CTX *) Context.Ptr(), data.Get(), data.Size());
++	}
+     #endif
+ }
+--- a/Volume/Pkcs5Kdf.h	2026-07-15 21:34:20.616031174 +0000
++++ b/Volume/Pkcs5Kdf.h	2026-07-15 21:27:22.870632311 +0000
+@@ -187,6 +187,25 @@
+ 		Pkcs5HmacStreebog &operator= (const Pkcs5HmacStreebog &);
+ 	};
+ 
++	// HMAC-SHA3-512 PBKDF2 PRF (FIPS 202). Independent of Argon2.
++	class Pkcs5HmacSha3_512 : public Pkcs5Kdf
++	{
++	public:
++		Pkcs5HmacSha3_512 () : Pkcs5Kdf() { }
++		virtual ~Pkcs5HmacSha3_512 () { }
++
++		virtual int DeriveKey (const BufferPtr &key, const VolumePassword &password, const ConstBufferPtr &salt, int iterationCount) const;
++		virtual int DeriveKey (const BufferPtr &key, const VolumePassword &password, const ConstBufferPtr &salt, int iterationCount, long volatile *pAbortKeyDerivation) const;
++		virtual shared_ptr <Hash> GetHash () const { return shared_ptr <Hash> (new Sha3_512); }
++		virtual int GetIterationCount (int pim) const { return pim <= 0 ? 500000 : (15000 + (pim * 1000)); }
++		virtual wstring GetName () const { return L"HMAC-SHA3-512"; }
++		virtual Pkcs5Kdf* Clone () const { return new Pkcs5HmacSha3_512(); }
++
++	private:
++		Pkcs5HmacSha3_512 (const Pkcs5HmacSha3_512 &);
++		Pkcs5HmacSha3_512 &operator= (const Pkcs5HmacSha3_512 &);
++	};
++
+ 	#ifndef VC_DCS_DISABLE_ARGON2
+ 	class Pkcs5Argon2 : public Pkcs5Kdf
+ 	{
+--- a/Volume/Pkcs5Kdf.cpp	2026-07-15 21:34:20.616167721 +0000
++++ b/Volume/Pkcs5Kdf.cpp	2026-07-15 21:27:42.597258499 +0000
+@@ -84,6 +84,7 @@
+ 		l.push_back (shared_ptr <Pkcs5Kdf> (new Pkcs5HmacBlake2s ()));
+                 l.push_back (shared_ptr <Pkcs5Kdf> (new Pkcs5HmacWhirlpool ()));
+ 		l.push_back (shared_ptr <Pkcs5Kdf> (new Pkcs5HmacStreebog ()));
++		l.push_back (shared_ptr <Pkcs5Kdf> (new Pkcs5HmacSha3_512 ()));
+         #ifndef VC_DCS_DISABLE_ARGON2
+ 		l.push_back (shared_ptr <Pkcs5Kdf> (new Pkcs5Argon2 ()));
+ 		l.push_back (shared_ptr <Pkcs5Kdf> (new Pkcs5HmacBlake2b ()));
+@@ -185,6 +186,18 @@
+ 		return 0;
+ 	}
+ 
++	int Pkcs5HmacSha3_512::DeriveKey (const BufferPtr &key, const VolumePassword &password, const ConstBufferPtr &salt, int iterationCount) const
++	{
++		return DeriveKey (key, password, salt, iterationCount, nullptr);
++	}
++
++	int Pkcs5HmacSha3_512::DeriveKey (const BufferPtr &key, const VolumePassword &password, const ConstBufferPtr &salt, int iterationCount, long volatile *pAbortKeyDerivation) const
++	{
++		ValidateParameters (key, password, salt, iterationCount);
++		derive_key_sha3_512 (password.DataPtr(), (int) password.Size(), salt.Get(), (int) salt.Size(), iterationCount, key.Get(), (int) key.Size(), pAbortKeyDerivation);
++		return 0;
++	}
++
+ 	#ifndef VC_DCS_DISABLE_ARGON2
+ 	int Pkcs5Argon2::DeriveKey (const BufferPtr &key, const VolumePassword &password, int pim, const ConstBufferPtr &salt) const
+ 	{
+--- a/Volume/Volume.make	2026-07-15 21:34:20.606095674 +0000
++++ b/Volume/Volume.make	2026-07-15 21:27:55.783397518 +0000
+@@ -126,6 +126,7 @@
+ OBJS += ../Crypto/Sha2.o
+ OBJS += ../Crypto/Twofish.o
+ OBJS += ../Crypto/Whirlpool.o
++OBJS += ../Crypto/Sha3.o
+ OBJS += ../Crypto/Camellia.o
+ OBJS += ../Crypto/Streebog.o
+ OBJS += ../Crypto/kuznyechik.o
+--- a/Crypto/Crypto.vcxproj	2026-07-15 21:34:20.609051194 +0000
++++ b/Crypto/Crypto.vcxproj	2026-07-15 21:28:39.871130608 +0000
+@@ -279,6 +279,7 @@
+       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
+     </ClCompile>
+     <ClCompile Include="Sha2Intel.c" />
++    <ClCompile Include="Sha3.c" />
+     <ClCompile Include="Streebog.c" />
+     <ClCompile Include="t1ha2.c" />
+     <ClCompile Include="t1ha2_selfcheck.c" />
+@@ -312,6 +313,7 @@
+     <ClInclude Include="SerpentFast.h" />
+     <ClInclude Include="SerpentFast_sbox.h" />
+     <ClInclude Include="Sha2.h" />
++    <ClInclude Include="Sha3.h" />
+     <ClInclude Include="Streebog.h" />
+     <ClInclude Include="t1ha.h" />
+     <ClInclude Include="t1ha_bits.h" />
+--- a/Crypto/Crypto.vcxproj.filters	2026-07-15 21:34:20.610926058 +0000
++++ b/Crypto/Crypto.vcxproj.filters	2026-07-15 21:28:53.476438678 +0000
+@@ -48,6 +48,9 @@
+     <ClCompile Include="Streebog.c">
+       <Filter>Source Files</Filter>
+     </ClCompile>
++    <ClCompile Include="Sha3.c">
++      <Filter>Source Files</Filter>
++    </ClCompile>
+     <ClCompile Include="SerpentFast.c">
+       <Filter>Source Files</Filter>
+     </ClCompile>
+@@ -164,6 +167,9 @@
+     <ClInclude Include="Whirlpool.h">
+       <Filter>Header Files</Filter>
+     </ClInclude>
++    <ClInclude Include="Sha3.h">
++      <Filter>Header Files</Filter>
++    </ClInclude>
+     <ClInclude Include="kuznyechik.h">
+       <Filter>Header Files</Filter>
+     </ClInclude>

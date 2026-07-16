@@ -1,0 +1,17 @@
+This repository is a fork of VeraCrypt (https://www.veracrypt.fr), based on the
+VeraCrypt 1.26.29 source release.
+
+VeraCrypt is dual-licensed under:
+  - the Apache License, Version 2.0, and
+  - the TrueCrypt License Version 3.0.
+
+Both licenses permit modification and redistribution subject to their terms and the
+inclusion of the required notices; the original VeraCrypt/TrueCrypt license texts are
+retained in src/ (see src/License.txt and the per-file headers).
+
+Modifications in this fork (the HardwareKeyFactor module, Shamir secret sharing, the
+BLAKE2b/SHA3 PRFs, the factor-gating hooks, and associated tooling and docs) are provided
+under the same dual-license terms as the upstream files they accompany.
+
+EXPERIMENTAL SOFTWARE — provided as-is, without warranty. Not for protecting real data
+without independent review. See docs/THREAT-MODEL.md.

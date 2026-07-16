@@ -1,0 +1,69 @@
+--- a/src/Main/CommandLineInterface.h	2026-07-16 03:56:05.624455087 +0000
++++ b/src/Main/CommandLineInterface.h	2026-07-16 03:56:05.643709495 +0000
+@@ -21,6 +21,9 @@
+ #include "UserPreferences.h"
+ #include "UserInterfaceType.h"
+ #include "Volume/Pkcs5Kdf.h"
++#if defined(VC_ENABLE_HKF)
++#include "HardwareKeyFactorCli.h"
++#endif
+ 
+ namespace VeraCrypt
+ {
+@@ -81,6 +84,9 @@
+ 		bool ArgNoHiddenVolumeProtection;
+ 		shared_ptr <VolumePassword> ArgPassword;
+ 		int ArgPim;
++#if defined(VC_ENABLE_HKF)
++		HKFConfig ArgHKFConfig;
++#endif
+ 		bool ArgQuick;
+ 		FilesystemPath ArgRandomSourcePath;
+ 		uint64 ArgSize;
+--- a/src/Main/CommandLineInterface.cpp	2026-07-16 03:56:05.626279946 +0000
++++ b/src/Main/CommandLineInterface.cpp	2026-07-16 03:56:05.644014718 +0000
+@@ -95,6 +95,15 @@
+ 		parser.AddOption (L"",	L"fs-options",			_("Filesystem mount options"));
+ #endif
+ 		parser.AddOption (L"",	L"hash",				_("Header key derivation algorithm"));
++#if defined(VC_ENABLE_HKF)
++		parser.AddOption (L"",	L"hkf-backend",			_("Hardware key factor: none|yubikey|fido2|simulator"));
++		parser.AddOption (L"",	L"hkf-yk-slot",			_("YubiKey HMAC-SHA1 slot (1 or 2)"));
++		parser.AddOption (L"",	L"hkf-fido-rp",			_("FIDO2 relying-party id"));
++		parser.AddOption (L"",	L"hkf-fido-credid",		_("FIDO2 credential id (hex)"));
++		parser.AddOption (L"",	L"hkf-fido-pin",			_("FIDO2 device PIN (optional)"));
++		parser.AddOption (L"",	L"hkf-sim-secret",		_("Simulator secret (hex, testing only)"));
++		parser.AddOption (L"",	L"hkf-sim-mac",			_("Simulator MAC 1=HMAC-SHA1 2=HMAC-SHA256 (testing only)"));
++#endif
+ 		parser.AddSwitch (L"h", L"help",				_("Display detailed command line help"), wxCMD_LINE_OPTION_HELP);
+ 		parser.AddSwitch (L"",	L"import-token-keyfiles", _("Import keyfiles to security token"));
+ 		parser.AddOption (L"k", L"keyfiles",			_("Keyfiles"));
+@@ -550,6 +559,28 @@
+ 				throw_err (LangString["PARAMETER_INCORRECT"] + L": " + str);
+ 		}
+ 
++#if defined(VC_ENABLE_HKF)
++		{
++			string hkfBackend, hkfRp, hkfCredId, hkfPin, hkfSimSecret;
++			int hkfYkSlot = 2, hkfSimMac = 1;
++			wxString v;
++			if (parser.Found (L"hkf-backend", &v))     hkfBackend   = string (v.mb_str());
++			if (parser.Found (L"hkf-fido-rp", &v))     hkfRp        = string (v.mb_str());
++			if (parser.Found (L"hkf-fido-credid", &v)) hkfCredId    = string (v.mb_str());
++			if (parser.Found (L"hkf-fido-pin", &v))    hkfPin       = string (v.mb_str());
++			if (parser.Found (L"hkf-sim-secret", &v))  hkfSimSecret = string (v.mb_str());
++			if (parser.Found (L"hkf-yk-slot", &v))     hkfYkSlot    = StringConverter::ToInt32 (wstring (v));
++			if (parser.Found (L"hkf-sim-mac", &v))     hkfSimMac    = StringConverter::ToInt32 (wstring (v));
++
++			string hkfError;
++			if (!BuildHKFConfig (hkfBackend, hkfYkSlot, hkfRp, hkfCredId, hkfPin, hkfSimSecret, hkfSimMac, ArgHKFConfig, hkfError))
++				throw_err (wxString (L"Hardware key factor: ") + wxString (hkfError.c_str(), wxConvUTF8));
++
++			if (ArgHKFConfig.backend != HKF_BACKEND_NONE)
++				HKFSetActiveConfig (&ArgHKFConfig);   // applies to this process's mount/create
++		}
++#endif
++
+ 		if (parser.Found (L"protect-hidden", &str))
+ 		{
+ 			if (str == L"yes")

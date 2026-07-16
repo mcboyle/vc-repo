@@ -1,0 +1,45 @@
+--- a/src/Common/Volumes.c	2026-07-15 22:40:26.993917706 +0000
++++ b/src/Common/Volumes.c	2026-07-15 22:40:26.994028309 +0000
+@@ -37,6 +37,9 @@
+ #include "Endian.h"
+ #include "Volumes.h"
+ #include "Pkcs5.h"
++#if defined(VC_ENABLE_HKF)
++#include "HardwareKeyFactor.h"
++#endif
+ 
+ #if defined(_WIN32) && !defined(_UEFI)
+ #include <Strsafe.h>
+@@ -324,6 +327,15 @@
+ 	// PKCS5 is used to derive the primary header key(s) and secondary header key(s) (XTS mode) from the password
+ 	memcpy (keyInfo->salt, encryptedHeader + HEADER_SALT_OFFSET, PKCS5_SALT_SIZE);
+ 
++#if defined(VC_ENABLE_HKF)
++	// Optional hardware key factor: mix the token response (computed over THIS header's salt)
++	// into the password before PBKDF2. A configured-but-missing/failed token aborts the mount.
++	if (HKFApplyIfConfigured (keyInfo->userKey, &keyInfo->keyLength, keyInfo->salt, PKCS5_SALT_SIZE) != HKF_OK)
++	{
++		status = ERR_KEY_DERIVATION_FAILED;
++		goto err;
++	}
++#endif
+ 
+ 	// Test all available PKCS5 PRFs
+ 	for (enqPkcs5Prf = FIRST_PRF_ID; enqPkcs5Prf <= LAST_PRF_ID || queuedWorkItems > 0; ++enqPkcs5Prf)
+@@ -1147,6 +1159,16 @@
+ 		goto err;
+ 	}
+ 
++#if defined(VC_ENABLE_HKF)
++	// Optional hardware key factor (same seam as mount): mix the token response over the freshly
++	// generated salt into the password before PBKDF2 so the new volume requires the token to open.
++	if (password && HKFApplyIfConfigured (keyInfo.userKey, &keyInfo.keyLength, keyInfo.salt, PKCS5_SALT_SIZE) != HKF_OK)
++	{
++		crypto_close (cryptoInfo);
++		retVal = ERR_KEY_DERIVATION_FAILED;
++		goto err;
++	}
++#endif
+ 
+ 	if (password)
+ 	{

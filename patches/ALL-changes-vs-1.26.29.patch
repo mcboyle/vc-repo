@@ -1,0 +1,2378 @@
+diff -ruN a/src/Common/Crypto.c b/src/Common/Crypto.c
+--- a/src/Common/Crypto.c	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Common/Crypto.c	2026-07-15 21:31:11.061476613 +0000
+@@ -135,7 +135,9 @@
+ 	{ STREEBOG,		L"Streebog",	FALSE,	FALSE },
+ #ifndef VC_DCS_DISABLE_ARGON2
+ 	{ ARGON2,		L"BLAKE2b-512",	FALSE,	FALSE },
++	{ BLAKE2B,		L"BLAKE2b",		FALSE,	FALSE },	// HMAC-BLAKE2b-512 PBKDF2 PRF (non-boot). Distinct label from Argon2's internal "BLAKE2b-512".
+ #endif
++	{ SHA3_512,		L"SHA3-512",	FALSE,	FALSE },	// HMAC-SHA3-512 PBKDF2 PRF (non-boot).
+     #endif
+         { 0, 0, 0 }
+ };
+diff -ruN a/src/Common/Crypto.h b/src/Common/Crypto.h
+--- a/src/Common/Crypto.h	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Common/Crypto.h	2026-07-15 21:17:14.708509659 +0000
+@@ -63,7 +63,12 @@
+ 	STREEBOG,
+ #ifndef VC_DCS_DISABLE_ARGON2
+ 	ARGON2,
++	BLAKE2B,	// BLAKE2b-512 used as an HMAC/PBKDF2 PRF. Gated with Argon2 because it
++			// reuses the in-tree BLAKE2b primitive that ships with Argon2 (absent from
++			// the space-constrained DCS/UEFI bootloader). Non-boot PRF only.
+ #endif
++	SHA3_512,	// SHA3-512 (FIPS 202) HMAC/PBKDF2 PRF. Independent of Argon2 (own Keccak
++			// primitive in Crypto/Sha3.c). Non-boot PRF only; excluded under wolfCrypt.
+ 	HASH_ENUM_END_ID
+ };
+ 
+@@ -72,6 +77,7 @@
+ 
+ #define BLAKE2S_BLOCKSIZE		64
+ #define BLAKE2S_DIGESTSIZE		32
++#define BLAKE2B_BLOCKSIZE		128
+ #define BLAKE2B_DIGESTSIZE		64
+ 
+ #define SHA256_BLOCKSIZE		64
+@@ -213,6 +219,7 @@
+ #ifndef TC_WINDOWS_BOOT
+ #	include "Sha2.h"
+ #	include "Whirlpool.h"
++#	include "Sha3.h"
+ #ifndef VC_DCS_DISABLE_ARGON2
+ #	include "argon2.h"
+ #	include "Crypto/Argon2/src/blake2/blake2b.h"
+diff -ruN a/src/Common/EncryptionThreadPool.c b/src/Common/EncryptionThreadPool.c
+--- a/src/Common/EncryptionThreadPool.c	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Common/EncryptionThreadPool.c	2026-07-15 21:21:04.638670183 +0000
+@@ -275,11 +275,23 @@
+ 					workItem->KeyDerivation.IterationCount, workItem->KeyDerivation.DerivedKey, GetMaxPkcs5OutSize(), workItem->KeyDerivation.pAbortKeyDerivation);
+ 				break;
+ 
++#ifndef VC_DCS_DISABLE_ARGON2
++			case BLAKE2B:
++				derive_key_blake2b (workItem->KeyDerivation.Password, workItem->KeyDerivation.PasswordLength, workItem->KeyDerivation.Salt, PKCS5_SALT_SIZE,
++					workItem->KeyDerivation.IterationCount, workItem->KeyDerivation.DerivedKey, GetMaxPkcs5OutSize(), workItem->KeyDerivation.pAbortKeyDerivation);
++				break;
++#endif
++
+ 			case ARGON2:
+ 				derivationResult = derive_key_argon2(workItem->KeyDerivation.Password, workItem->KeyDerivation.PasswordLength, workItem->KeyDerivation.Salt, PKCS5_SALT_SIZE,
+ 					workItem->KeyDerivation.IterationCount, workItem->KeyDerivation.Memorycost, workItem->KeyDerivation.DerivedKey, ARGON2_HEADER_KEYDATA_SIZE, workItem->KeyDerivation.pAbortKeyDerivation);
+ 				break;
+ 
++			case SHA3_512:
++				derive_key_sha3_512 (workItem->KeyDerivation.Password, workItem->KeyDerivation.PasswordLength, workItem->KeyDerivation.Salt, PKCS5_SALT_SIZE,
++					workItem->KeyDerivation.IterationCount, workItem->KeyDerivation.DerivedKey, GetMaxPkcs5OutSize(), workItem->KeyDerivation.pAbortKeyDerivation);
++				break;
++
+ 			default:
+ 				TC_THROW_FATAL_EXCEPTION;
+ 			}
+diff -ruN a/src/Common/HardwareKeyFactor.c b/src/Common/HardwareKeyFactor.c
+--- a/src/Common/HardwareKeyFactor.c	1970-01-01 00:00:00.000000000 +0000
++++ b/src/Common/HardwareKeyFactor.c	2026-07-16 17:39:16.521933329 +0000
+@@ -0,0 +1,466 @@
++/*
++ * HardwareKeyFactor — see HardwareKeyFactor.h for the design.
++ *
++ * The response->password mixing replicates Common/Keyfiles.c byte-for-byte (rolling CRC-32 into a
++ * 128-byte pool via modular addition, then pool added into the password). Backends are compiled in
++ * only when their -DVC_ENABLE_* macro is set.
++ */
++
++#include "HardwareKeyFactor.h"
++#include <string.h>
++
++/* ------------------------------------------------------------------ *
++ *  CRC-32 (standard, polynomial 0xEDB88320) — identical to Common/Crc *
++ * ------------------------------------------------------------------ */
++
++static unsigned int hkf_crc_tab[256];
++static int hkf_crc_ready = 0;
++
++static void hkf_crc_init (void)
++{
++	unsigned int c;
++	int n, k;
++	for (n = 0; n < 256; n++)
++	{
++		c = (unsigned int) n;
++		for (k = 0; k < 8; k++)
++			c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
++		hkf_crc_tab[n] = c;
++	}
++	hkf_crc_ready = 1;
++}
++
++#define HKF_UPDC32(octet, crc) (hkf_crc_tab[(((crc) ^ (unsigned char)(octet)) & 0xff)] ^ ((crc) >> 8))
++
++void HKFMixResponseIntoPassword (unsigned char *password, int *password_len,
++                                 const unsigned char *response, int response_len)
++{
++	unsigned char pool[HKF_POOL_SIZE];
++	unsigned int crc = 0xffffffffu;
++	unsigned int writePos = 0;
++	int i;
++
++	if (!hkf_crc_ready)
++		hkf_crc_init();
++
++	memset (pool, 0, sizeof (pool));
++
++	/* Same rolling-CRC pool construction as KeyFileProcess(): modular add of the 4 CRC bytes. */
++	for (i = 0; i < response_len; i++)
++	{
++		crc = HKF_UPDC32 (response[i], crc);
++		pool[writePos++] += (unsigned char) (crc >> 24);
++		pool[writePos++] += (unsigned char) (crc >> 16);
++		pool[writePos++] += (unsigned char) (crc >> 8);
++		pool[writePos++] += (unsigned char) (crc);
++		if (writePos >= HKF_POOL_SIZE)
++			writePos = 0;
++	}
++
++	/* Same application as KeyFilesApply(): add pool into the password, extend length to the pool. */
++	for (i = 0; i < HKF_POOL_SIZE; i++)
++	{
++		if (i < *password_len)
++			password[i] += pool[i];
++		else
++			password[i] = pool[i];
++	}
++	if (*password_len < HKF_POOL_SIZE)
++		*password_len = HKF_POOL_SIZE;
++
++	{
++		volatile unsigned char *p = pool;
++		size_t n = sizeof (pool);
++		while (n--) *p++ = 0;
++	}
++}
++
++/* ================================================================== *
++ *  Software simulator (TESTING ONLY): self-contained SHA-1 + HMAC     *
++ * ================================================================== */
++#if defined(VC_ENABLE_HKF_SIMULATOR)
++
++/* The simulator is fully self-contained (its own SHA-1 and SHA-256) so it needs no other object files.
++   The production FIDO2 backend below uses VeraCrypt's own sha256() instead. */
++
++/* --- compact SHA-256 (simulator only) --- */
++typedef struct { unsigned int h[8]; unsigned long long len; unsigned char buf[64]; int idx; } hkf_sha256_ctx;
++
++static const unsigned int hkf_k256[64] = {
++	0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
++	0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
++	0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
++	0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
++	0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
++	0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
++	0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
++	0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2 };
++
++static unsigned int hkf_ror (unsigned int v, int b) { return (v >> b) | (v << (32 - b)); }
++
++static void hkf_sha256_block (hkf_sha256_ctx *c, const unsigned char *p)
++{
++	unsigned int w[64], a,b,cc,d,e,f,g,h,t1,t2; int i;
++	for (i = 0; i < 16; i++)
++		w[i] = ((unsigned int)p[i*4]<<24)|((unsigned int)p[i*4+1]<<16)|((unsigned int)p[i*4+2]<<8)|((unsigned int)p[i*4+3]);
++	for (i = 16; i < 64; i++)
++	{
++		unsigned int s0 = hkf_ror(w[i-15],7) ^ hkf_ror(w[i-15],18) ^ (w[i-15]>>3);
++		unsigned int s1 = hkf_ror(w[i-2],17) ^ hkf_ror(w[i-2],19) ^ (w[i-2]>>10);
++		w[i] = w[i-16] + s0 + w[i-7] + s1;
++	}
++	a=c->h[0];b=c->h[1];cc=c->h[2];d=c->h[3];e=c->h[4];f=c->h[5];g=c->h[6];h=c->h[7];
++	for (i = 0; i < 64; i++)
++	{
++		unsigned int S1 = hkf_ror(e,6)^hkf_ror(e,11)^hkf_ror(e,25);
++		unsigned int ch = (e & f) ^ ((~e) & g);
++		t1 = h + S1 + ch + hkf_k256[i] + w[i];
++		unsigned int S0 = hkf_ror(a,2)^hkf_ror(a,13)^hkf_ror(a,22);
++		unsigned int maj = (a & b) ^ (a & cc) ^ (b & cc);
++		t2 = S0 + maj;
++		h=g; g=f; f=e; e=d+t1; d=cc; cc=b; b=a; a=t1+t2;
++	}
++	c->h[0]+=a;c->h[1]+=b;c->h[2]+=cc;c->h[3]+=d;c->h[4]+=e;c->h[5]+=f;c->h[6]+=g;c->h[7]+=h;
++}
++
++static void hkf_sha256_init (hkf_sha256_ctx *c)
++{
++	c->h[0]=0x6a09e667;c->h[1]=0xbb67ae85;c->h[2]=0x3c6ef372;c->h[3]=0xa54ff53a;
++	c->h[4]=0x510e527f;c->h[5]=0x9b05688c;c->h[6]=0x1f83d9ab;c->h[7]=0x5be0cd19;
++	c->len=0; c->idx=0;
++}
++static void hkf_sha256_update (hkf_sha256_ctx *c, const unsigned char *p, size_t n)
++{
++	c->len += (unsigned long long) n * 8;
++	while (n--) { c->buf[c->idx++] = *p++; if (c->idx==64){ hkf_sha256_block(c,c->buf); c->idx=0; } }
++}
++static void hkf_sha256_final (hkf_sha256_ctx *c, unsigned char out[32])
++{
++	unsigned long long bits=c->len; int i; unsigned char pad=0x80;
++	hkf_sha256_update(c,&pad,1); pad=0;
++	while (c->idx!=56) hkf_sha256_update(c,&pad,1);
++	for (i=7;i>=0;i--){ unsigned char b=(unsigned char)(bits>>(i*8)); hkf_sha256_update(c,&b,1); }
++	for (i=0;i<8;i++){ out[i*4]=(unsigned char)(c->h[i]>>24); out[i*4+1]=(unsigned char)(c->h[i]>>16); out[i*4+2]=(unsigned char)(c->h[i]>>8); out[i*4+3]=(unsigned char)c->h[i]; }
++}
++static void hkf_sha256_oneshot (unsigned char out[32], const unsigned char *in, int n)
++{
++	hkf_sha256_ctx c; hkf_sha256_init(&c); hkf_sha256_update(&c,in,(size_t)n); hkf_sha256_final(&c,out);
++}
++
++/* --- compact SHA-1 (used only by the simulator; production never computes HMAC-SHA1 on the host) --- */
++typedef struct { unsigned int h[5]; unsigned long long len; unsigned char buf[64]; int idx; } hkf_sha1_ctx;
++
++static unsigned int hkf_rol (unsigned int v, int b) { return (v << b) | (v >> (32 - b)); }
++
++static void hkf_sha1_block (hkf_sha1_ctx *c, const unsigned char *p)
++{
++	unsigned int w[80], a, b, cc, d, e, i, f, k, t;
++	for (i = 0; i < 16; i++)
++		w[i] = ((unsigned int) p[i*4] << 24) | ((unsigned int) p[i*4+1] << 16) |
++		       ((unsigned int) p[i*4+2] << 8) | ((unsigned int) p[i*4+3]);
++	for (i = 16; i < 80; i++)
++		w[i] = hkf_rol (w[i-3] ^ w[i-8] ^ w[i-14] ^ w[i-16], 1);
++	a = c->h[0]; b = c->h[1]; cc = c->h[2]; d = c->h[3]; e = c->h[4];
++	for (i = 0; i < 80; i++)
++	{
++		if      (i < 20) { f = (b & cc) | ((~b) & d);            k = 0x5A827999u; }
++		else if (i < 40) { f = b ^ cc ^ d;                       k = 0x6ED9EBA1u; }
++		else if (i < 60) { f = (b & cc) | (b & d) | (cc & d);    k = 0x8F1BBCDCu; }
++		else             { f = b ^ cc ^ d;                       k = 0xCA62C1D6u; }
++		t = hkf_rol (a, 5) + f + e + k + w[i];
++		e = d; d = cc; cc = hkf_rol (b, 30); b = a; a = t;
++	}
++	c->h[0] += a; c->h[1] += b; c->h[2] += cc; c->h[3] += d; c->h[4] += e;
++}
++
++static void hkf_sha1_init (hkf_sha1_ctx *c)
++{
++	c->h[0]=0x67452301u; c->h[1]=0xEFCDAB89u; c->h[2]=0x98BADCFEu; c->h[3]=0x10325476u; c->h[4]=0xC3D2E1F0u;
++	c->len = 0; c->idx = 0;
++}
++
++static void hkf_sha1_update (hkf_sha1_ctx *c, const unsigned char *p, size_t n)
++{
++	c->len += (unsigned long long) n * 8;
++	while (n--)
++	{
++		c->buf[c->idx++] = *p++;
++		if (c->idx == 64) { hkf_sha1_block (c, c->buf); c->idx = 0; }
++	}
++}
++
++static void hkf_sha1_final (hkf_sha1_ctx *c, unsigned char out[20])
++{
++	unsigned long long bits = c->len;
++	int i;
++	unsigned char pad = 0x80;
++	hkf_sha1_update (c, &pad, 1);
++	pad = 0;
++	while (c->idx != 56) hkf_sha1_update (c, &pad, 1);
++	for (i = 7; i >= 0; i--) { unsigned char b = (unsigned char)(bits >> (i*8)); hkf_sha1_update (c, &b, 1); }
++	for (i = 0; i < 5; i++)
++	{
++		out[i*4]   = (unsigned char)(c->h[i] >> 24);
++		out[i*4+1] = (unsigned char)(c->h[i] >> 16);
++		out[i*4+2] = (unsigned char)(c->h[i] >> 8);
++		out[i*4+3] = (unsigned char)(c->h[i]);
++	}
++}
++
++static void hkf_hmac_sha1 (const unsigned char *key, int klen,
++                           const unsigned char *msg, int mlen, unsigned char out[20])
++{
++	unsigned char k[64], ipad[64], opad[64], kd[20], inner[20];
++	hkf_sha1_ctx c;
++	int i;
++	if (klen > 64) { hkf_sha1_init (&c); hkf_sha1_update (&c, key, (size_t) klen); hkf_sha1_final (&c, kd); key = kd; klen = 20; }
++	memset (k, 0, 64); memcpy (k, key, (size_t) klen);
++	for (i = 0; i < 64; i++) { ipad[i] = k[i] ^ 0x36; opad[i] = k[i] ^ 0x5c; }
++	hkf_sha1_init (&c); hkf_sha1_update (&c, ipad, 64); hkf_sha1_update (&c, msg, (size_t) mlen); hkf_sha1_final (&c, inner);
++	hkf_sha1_init (&c); hkf_sha1_update (&c, opad, 64); hkf_sha1_update (&c, inner, 20); hkf_sha1_final (&c, out);
++}
++
++static void hkf_hmac_sha256 (const unsigned char *key, int klen,
++                             const unsigned char *msg, int mlen, unsigned char out[32])
++{
++	unsigned char k[64], ipad[64], opad[64], kd[32], inner[32];
++	hkf_sha256_ctx c;
++	int i;
++	if (klen > 64) { hkf_sha256_oneshot (kd, key, klen); key = kd; klen = 32; }
++	memset (k, 0, 64); memcpy (k, key, (size_t) klen);
++	for (i = 0; i < 64; i++) { ipad[i] = k[i] ^ 0x36; opad[i] = k[i] ^ 0x5c; }
++	hkf_sha256_init (&c); hkf_sha256_update (&c, ipad, 64); hkf_sha256_update (&c, msg, (size_t) mlen); hkf_sha256_final (&c, inner);
++	hkf_sha256_init (&c); hkf_sha256_update (&c, opad, 64); hkf_sha256_update (&c, inner, 32); hkf_sha256_final (&c, out);
++}
++
++static int HKFSimulatorResponse (const HKFConfig *cfg,
++                                 const unsigned char *challenge, int challenge_len,
++                                 unsigned char *response_out, int *response_len_out)
++{
++	if (cfg->simSecretLen <= 0 || cfg->simSecretLen > (int) sizeof (cfg->simSecret))
++		return HKF_ERR_CONFIG;
++
++	if (cfg->simMac == 1)
++	{
++		/* Emulate a YubiKey OTP-slot HMAC-SHA1: response = HMAC-SHA1(secret, challenge). */
++		hkf_hmac_sha1 (cfg->simSecret, cfg->simSecretLen, challenge, challenge_len, response_out);
++		*response_len_out = 20;
++		return HKF_OK;
++	}
++	else if (cfg->simMac == 2)
++	{
++		/* Emulate FIDO2 hmac-secret: host feeds a 32-byte salt = SHA256(challenge); device returns
++		   HMAC-SHA256(CredRandom, salt). Here CredRandom is modelled by simSecret. */
++		unsigned char salt32[32];
++		hkf_sha256_oneshot (salt32, challenge, challenge_len);
++		hkf_hmac_sha256 (cfg->simSecret, cfg->simSecretLen, salt32, 32, response_out);
++		*response_len_out = 32;
++		return HKF_OK;
++	}
++	return HKF_ERR_CONFIG;
++}
++#endif /* VC_ENABLE_HKF_SIMULATOR */
++
++/* ================================================================== *
++ *  YubiKey HMAC-SHA1 challenge-response (libykpers)                    *
++ * ================================================================== */
++#if defined(VC_ENABLE_YUBIKEY_HMAC)
++#include <ykpers-1/ykcore.h>
++#include <ykpers-1/ykdef.h>
++
++static int HKFYubiKeyResponse (const HKFConfig *cfg,
++                               const unsigned char *challenge, int challenge_len,
++                               unsigned char *response_out, int *response_len_out)
++{
++	YK_KEY *yk = 0;
++	unsigned char resp[64];
++	uint8_t cmd;
++	int rc, ret = HKF_ERR_DEVICE;
++
++	if (!yk_init ())
++		return HKF_ERR_DEVICE;
++
++	yk = yk_open_first_key ();
++	if (!yk)
++	{
++		yk_release ();
++		return HKF_ERR_NO_DEVICE;
++	}
++
++	cmd = (cfg->ykSlot == 2) ? SLOT_CHAL_HMAC2 : SLOT_CHAL_HMAC1;
++	memset (resp, 0, sizeof (resp));
++
++	/* HMAC-SHA1 CR: challenge up to 64 bytes in, 20-byte HMAC out (buffer sized 64 per API). */
++	rc = yk_challenge_response (yk, cmd, cfg->ykMayBlock,
++	                            (unsigned int) challenge_len, challenge,
++	                            sizeof (resp), resp);
++	if (rc)
++	{
++		memcpy (response_out, resp, 20);
++		*response_len_out = 20;
++		ret = HKF_OK;
++	}
++
++	{ volatile unsigned char *p = resp; size_t n = sizeof (resp); while (n--) *p++ = 0; }
++	yk_close_key (yk);
++	yk_release ();
++	return ret;
++}
++#endif /* VC_ENABLE_YUBIKEY_HMAC */
++
++/* ================================================================== *
++ *  FIDO2 hmac-secret assertion (libfido2)                             *
++ * ================================================================== */
++#if defined(VC_ENABLE_FIDO2)
++#include <fido.h>
++#include "Crypto/Sha2.h"
++
++static int HKFFido2Response (const HKFConfig *cfg,
++                             const unsigned char *challenge, int challenge_len,
++                             unsigned char *response_out, int *response_len_out)
++{
++	fido_dev_info_t *devlist = 0;
++	fido_dev_t *dev = 0;
++	fido_assert_t *assert = 0;
++	unsigned char salt32[32];
++	unsigned char cdh[32];
++	const char *path = 0;
++	size_t ndev = 0, hlen;
++	const unsigned char *hptr;
++	int r, ret = HKF_ERR_DEVICE;
++
++	if (cfg->fidoCredIdLen <= 0 || cfg->fidoRpId[0] == 0)
++		return HKF_ERR_CONFIG;
++
++	fido_init (0);
++
++	/* Reduce the 64-byte volume salt to the 32-byte hmac-secret salt the CTAP2 extension requires. */
++	sha256 (salt32, challenge, (uint_32t) challenge_len);
++	/* Client-data hash is not security-relevant for our use; a fixed value keeps derivation stable. */
++	memset (cdh, 0, sizeof (cdh));
++
++	devlist = fido_dev_info_new (8);
++	if (!devlist) return HKF_ERR_DEVICE;
++	if (fido_dev_info_manifest (devlist, 8, &ndev) != FIDO_OK || ndev == 0) { ret = HKF_ERR_NO_DEVICE; goto done; }
++	path = fido_dev_info_path (fido_dev_info_ptr (devlist, 0));
++
++	dev = fido_dev_new ();
++	if (!dev || fido_dev_open (dev, path) != FIDO_OK) { ret = HKF_ERR_NO_DEVICE; goto done; }
++
++	assert = fido_assert_new ();
++	if (!assert) goto done;
++
++	if (fido_assert_set_rp (assert, cfg->fidoRpId) != FIDO_OK) goto done;
++	if (fido_assert_set_clientdata_hash (assert, cdh, sizeof (cdh)) != FIDO_OK) goto done;
++	if (fido_assert_allow_cred (assert, cfg->fidoCredId, (size_t) cfg->fidoCredIdLen) != FIDO_OK) goto done;
++	if (fido_assert_set_extensions (assert, FIDO_EXT_HMAC_SECRET) != FIDO_OK) goto done;
++	if (fido_assert_set_hmac_salt (assert, salt32, sizeof (salt32)) != FIDO_OK) goto done;
++
++	r = fido_dev_get_assert (dev, assert, (cfg->fidoPin[0] ? cfg->fidoPin : 0));
++	if (r != FIDO_OK) { ret = HKF_ERR_DEVICE; goto done; }
++
++	hptr = fido_assert_hmac_secret_ptr (assert, 0);
++	hlen = fido_assert_hmac_secret_len (assert, 0);
++	if (hptr && hlen > 0 && hlen <= HKF_MAX_RESPONSE)
++	{
++		memcpy (response_out, hptr, hlen);
++		*response_len_out = (int) hlen;
++		ret = HKF_OK;
++	}
++
++done:
++	if (assert)  fido_assert_free (&assert);
++	if (dev)     { fido_dev_close (dev); fido_dev_free (&dev); }
++	if (devlist) fido_dev_info_free (&devlist, 8);
++	{ volatile unsigned char *p = salt32; size_t n = sizeof (salt32); while (n--) *p++ = 0; }
++	return ret;
++}
++#endif /* VC_ENABLE_FIDO2 */
++
++/* ================================================================== *
++ *  Dispatcher                                                         *
++ * ================================================================== */
++
++int HKFComputeResponse (const HKFConfig *cfg,
++                        const unsigned char *challenge, int challenge_len,
++                        unsigned char *response_out, int *response_len_out)
++{
++	if (!cfg || !challenge || challenge_len <= 0 || !response_out || !response_len_out)
++		return HKF_ERR_CONFIG;
++
++	switch (cfg->backend)
++	{
++	case HKF_BACKEND_YK_HMAC_SHA1:
++#if defined(VC_ENABLE_YUBIKEY_HMAC)
++		return HKFYubiKeyResponse (cfg, challenge, challenge_len, response_out, response_len_out);
++#else
++		return HKF_ERR_UNSUPPORTED;
++#endif
++
++	case HKF_BACKEND_FIDO2_HMAC_SECRET:
++#if defined(VC_ENABLE_FIDO2)
++		return HKFFido2Response (cfg, challenge, challenge_len, response_out, response_len_out);
++#else
++		return HKF_ERR_UNSUPPORTED;
++#endif
++
++	case HKF_BACKEND_SIMULATOR:
++#if defined(VC_ENABLE_HKF_SIMULATOR)
++		return HKFSimulatorResponse (cfg, challenge, challenge_len, response_out, response_len_out);
++#else
++		return HKF_ERR_UNSUPPORTED;
++#endif
++
++	case HKF_BACKEND_RAW_SECRET:
++		/* A caller-supplied secret (typically a Shamir reconstruction); mixed like a keyfile.
++		   The challenge (salt) is not used — the secret is fixed per enrollment. */
++		if (cfg->rawSecretLen <= 0 || cfg->rawSecretLen > HKF_MAX_RESPONSE)
++			return HKF_ERR_CONFIG;
++		memcpy (response_out, cfg->rawSecret, (size_t) cfg->rawSecretLen);
++		*response_len_out = cfg->rawSecretLen;
++		return HKF_OK;
++
++	default:
++		return HKF_ERR_CONFIG;
++	}
++}
++
++/* ------------------------------------------------------------------ *
++ *  Active-config hook for the mount / format derivation call-sites    *
++ * ------------------------------------------------------------------ */
++
++const HKFConfig *g_hkfActiveConfig = 0;
++
++void HKFSetActiveConfig (const HKFConfig *cfg)
++{
++	g_hkfActiveConfig = cfg;
++}
++
++int HKFApplyIfConfigured (unsigned char *userKey, int *keyLength,
++                          const unsigned char *salt, int salt_len)
++{
++	const HKFConfig *cfg = g_hkfActiveConfig;
++	unsigned char resp[HKF_MAX_RESPONSE];
++	int rlen = 0, rc;
++
++	if (!cfg || cfg->backend == HKF_BACKEND_NONE)
++		return HKF_OK;                       /* factor disabled: derivation unchanged */
++
++	rc = HKFComputeResponse (cfg, salt, salt_len, resp, &rlen);
++	if (rc != HKF_OK)
++		return rc;                           /* token missing/failed: caller aborts */
++
++	HKFMixResponseIntoPassword (userKey, keyLength, resp, rlen);
++
++	{ volatile unsigned char *p = resp; size_t n = sizeof (resp); while (n--) *p++ = 0; }
++	return HKF_OK;
++}
++
++int HKFShouldApply (const HKFConfig *cfg, int layoutIsHidden)
++{
++	if (!cfg || cfg->backend == HKF_BACKEND_NONE)
++		return 0;                            /* no factor configured */
++	if (cfg->applyPolicy == HKF_APPLY_HIDDEN_ONLY)
++		return layoutIsHidden ? 1 : 0;       /* decoy layout: gate the hidden header only */
++	return 1;                                /* HKF_APPLY_ALL */
++}
+diff -ruN a/src/Common/HardwareKeyFactor.h b/src/Common/HardwareKeyFactor.h
+--- a/src/Common/HardwareKeyFactor.h	1970-01-01 00:00:00.000000000 +0000
++++ b/src/Common/HardwareKeyFactor.h	2026-07-16 17:39:05.066780304 +0000
+@@ -0,0 +1,143 @@
++/*
++ * HardwareKeyFactor — optional hardware second factor for VeraCrypt key derivation.
++ *
++ * A hardware token computes a secret response from a challenge (the volume's 64-byte PBKDF2 salt);
++ * that response is mixed into the password buffer *before* PBKDF2, using the exact same pool
++ * construction VeraCrypt already uses for keyfiles (Common/Keyfiles.c). The volume header is NOT
++ * changed — the token behaves like a dynamically-computed keyfile, so a volume simply cannot be
++ * opened without both the password and the physical token.
++ *
++ * Two hardware backends plus a software simulator (for testing without hardware) sit behind one seam:
++ *   - HKF_BACKEND_YK_HMAC_SHA1      : YubiKey OTP-slot HMAC-SHA1 challenge-response (libykpers)
++ *   - HKF_BACKEND_FIDO2_HMAC_SECRET : FIDO2 hmac-secret assertion (libfido2)
++ *   - HKF_BACKEND_SIMULATOR         : software virtual token (HMAC computed in-process; TESTING ONLY)
++ *
++ * Backends are compiled only when their macro is defined, so a build with no token support carries
++ * no extra dependency:
++ *   -DVC_ENABLE_YUBIKEY_HMAC   (links libykpers-1)
++ *   -DVC_ENABLE_FIDO2          (links libfido2)
++ *   -DVC_ENABLE_HKF_SIMULATOR  (no external dependency; do not ship in release builds)
++ *
++ * EXPERIMENTAL. This is a private fork of the key-derivation path; volumes created with a hardware
++ * factor are not interoperable with stock VeraCrypt and are unrecoverable if the token (and any
++ * backup token / password-only fallback) is lost. Not for real data without review.
++ */
++
++#ifndef TC_HEADER_Common_HardwareKeyFactor
++#define TC_HEADER_Common_HardwareKeyFactor
++
++#include "Tcdefs.h"
++
++#if defined(__cplusplus)
++extern "C" {
++#endif
++
++typedef enum
++{
++	HKF_BACKEND_NONE              = 0,
++	HKF_BACKEND_YK_HMAC_SHA1      = 1,
++	HKF_BACKEND_FIDO2_HMAC_SECRET = 2,
++	HKF_BACKEND_SIMULATOR         = 3,
++	HKF_BACKEND_RAW_SECRET        = 4   /* mix a caller-supplied secret (e.g. a Shamir reconstruction) */
++} HKFBackend;
++
++#define HKF_POOL_SIZE      128   /* must match KEYFILE_POOL_SIZE */
++#define HKF_MAX_RESPONSE   64
++#define HKF_MAX_CRED_ID    256
++
++/* Result codes (negative = failure). */
++#define HKF_OK              0
++#define HKF_ERR_CONFIG    (-1)
++#define HKF_ERR_NO_DEVICE (-2)
++#define HKF_ERR_DEVICE    (-3)
++#define HKF_ERR_UNSUPPORTED (-4)
++
++/* Apply policy: which header the factor gates.
++ *   HKF_APPLY_ALL          - factor gates whichever header is being derived (a normal volume, or
++ *                            both headers of a hidden-volume container). This is the default and the
++ *                            behaviour of a plain factor-protected volume.
++ *   HKF_APPLY_HIDDEN_ONLY  - factor gates ONLY the hidden header; the outer (decoy) header derives
++ *                            from the password alone. Used for a factor-gated decoy layout so the
++ *                            outer volume can be surrendered with the password while the real volume
++ *                            additionally requires the token. */
++#define HKF_APPLY_ALL          0
++#define HKF_APPLY_HIDDEN_ONLY  1
++
++typedef struct HKFConfig_struct
++{
++	int backend;              /* HKFBackend */
++
++	/* YubiKey HMAC-SHA1 */
++	int  ykSlot;              /* 1 or 2 (maps to SLOT_CHAL_HMAC1 / SLOT_CHAL_HMAC2) */
++	int  ykMayBlock;          /* non-zero: allow the device to block for a touch */
++
++	/* FIDO2 hmac-secret */
++	char          fidoRpId[128];              /* relying-party id, e.g. "veracrypt-volume" */
++	unsigned char fidoCredId[HKF_MAX_CRED_ID];/* credential id created at enrollment time */
++	int           fidoCredIdLen;
++	char          fidoPin[128];               /* device PIN, or "" if none */
++
++	/* Simulator (testing only) */
++	unsigned char simSecret[64];
++	int           simSecretLen;
++	int           simMac;     /* 1 = HMAC-SHA1 (emulate YubiKey), 2 = HMAC-SHA256 (emulate FIDO2) */
++
++	/* RAW_SECRET: a secret supplied by the caller (e.g. reconstructed from Shamir shares) that is
++	   mixed into the password directly, like a keyfile. */
++	unsigned char rawSecret[64];
++	int           rawSecretLen;
++
++	/* Application policy: which header(s) the factor gates. */
++	int           applyPolicy; /* HKF_APPLY_ALL (default) or HKF_APPLY_HIDDEN_ONLY */
++} HKFConfig;
++
++/*
++ * Compute the token response for a challenge (pass the volume's PBKDF2 salt, PKCS5_SALT_SIZE bytes).
++ * On success writes the raw response (20 bytes for HMAC-SHA1, 32 for hmac-secret) to response_out
++ * (which must hold >= HKF_MAX_RESPONSE bytes) and its length to *response_len_out.
++ * Returns HKF_OK (0) on success or a negative HKF_ERR_* code.
++ */
++int HKFComputeResponse (const HKFConfig *cfg,
++                        const unsigned char *challenge, int challenge_len,
++                        unsigned char *response_out, int *response_len_out);
++
++/*
++ * Mix a token response into a password buffer, byte-for-byte identically to how VeraCrypt mixes a
++ * keyfile (rolling CRC-32 into a HKF_POOL_SIZE pool via modular addition, then pool added into the
++ * password and the length extended to the pool size). 'password' must have room for HKF_POOL_SIZE
++ * bytes; *password_len is updated in place.
++ */
++void HKFMixResponseIntoPassword (unsigned char *password, int *password_len,
++                                 const unsigned char *response, int response_len);
++
++/*
++ * Optional process-wide active configuration, set by the mount/format caller (the UI or CLI layer)
++ * just before a volume operation; NULL means the hardware factor is disabled and derivation is
++ * unchanged. This keeps the derivation call-sites to a single guarded line; a production build would
++ * instead thread HKFConfig through the mount options / CRYPTO_INFO rather than a global.
++ */
++extern const HKFConfig *g_hkfActiveConfig;
++void HKFSetActiveConfig (const HKFConfig *cfg);
++
++/*
++ * Convenience for the derivation call-sites: if a factor is configured, compute the response over
++ * 'salt' (the volume's PBKDF2 salt) and mix it into (userKey, *keyLength) in place, exactly as a
++ * keyfile would be applied. Returns HKF_OK if there is nothing to do or on success, or a negative
++ * HKF_ERR_* if a configured token is missing or fails (the caller should abort the operation).
++ */
++int HKFApplyIfConfigured (unsigned char *userKey, int *keyLength,
++                          const unsigned char *salt, int salt_len);
++
++/*
++ * Decide whether the hardware factor should be mixed for the header currently being derived, given
++ * the active config and whether that header belongs to a hidden layout. Returns 1 to mix, 0 to skip
++ * (also 0 when no factor is configured). Pure function; used by the mount/create call-sites to gate
++ * the factor by outer-vs-hidden under HKF_APPLY_HIDDEN_ONLY.
++ */
++int HKFShouldApply (const HKFConfig *cfg, int layoutIsHidden);
++
++#if defined(__cplusplus)
++}
++#endif
++
++#endif /* TC_HEADER_Common_HardwareKeyFactor */
+diff -ruN a/src/Common/Pkcs5.c b/src/Common/Pkcs5.c
+--- a/src/Common/Pkcs5.c	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Common/Pkcs5.c	2026-07-15 21:19:00.056180295 +0000
+@@ -807,6 +807,420 @@
+ 
+ #endif
+ 
++/* ---- HMAC-BLAKE2b-512 and PBKDF2-HMAC-BLAKE2b ----
++   Reuses the in-tree BLAKE2b primitive that ships with Argon2 (declared via Crypto.h),
++   hence the shared VC_DCS_DISABLE_ARGON2 guard. Non-boot PRF only.
++   NOTE: unlike the BLAKE2s HMAC above, the ipad/opad block is BLAKE2B_BLOCKSIZE (128) bytes,
++   which does not fit in the (PKCS5_SALT_SIZE + 4) scratch buffer, so a dedicated 128-byte
++   pad buffer is used for key padding. */
++#if !defined(TC_WINDOWS_BOOT) && !defined(VC_DCS_DISABLE_ARGON2)
++
++typedef struct hmac_blake2b_ctx_struct
++{
++	blake2b_state ctx;
++	blake2b_state inner_digest_ctx;	/* pre-computed inner digest context */
++	blake2b_state outer_digest_ctx;	/* pre-computed outer digest context */
++	unsigned char k[PKCS5_SALT_SIZE + 4];	/* holds (salt_len + 4) and also the 64-byte BLAKE2b hash */
++	unsigned char u[BLAKE2B_DIGESTSIZE];
++} hmac_blake2b_ctx;
++
++static void hmac_blake2b_internal
++(
++	unsigned char *d,		/* input data; d is guaranteed to be at least 64 bytes long */
++	int ld,			/* length of input data in bytes */
++	hmac_blake2b_ctx* hmac	/* HMAC-BLAKE2b context which holds temporary variables */
++)
++{
++	blake2b_state* ctx = &(hmac->ctx);
++
++	/**** Restore Precomputed Inner Digest Context ****/
++	memcpy (ctx, &(hmac->inner_digest_ctx), sizeof (blake2b_state));
++	blake2b_update (ctx, d, ld);
++	blake2b_final (ctx, d, BLAKE2B_DIGESTSIZE);	/* d = inner digest */
++
++	/**** Restore Precomputed Outer Digest Context ****/
++	memcpy (ctx, &(hmac->outer_digest_ctx), sizeof (blake2b_state));
++	blake2b_update (ctx, d, BLAKE2B_DIGESTSIZE);
++	blake2b_final (ctx, d, BLAKE2B_DIGESTSIZE);	/* d = outer digest */
++}
++
++void hmac_blake2b
++(
++	unsigned char *k,	/* secret key */
++	int lk,		/* length of the key in bytes */
++	unsigned char *d,	/* data */
++	int ld		/* length of data in bytes */
++)
++{
++	hmac_blake2b_ctx hmac;
++	blake2b_state* ctx;
++	unsigned char pad[BLAKE2B_BLOCKSIZE];	/* 128-byte HMAC key-pad block */
++	int b;
++	unsigned char key[BLAKE2B_DIGESTSIZE];
++
++	/* If the key is longer than the hash block size, let key = blake2b(key), per HMAC. */
++	if (lk > BLAKE2B_BLOCKSIZE)
++	{
++		blake2b_state tctx;
++
++		blake2b_init (&tctx, BLAKE2B_DIGESTSIZE);
++		blake2b_update (&tctx, k, lk);
++		blake2b_final (&tctx, key, BLAKE2B_DIGESTSIZE);
++
++		k = key;
++		lk = BLAKE2B_DIGESTSIZE;
++
++		burn (&tctx, sizeof(tctx));	/* Prevent leaks */
++	}
++
++	/**** Precompute HMAC Inner Digest ****/
++	ctx = &(hmac.inner_digest_ctx);
++	blake2b_init (ctx, BLAKE2B_DIGESTSIZE);
++
++	for (b = 0; b < lk; ++b)
++		pad[b] = (unsigned char) (k[b] ^ 0x36);
++	memset (&pad[lk], 0x36, BLAKE2B_BLOCKSIZE - lk);
++
++	blake2b_update (ctx, pad, BLAKE2B_BLOCKSIZE);
++
++	/**** Precompute HMAC Outer Digest ****/
++	ctx = &(hmac.outer_digest_ctx);
++	blake2b_init (ctx, BLAKE2B_DIGESTSIZE);
++
++	for (b = 0; b < lk; ++b)
++		pad[b] = (unsigned char) (k[b] ^ 0x5C);
++	memset (&pad[lk], 0x5C, BLAKE2B_BLOCKSIZE - lk);
++
++	blake2b_update (ctx, pad, BLAKE2B_BLOCKSIZE);
++
++	hmac_blake2b_internal (d, ld, &hmac);
++
++	/* Prevent leaks */
++	burn (&hmac, sizeof(hmac));
++	burn (pad, sizeof(pad));
++	burn (key, sizeof(key));
++}
++
++static void derive_u_blake2b (const unsigned char *salt, int salt_len, uint32 iterations, int b, hmac_blake2b_ctx* hmac, volatile long *pAbortKeyDerivation)
++{
++	unsigned char* k = hmac->k;
++	unsigned char* u = hmac->u;
++	uint32 c;
++	int i;
++
++	c = iterations;
++
++	/* iteration 1 */
++	memcpy (k, salt, salt_len);	/* salt */
++
++	/* big-endian block number */
++	b = bswap_32 (b);
++	memcpy (&k[salt_len], &b, 4);
++
++	hmac_blake2b_internal (k, salt_len + 4, hmac);
++	memcpy (u, k, BLAKE2B_DIGESTSIZE);
++
++	/* remaining iterations */
++	while (c > 1)
++	{
++		/* CANCELLATION CHECK: check every 1024 iterations */
++		if (pAbortKeyDerivation && (c & 1023) == 0 && *pAbortKeyDerivation)
++			return;	/* Abort derivation */
++
++		hmac_blake2b_internal (k, BLAKE2B_DIGESTSIZE, hmac);
++		for (i = 0; i < BLAKE2B_DIGESTSIZE; i++)
++		{
++			u[i] ^= k[i];
++		}
++		c--;
++	}
++}
++
++void derive_key_blake2b (const unsigned char *pwd, int pwd_len, const unsigned char *salt, int salt_len, uint32 iterations, unsigned char *dk, int dklen, volatile long *pAbortKeyDerivation)
++{
++	hmac_blake2b_ctx hmac;
++	blake2b_state* ctx;
++	unsigned char pad[BLAKE2B_BLOCKSIZE];	/* 128-byte HMAC key-pad block */
++	int b, l, r;
++	unsigned char key[BLAKE2B_DIGESTSIZE];
++
++	/* If the password is longer than the hash block size, let pwd = blake2b(pwd), per HMAC. */
++	if (pwd_len > BLAKE2B_BLOCKSIZE)
++	{
++		blake2b_state tctx;
++
++		blake2b_init (&tctx, BLAKE2B_DIGESTSIZE);
++		blake2b_update (&tctx, pwd, pwd_len);
++		blake2b_final (&tctx, key, BLAKE2B_DIGESTSIZE);
++
++		pwd = key;
++		pwd_len = BLAKE2B_DIGESTSIZE;
++
++		burn (&tctx, sizeof(tctx));	/* Prevent leaks */
++	}
++
++	if (dklen % BLAKE2B_DIGESTSIZE)
++	{
++		l = 1 + dklen / BLAKE2B_DIGESTSIZE;
++	}
++	else
++	{
++		l = dklen / BLAKE2B_DIGESTSIZE;
++	}
++
++	r = dklen - (l - 1) * BLAKE2B_DIGESTSIZE;
++
++	/**** Precompute HMAC Inner Digest ****/
++	ctx = &(hmac.inner_digest_ctx);
++	blake2b_init (ctx, BLAKE2B_DIGESTSIZE);
++
++	for (b = 0; b < pwd_len; ++b)
++		pad[b] = (unsigned char) (pwd[b] ^ 0x36);
++	memset (&pad[pwd_len], 0x36, BLAKE2B_BLOCKSIZE - pwd_len);
++
++	blake2b_update (ctx, pad, BLAKE2B_BLOCKSIZE);
++
++	/**** Precompute HMAC Outer Digest ****/
++	ctx = &(hmac.outer_digest_ctx);
++	blake2b_init (ctx, BLAKE2B_DIGESTSIZE);
++
++	for (b = 0; b < pwd_len; ++b)
++		pad[b] = (unsigned char) (pwd[b] ^ 0x5C);
++	memset (&pad[pwd_len], 0x5C, BLAKE2B_BLOCKSIZE - pwd_len);
++
++	blake2b_update (ctx, pad, BLAKE2B_BLOCKSIZE);
++
++	/* first l - 1 blocks */
++	for (b = 1; b < l; b++)
++	{
++		derive_u_blake2b (salt, salt_len, iterations, b, &hmac, pAbortKeyDerivation);
++		if (pAbortKeyDerivation && *pAbortKeyDerivation)
++			goto cancelled;
++		memcpy (dk, hmac.u, BLAKE2B_DIGESTSIZE);
++		dk += BLAKE2B_DIGESTSIZE;
++	}
++
++	/* last block */
++	derive_u_blake2b (salt, salt_len, iterations, b, &hmac, pAbortKeyDerivation);
++	if (pAbortKeyDerivation && *pAbortKeyDerivation)
++		goto cancelled;
++	memcpy (dk, hmac.u, r);
++
++cancelled:
++	/* Prevent possible leaks. */
++	burn (&hmac, sizeof(hmac));
++	burn (pad, sizeof(pad));
++	burn (key, sizeof(key));
++}
++
++#endif // !defined(TC_WINDOWS_BOOT) && !defined(VC_DCS_DISABLE_ARGON2)
++
++/* ---- HMAC-SHA3-512 and PBKDF2-HMAC-SHA3-512 ----
++   Uses the FIPS 202 Keccak primitive in Crypto/Sha3.c. Non-boot PRF only.
++   SHA3-512's HMAC block size is its rate = 72 bytes (SHA3_512_BLOCKSIZE); like BLAKE2b this
++   exceeds the (PKCS5_SALT_SIZE + 4) scratch buffer, so a dedicated 72-byte pad buffer is used. */
++#ifndef TC_WINDOWS_BOOT
++
++typedef struct hmac_sha3_512_ctx_struct
++{
++	SHA3_CTX ctx;
++	SHA3_CTX inner_digest_ctx;	/* pre-computed inner digest context */
++	SHA3_CTX outer_digest_ctx;	/* pre-computed outer digest context */
++	unsigned char k[PKCS5_SALT_SIZE + 4];	/* holds (salt_len + 4) and also the 64-byte SHA3-512 hash */
++	unsigned char u[SHA3_512_DIGESTSIZE];
++} hmac_sha3_512_ctx;
++
++static void hmac_sha3_512_internal
++(
++	unsigned char *d,		/* input data; d is guaranteed to be at least 64 bytes long */
++	int ld,			/* length of input data in bytes */
++	hmac_sha3_512_ctx* hmac	/* HMAC-SHA3-512 context which holds temporary variables */
++)
++{
++	SHA3_CTX* ctx = &(hmac->ctx);
++
++	/**** Restore Precomputed Inner Digest Context ****/
++	memcpy (ctx, &(hmac->inner_digest_ctx), sizeof (SHA3_CTX));
++	sha3_512_update (ctx, d, ld);
++	sha3_512_final (ctx, d);	/* d = inner digest */
++
++	/**** Restore Precomputed Outer Digest Context ****/
++	memcpy (ctx, &(hmac->outer_digest_ctx), sizeof (SHA3_CTX));
++	sha3_512_update (ctx, d, SHA3_512_DIGESTSIZE);
++	sha3_512_final (ctx, d);	/* d = outer digest */
++}
++
++void hmac_sha3_512
++(
++	unsigned char *k,	/* secret key */
++	int lk,		/* length of the key in bytes */
++	unsigned char *d,	/* data */
++	int ld		/* length of data in bytes */
++)
++{
++	hmac_sha3_512_ctx hmac;
++	SHA3_CTX* ctx;
++	unsigned char pad[SHA3_512_BLOCKSIZE];	/* 72-byte HMAC key-pad block */
++	int b;
++	unsigned char key[SHA3_512_DIGESTSIZE];
++
++	/* If the key is longer than the hash block size, let key = sha3_512(key), per HMAC. */
++	if (lk > SHA3_512_BLOCKSIZE)
++	{
++		SHA3_CTX tctx;
++
++		sha3_512_init (&tctx);
++		sha3_512_update (&tctx, k, lk);
++		sha3_512_final (&tctx, key);
++
++		k = key;
++		lk = SHA3_512_DIGESTSIZE;
++
++		burn (&tctx, sizeof(tctx));	/* Prevent leaks */
++	}
++
++	/**** Precompute HMAC Inner Digest ****/
++	ctx = &(hmac.inner_digest_ctx);
++	sha3_512_init (ctx);
++
++	for (b = 0; b < lk; ++b)
++		pad[b] = (unsigned char) (k[b] ^ 0x36);
++	memset (&pad[lk], 0x36, SHA3_512_BLOCKSIZE - lk);
++
++	sha3_512_update (ctx, pad, SHA3_512_BLOCKSIZE);
++
++	/**** Precompute HMAC Outer Digest ****/
++	ctx = &(hmac.outer_digest_ctx);
++	sha3_512_init (ctx);
++
++	for (b = 0; b < lk; ++b)
++		pad[b] = (unsigned char) (k[b] ^ 0x5C);
++	memset (&pad[lk], 0x5C, SHA3_512_BLOCKSIZE - lk);
++
++	sha3_512_update (ctx, pad, SHA3_512_BLOCKSIZE);
++
++	hmac_sha3_512_internal (d, ld, &hmac);
++
++	/* Prevent leaks */
++	burn (&hmac, sizeof(hmac));
++	burn (pad, sizeof(pad));
++	burn (key, sizeof(key));
++}
++
++static void derive_u_sha3_512 (const unsigned char *salt, int salt_len, uint32 iterations, int b, hmac_sha3_512_ctx* hmac, volatile long *pAbortKeyDerivation)
++{
++	unsigned char* k = hmac->k;
++	unsigned char* u = hmac->u;
++	uint32 c;
++	int i;
++
++	c = iterations;
++
++	/* iteration 1 */
++	memcpy (k, salt, salt_len);	/* salt */
++
++	/* big-endian block number */
++	b = bswap_32 (b);
++	memcpy (&k[salt_len], &b, 4);
++
++	hmac_sha3_512_internal (k, salt_len + 4, hmac);
++	memcpy (u, k, SHA3_512_DIGESTSIZE);
++
++	/* remaining iterations */
++	while (c > 1)
++	{
++		/* CANCELLATION CHECK: check every 1024 iterations */
++		if (pAbortKeyDerivation && (c & 1023) == 0 && *pAbortKeyDerivation)
++			return;	/* Abort derivation */
++
++		hmac_sha3_512_internal (k, SHA3_512_DIGESTSIZE, hmac);
++		for (i = 0; i < SHA3_512_DIGESTSIZE; i++)
++		{
++			u[i] ^= k[i];
++		}
++		c--;
++	}
++}
++
++void derive_key_sha3_512 (const unsigned char *pwd, int pwd_len, const unsigned char *salt, int salt_len, uint32 iterations, unsigned char *dk, int dklen, volatile long *pAbortKeyDerivation)
++{
++	hmac_sha3_512_ctx hmac;
++	SHA3_CTX* ctx;
++	unsigned char pad[SHA3_512_BLOCKSIZE];	/* 72-byte HMAC key-pad block */
++	int b, l, r;
++	unsigned char key[SHA3_512_DIGESTSIZE];
++
++	/* If the password is longer than the hash block size, let pwd = sha3_512(pwd), per HMAC. */
++	if (pwd_len > SHA3_512_BLOCKSIZE)
++	{
++		SHA3_CTX tctx;
++
++		sha3_512_init (&tctx);
++		sha3_512_update (&tctx, pwd, pwd_len);
++		sha3_512_final (&tctx, key);
++
++		pwd = key;
++		pwd_len = SHA3_512_DIGESTSIZE;
++
++		burn (&tctx, sizeof(tctx));	/* Prevent leaks */
++	}
++
++	if (dklen % SHA3_512_DIGESTSIZE)
++	{
++		l = 1 + dklen / SHA3_512_DIGESTSIZE;
++	}
++	else
++	{
++		l = dklen / SHA3_512_DIGESTSIZE;
++	}
++
++	r = dklen - (l - 1) * SHA3_512_DIGESTSIZE;
++
++	/**** Precompute HMAC Inner Digest ****/
++	ctx = &(hmac.inner_digest_ctx);
++	sha3_512_init (ctx);
++
++	for (b = 0; b < pwd_len; ++b)
++		pad[b] = (unsigned char) (pwd[b] ^ 0x36);
++	memset (&pad[pwd_len], 0x36, SHA3_512_BLOCKSIZE - pwd_len);
++
++	sha3_512_update (ctx, pad, SHA3_512_BLOCKSIZE);
++
++	/**** Precompute HMAC Outer Digest ****/
++	ctx = &(hmac.outer_digest_ctx);
++	sha3_512_init (ctx);
++
++	for (b = 0; b < pwd_len; ++b)
++		pad[b] = (unsigned char) (pwd[b] ^ 0x5C);
++	memset (&pad[pwd_len], 0x5C, SHA3_512_BLOCKSIZE - pwd_len);
++
++	sha3_512_update (ctx, pad, SHA3_512_BLOCKSIZE);
++
++	/* first l - 1 blocks */
++	for (b = 1; b < l; b++)
++	{
++		derive_u_sha3_512 (salt, salt_len, iterations, b, &hmac, pAbortKeyDerivation);
++		if (pAbortKeyDerivation && *pAbortKeyDerivation)
++			goto cancelled;
++		memcpy (dk, hmac.u, SHA3_512_DIGESTSIZE);
++		dk += SHA3_512_DIGESTSIZE;
++	}
++
++	/* last block */
++	derive_u_sha3_512 (salt, salt_len, iterations, b, &hmac, pAbortKeyDerivation);
++	if (pAbortKeyDerivation && *pAbortKeyDerivation)
++		goto cancelled;
++	memcpy (dk, hmac.u, r);
++
++cancelled:
++	/* Prevent possible leaks. */
++	burn (&hmac, sizeof(hmac));
++	burn (pad, sizeof(pad));
++	burn (key, sizeof(key));
++}
++
++#endif // TC_WINDOWS_BOOT (SHA3-512)
++
+ #ifndef TC_WINDOWS_BOOT
+ 
+ typedef struct hmac_whirlpool_ctx_struct
+@@ -1233,9 +1647,15 @@
+ 	case STREEBOG:
+ 		return L"STREEBOG-PBKDF2";
+ 
++	case SHA3_512:
++		return L"SHA3-512-PBKDF2";
++
+ #ifndef VC_DCS_DISABLE_ARGON2
+ 	case ARGON2:
+ 		return L"Argon2";
++
++	case BLAKE2B:
++		return L"BLAKE2b-PBKDF2";
+ #endif
+ 
+ 	default:		
+@@ -1283,10 +1703,20 @@
+ 				iteration_count = bBoot ? pim * 2048 : 15000 + pim * 1000;
+ 			break;
+ 
++		case SHA3_512:
++			// Non-boot PRF (no pre-boot authentication support), so no bBoot branch.
++			iteration_count = (pim == 0) ? 500000 : 15000 + pim * 1000;
++			break;
++
+ #ifndef VC_DCS_DISABLE_ARGON2
+ 		case ARGON2:
+ 			get_argon2_params (pim, &iteration_count, pMemoryCost);
+ 			break;
++
++		case BLAKE2B:
++			// Non-boot PRF (no pre-boot authentication support), so no bBoot branch.
++			iteration_count = (pim == 0) ? 500000 : 15000 + pim * 1000;
++			break;
+ #endif
+ 
+ 		default:
+diff -ruN a/src/Common/Pkcs5.h b/src/Common/Pkcs5.h
+--- a/src/Common/Pkcs5.h	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Common/Pkcs5.h	2026-07-15 21:19:12.515663431 +0000
+@@ -41,12 +41,21 @@
+ void hmac_streebog (unsigned char *k, int lk, unsigned char *d, int ld);
+ void derive_key_streebog (const unsigned char *pwd, int pwd_len, const unsigned char *salt, int salt_len, uint32 iterations, unsigned char *dk, int dklen, long volatile *pAbortKeyDerivation);
+ 
++/* HMAC-SHA3-512 PRF (FIPS 202). Output written to d/input_digest which must be at least 64 bytes long. */
++void hmac_sha3_512 (unsigned char *k, int lk, unsigned char *d, int ld);
++void derive_key_sha3_512 (const unsigned char *pwd, int pwd_len, const unsigned char *salt, int salt_len, uint32 iterations, unsigned char *dk, int dklen, long volatile *pAbortKeyDerivation);
++
+ int get_pkcs5_iteration_count (int pkcs5_prf_id, int pim, BOOL bBoot, int* pMemoryCost);
+ wchar_t *get_kdf_name (int kdf_id);
+ 
+ #ifndef VC_DCS_DISABLE_ARGON2
+ int derive_key_argon2(const unsigned char *pwd, int pwd_len, const unsigned char *salt, int salt_len, uint32 iterations, uint32 memcost, unsigned char *dk, int dklen, long volatile *pAbortKeyDerivation);
+ void get_argon2_params(int pim, int* pIterations, int* pMemcost);
++
++/* HMAC-BLAKE2b-512 PRF. Output written to d/input_digest which must be at least 64 bytes long.
++   Gated with Argon2 as it reuses the BLAKE2b primitive that ships with Argon2. */
++void hmac_blake2b (unsigned char *key, int keylen, unsigned char *input_digest, int len);
++void derive_key_blake2b (const unsigned char *pwd, int pwd_len, const unsigned char *salt, int salt_len, uint32 iterations, unsigned char *dk, int dklen, long volatile *pAbortKeyDerivation);
+ #endif
+ 
+ /* check if given PRF supported.*/
+diff -ruN a/src/Common/Random.c b/src/Common/Random.c
+--- a/src/Common/Random.c	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Common/Random.c	2026-07-15 21:25:13.160526719 +0000
+@@ -261,6 +261,7 @@
+ 		WHIRLPOOL_CTX	wctx;
+ 		blake2s_state   bctx;
+ 		blake2b_state   b2ctx;
++		SHA3_CTX		sha3ctx;
+ 		STREEBOG_CTX	stctx;
+         #endif
+ 		sha512_ctx		sctx;
+@@ -285,6 +286,16 @@
+ 			case ARGON2:
+ 				digestSize = BLAKE2B_DIGESTSIZE;
+ 				break;
++
++#ifndef VC_DCS_DISABLE_ARGON2
++			case BLAKE2B:
++				digestSize = BLAKE2B_DIGESTSIZE;
++				break;
++#endif
++
++			case SHA3_512:
++				digestSize = SHA3_512_DIGESTSIZE;
++				break;
+ 	
+ 		case WHIRLPOOL:
+ 			digestSize = WHIRLPOOL_DIGESTSIZE;
+@@ -343,6 +354,20 @@
+ 				blake2b_update(&b2ctx, pRandPool, RNG_POOL_SIZE);
+ 				blake2b_final(&b2ctx, hashOutputBuffer, BLAKE2B_OUTBYTES);
+ 				break;
++
++#ifndef VC_DCS_DISABLE_ARGON2
++			case BLAKE2B:
++				blake2b_init(&b2ctx, BLAKE2B_OUTBYTES);
++				blake2b_update(&b2ctx, pRandPool, RNG_POOL_SIZE);
++				blake2b_final(&b2ctx, hashOutputBuffer, BLAKE2B_OUTBYTES);
++				break;
++#endif
++
++			case SHA3_512:
++				sha3_512_init (&sha3ctx);
++				sha3_512_update (&sha3ctx, pRandPool, RNG_POOL_SIZE);
++				sha3_512_final (&sha3ctx, hashOutputBuffer);
++				break;
+ #endif
+ 			default:
+ 				// Unknown/wrong ID
+@@ -384,6 +409,16 @@
+ 		case STREEBOG:
+ 			burn (&stctx, sizeof(sctx));
+ 			break;
++
++#ifndef VC_DCS_DISABLE_ARGON2
++			case BLAKE2B:
++				burn (&b2ctx, sizeof(b2ctx));
++				break;
++#endif
++
++			case SHA3_512:
++				burn (&sha3ctx, sizeof(sha3ctx));
++				break;
+         #endif
+ 		default:
+ 			// Unknown/wrong ID
+diff -ruN a/src/Common/Shamir.c b/src/Common/Shamir.c
+--- a/src/Common/Shamir.c	1970-01-01 00:00:00.000000000 +0000
++++ b/src/Common/Shamir.c	2026-07-16 17:37:08.548171274 +0000
+@@ -0,0 +1,137 @@
++/*
++ * Shamir Secret Sharing over GF(2^8) — see Shamir.h.
++ */
++
++#include "Shamir.h"
++#include <string.h>
++
++/* ---- GF(2^8) with reduction polynomial 0x11B (AES), generator 0x03 ---- */
++
++static unsigned char gf_exp[512];
++static unsigned char gf_log[256];
++static int gf_ready = 0;
++
++static void gf_init (void)
++{
++	int i;
++	unsigned int x = 1;
++	for (i = 0; i < 255; i++)
++	{
++		gf_exp[i] = (unsigned char) x;
++		gf_log[x] = (unsigned char) i;
++		/* multiply x by the generator 0x03 in GF(2^8): x = x*2 XOR x, reduce by 0x11B */
++		{
++			unsigned int hi = x & 0x80;
++			x = (x << 1) & 0xff;
++			if (hi) x ^= 0x1b;      /* reduce (0x11B without the x^8 bit) */
++			x ^= gf_exp[i];         /* + original (i.e. *3 = *2 + *1) */
++		}
++	}
++	/* extend the exp table so log sums up to 508 don't need a modulo in the hot path */
++	for (i = 255; i < 512; i++)
++		gf_exp[i] = gf_exp[i - 255];
++	gf_log[0] = 0;                   /* unused; log(0) undefined */
++	gf_ready = 1;
++}
++
++static unsigned char gf_mul (unsigned char a, unsigned char b)
++{
++	if (a == 0 || b == 0) return 0;
++	return gf_exp[gf_log[a] + gf_log[b]];
++}
++
++/* multiplicative inverse: a^(-1) = g^(255 - log a) */
++static unsigned char gf_inv (unsigned char a)
++{
++	/* a != 0 required by callers */
++	return gf_exp[255 - gf_log[a]];
++}
++
++/* Evaluate the polynomial with coefficients coef[0..degree] at point x (Horner). */
++static unsigned char gf_poly_eval (const unsigned char *coef, int degree, unsigned char x)
++{
++	unsigned char r = coef[degree];
++	int i;
++	for (i = degree - 1; i >= 0; i--)
++		r = (unsigned char) (gf_mul (r, x) ^ coef[i]);
++	return r;
++}
++
++int shamir_split (const unsigned char *secret, int secret_len,
++                  int threshold, int n_shares,
++                  const unsigned char *random_bytes,
++                  ShamirShare *shares_out)
++{
++	int b, s, k;
++
++	if (!secret || !random_bytes || !shares_out) return SHAMIR_ERR_PARAM;
++	if (secret_len < 1 || secret_len > SHAMIR_MAX_SECRET) return SHAMIR_ERR_PARAM;
++	if (threshold < 2 || n_shares < threshold || n_shares > SHAMIR_MAX_SHARES) return SHAMIR_ERR_PARAM;
++
++	if (!gf_ready) gf_init();
++
++	for (s = 0; s < n_shares; s++)
++	{
++		shares_out[s].x = (unsigned char) (s + 1);   /* distinct nonzero x = 1..n */
++		shares_out[s].len = secret_len;
++	}
++
++	/* Each secret byte gets its own polynomial: coef[0] = secret byte, coef[1..t-1] = random. */
++	for (b = 0; b < secret_len; b++)
++	{
++		unsigned char coef[SHAMIR_MAX_SHARES];   /* threshold <= SHAMIR_MAX_SHARES */
++		coef[0] = secret[b];
++		for (k = 1; k < threshold; k++)
++			coef[k] = random_bytes[(k - 1) * secret_len + b];
++
++		for (s = 0; s < n_shares; s++)
++			shares_out[s].y[b] = gf_poly_eval (coef, threshold - 1, shares_out[s].x);
++
++		{ volatile unsigned char *p = coef; size_t n = sizeof (coef); while (n--) *p++ = 0; }
++	}
++
++	return SHAMIR_OK;
++}
++
++int shamir_combine (const ShamirShare *shares, int count,
++                    unsigned char *secret_out, int *secret_len_out)
++{
++	int i, j, b, len;
++
++	if (!shares || !secret_out || count < 2 || count > SHAMIR_MAX_SHARES) return SHAMIR_ERR_PARAM;
++	len = shares[0].len;
++	if (len < 1 || len > SHAMIR_MAX_SECRET) return SHAMIR_ERR_PARAM;
++	for (i = 0; i < count; i++)
++	{
++		if (shares[i].len != len || shares[i].x == 0) return SHAMIR_ERR_PARAM;
++		for (j = i + 1; j < count; j++)
++			if (shares[i].x == shares[j].x) return SHAMIR_ERR_PARAM;   /* x must be distinct */
++	}
++
++	if (!gf_ready) gf_init();
++
++	/* Lagrange interpolation at x = 0, per secret byte:
++	   secret = sum_i y_i * prod_{j!=i} x_j / (x_j - x_i)   (subtraction == XOR in GF(2^8)) */
++	for (b = 0; b < len; b++)
++	{
++		unsigned char acc = 0;
++		for (i = 0; i < count; i++)
++		{
++			unsigned char num = 1, den = 1;
++			for (j = 0; j < count; j++)
++			{
++				if (j == i) continue;
++				num = gf_mul (num, shares[j].x);
++				den = gf_mul (den, (unsigned char) (shares[j].x ^ shares[i].x));
++			}
++			{
++				unsigned char li = gf_mul (num, gf_inv (den));      /* Lagrange basis at 0 */
++				acc ^= gf_mul (shares[i].y[b], li);
++			}
++		}
++		secret_out[b] = acc;
++	}
++
++	if (secret_len_out) *secret_len_out = len;
++	return SHAMIR_OK;
++}
+diff -ruN a/src/Common/Shamir.h b/src/Common/Shamir.h
+--- a/src/Common/Shamir.h	1970-01-01 00:00:00.000000000 +0000
++++ b/src/Common/Shamir.h	2026-07-16 17:36:44.832171681 +0000
+@@ -0,0 +1,63 @@
++/*
++ * Shamir Secret Sharing over GF(2^8) (AES field, reduction polynomial 0x11B).
++ *
++ * Splits a secret into N shares such that any THRESHOLD of them reconstruct it and any fewer reveal
++ * nothing. Each secret byte is an independent degree-(threshold-1) polynomial; shares are evaluated
++ * at distinct nonzero x-coordinates and reconstruction is Lagrange interpolation at x = 0.
++ *
++ * Used by the VeraCrypt hardware-key-factor path to build a threshold / split-key factor: the
++ * reconstructed secret is mixed into the password before PBKDF2 (see HardwareKeyFactor, RAW_SECRET
++ * backend), so a volume can require e.g. 2-of-3 of {passphrase share, YubiKey share, recovery share}
++ * with no header-format change. Standalone and dependency-free so it can be unit-tested in isolation.
++ */
++
++#ifndef TC_HEADER_Common_Shamir
++#define TC_HEADER_Common_Shamir
++
++#if defined(__cplusplus)
++extern "C" {
++#endif
++
++#define SHAMIR_MAX_SHARES   16
++#define SHAMIR_MAX_SECRET   64
++
++/* One share: an x-coordinate (1..255, distinct per share) and one y-byte per secret byte. */
++typedef struct
++{
++	unsigned char x;
++	unsigned char y[SHAMIR_MAX_SECRET];
++	int           len;              /* number of valid y bytes (== secret length) */
++} ShamirShare;
++
++/* Result codes (0 = OK, negative = error). */
++#define SHAMIR_OK            0
++#define SHAMIR_ERR_PARAM   (-1)
++
++/*
++ * Split 'secret' (secret_len bytes, 1..SHAMIR_MAX_SECRET) into n_shares, reconstructable by any
++ * 'threshold' of them (2 <= threshold <= n_shares <= SHAMIR_MAX_SHARES).
++ *
++ * 'random_bytes' must supply (threshold-1)*secret_len cryptographically-random bytes (the non-constant
++ * polynomial coefficients). Passing an explicit buffer keeps this deterministic for testing and forces
++ * the caller to use a real CSPRNG in production. Shares are written to shares_out[0..n_shares-1] with
++ * x = 1..n_shares. Returns SHAMIR_OK or a negative code.
++ */
++int shamir_split (const unsigned char *secret, int secret_len,
++                  int threshold, int n_shares,
++                  const unsigned char *random_bytes,
++                  ShamirShare *shares_out);
++
++/*
++ * Reconstruct the secret from 'count' shares (count must be >= the threshold used at split time; all
++ * shares must have the same len and distinct x). Writes secret_len bytes to secret_out. Returns
++ * SHAMIR_OK or a negative code. Note: fewer than the true threshold, or wrong shares, yield an
++ * incorrect secret (by design) rather than an error.
++ */
++int shamir_combine (const ShamirShare *shares, int count,
++                    unsigned char *secret_out, int *secret_len_out);
++
++#if defined(__cplusplus)
++}
++#endif
++
++#endif /* TC_HEADER_Common_Shamir */
+diff -ruN a/src/Common/Tests.c b/src/Common/Tests.c
+--- a/src/Common/Tests.c	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Common/Tests.c	2026-07-15 21:25:57.310653108 +0000
+@@ -1763,6 +1763,28 @@
+ 	if (memcmp (dk, "\x8d\x51\xfa\x31\x46\x25\x37\x67\xa3\x29\x6b\x3c\x6b\xc1\x5d\xb2\xee\xe1\x6c\x28\x00\x26\xea\x08\x65\x9c\x12\xf1\x07\xde\x0d\xb9\x9b\x4f\x39\xfa\xc6\x80\x26\xb1\x8f\x8e\x48\x89\x85\x2d\x24\x2d", 48) != 0)
+ 		return FALSE;
+ 
++#ifndef VC_DCS_DISABLE_ARGON2
++	/* PKCS-5 test 1 with HMAC-BLAKE2b-512 used as the PRF */
++	derive_key_blake2b ((unsigned char*)"password", 8, (unsigned char*)"\x12\x34\x56\x78", 4, 5, dk, 4, NULL);
++	if (memcmp (dk, "\x97\x78\xa4\x7f", 4) != 0)
++		return FALSE;
++
++	/* PKCS-5 test 2 with HMAC-BLAKE2b-512 used as the PRF (derives a key longer than the underlying hash) */
++	derive_key_blake2b ((unsigned char*)"password", 8, (unsigned char*)"\x12\x34\x56\x78", 4, 5, dk, 96, NULL);
++	if (memcmp (dk, "\x97\x78\xa4\x7f\xaa\x44\xcf\x2d\x2d\x05\x80\x68\x78\x55\xff\xc2\x2c\x78\xba\x94\x12\x2e\x70\xc0\x3e\x86\xdc\x3b\xfd\xea\x31\x23\x71\x5a\x2a\xa2\x4f\x87\x1a\xc1\xd4\x58\xd4\x64\xdf\x9a\xed\x1c\x2d\x52\xf2\x9d\xca\x3a\x86\x9a\xea\xba\x02\xdb\x21\xb9\x2d\xbd\xca\x60\xdd\x69\xa5\x6f\x97\xc7\xef\xa7\x0a\x75\x64\x3b\x1f\xe1\x62\xb0\x67\x0f\x0c\x55\x03\x20\xe4\x23\xcb\x76\xe4\x13\xc7\x05", 96) != 0)
++		return FALSE;
++#endif
++
++	/* PKCS-5 test 1 with HMAC-SHA3-512 used as the PRF */
++	derive_key_sha3_512 ((unsigned char*)"password", 8, (unsigned char*)"\x12\x34\x56\x78", 4, 5, dk, 4, NULL);
++	if (memcmp (dk, "\x97\x1f\x87\x31", 4) != 0)
++		return FALSE;
++
++	/* PKCS-5 test 2 with HMAC-SHA3-512 used as the PRF (derives a key longer than the underlying hash) */
++	derive_key_sha3_512 ((unsigned char*)"password", 8, (unsigned char*)"\x12\x34\x56\x78", 4, 5, dk, 96, NULL);
++	if (memcmp (dk, "\x97\x1f\x87\x31\xbc\xd9\x8e\x20\x89\xfa\xb7\x03\xbe\x3f\x86\xb9\x3a\x9f\x83\xa5\x91\xa5\x7a\xd5\xbc\xb1\xca\xf6\xf1\xde\xb7\x08\x0c\x20\x11\xcb\x3c\xda\x71\x32\xa8\x4e\x91\xbc\x53\x6b\x35\x71\x35\x56\x8c\x18\x81\x0d\xef\x2e\x79\x1c\x6b\xd6\x22\xf0\x8a\x4f\x06\x19\xfb\x98\x68\xfd\xd5\x03\xbf\xaa\xb2\x04\x6f\x5a\x07\x11\xea\xb0\xe8\xcc\xb2\xa3\xcf\x31\xf4\x00\x09\x69\x8d\x11\xa0\x2c", 96) != 0)
++		return FALSE;
++
+ 	/* PKCS-5 test 1 with HMAC-Whirlpool used as the PRF */
+ 	derive_key_whirlpool ((unsigned char*)"password", 8, (unsigned char*)"\x12\x34\x56\x78", 4, 5, dk, 4, NULL);
+ 	if (memcmp (dk, "\x50\x7c\x36\x6f", 4) != 0)
+diff -ruN a/src/Common/Volumes.c b/src/Common/Volumes.c
+--- a/src/Common/Volumes.c	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Common/Volumes.c	2026-07-15 22:39:05.435566585 +0000
+@@ -37,6 +37,9 @@
+ #include "Endian.h"
+ #include "Volumes.h"
+ #include "Pkcs5.h"
++#if defined(VC_ENABLE_HKF)
++#include "HardwareKeyFactor.h"
++#endif
+ 
+ #if defined(_WIN32) && !defined(_UEFI)
+ #include <Strsafe.h>
+@@ -324,6 +327,16 @@
+ 	// PKCS5 is used to derive the primary header key(s) and secondary header key(s) (XTS mode) from the password
+ 	memcpy (keyInfo->salt, encryptedHeader + HEADER_SALT_OFFSET, PKCS5_SALT_SIZE);
+ 
++#if defined(VC_ENABLE_HKF)
++	// Optional hardware key factor: mix the token response (computed over THIS header's salt)
++	// into the password before PBKDF2. A configured-but-missing/failed token aborts the mount.
++	if (HKFApplyIfConfigured (keyInfo->userKey, &keyInfo->keyLength, keyInfo->salt, PKCS5_SALT_SIZE) != HKF_OK)
++	{
++		status = ERR_KEY_DERIVATION_FAILED;
++		goto err;
++	}
++#endif
++
+ 	// Test all available PKCS5 PRFs
+ 	for (enqPkcs5Prf = FIRST_PRF_ID; enqPkcs5Prf <= LAST_PRF_ID || queuedWorkItems > 0; ++enqPkcs5Prf)
+ 	{
+@@ -458,6 +471,11 @@
+ 
+ 
+ #ifndef VC_DCS_DISABLE_ARGON2
++			case BLAKE2B:
++				derive_key_blake2b (keyInfo->userKey, keyInfo->keyLength, keyInfo->salt,
++					PKCS5_SALT_SIZE, keyInfo->noIterations, dk, GetMaxPkcs5OutSize(), effectiveAbortKeyDerivation);
++				break;
++
+ 			case ARGON2:
+ 				{
+ 					int derivationResult = derive_key_argon2(keyInfo->userKey, keyInfo->keyLength, keyInfo->salt,
+@@ -476,6 +494,10 @@
+ 				}
+ 				break;
+ #endif
++			case SHA3_512:
++				derive_key_sha3_512 (keyInfo->userKey, keyInfo->keyLength, keyInfo->salt,
++					PKCS5_SALT_SIZE, keyInfo->noIterations, dk, GetMaxPkcs5OutSize(), effectiveAbortKeyDerivation);
++				break;
+ #endif	
+                         default:
+ 				// Unknown/wrong ID
+@@ -1137,6 +1159,17 @@
+ 		goto err;
+ 	}
+ 
++#if defined(VC_ENABLE_HKF)
++	// Optional hardware key factor (same seam as mount): mix the token response over the freshly
++	// generated salt into the password before PBKDF2 so the new volume requires the token to open.
++	if (password && HKFApplyIfConfigured (keyInfo.userKey, &keyInfo.keyLength, keyInfo.salt, PKCS5_SALT_SIZE) != HKF_OK)
++	{
++		crypto_close (cryptoInfo);
++		retVal = ERR_KEY_DERIVATION_FAILED;
++		goto err;
++	}
++#endif
++
+ 	if (password)
+ 	{
+ 		// PBKDF2 (PKCS5) is used to derive primary header key(s) and secondary header key(s) (XTS) from the password/keyfiles
+@@ -1169,6 +1202,11 @@
+ 			break;
+ 
+ #ifndef VC_DCS_DISABLE_ARGON2
++		case BLAKE2B:
++			derive_key_blake2b (keyInfo.userKey, keyInfo.keyLength, keyInfo.salt,
++				PKCS5_SALT_SIZE, keyInfo.noIterations, dk, GetMaxPkcs5OutSize(), NULL);
++			break;
++
+ 		case ARGON2:
+ 			{
+ 				int derivationResult = derive_key_argon2(keyInfo.userKey, keyInfo.keyLength, keyInfo.salt,
+@@ -1182,6 +1220,10 @@
+ 			}
+ 			break;
+ #endif
++		case SHA3_512:
++			derive_key_sha3_512 (keyInfo.userKey, keyInfo.keyLength, keyInfo.salt,
++				PKCS5_SALT_SIZE, keyInfo.noIterations, dk, GetMaxPkcs5OutSize(), NULL);
++			break;
+         #endif
+ 		default:
+ 			// Unknown/wrong ID
+diff -ruN a/src/Core/VolumeCreator.cpp b/src/Core/VolumeCreator.cpp
+--- a/src/Core/VolumeCreator.cpp	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Core/VolumeCreator.cpp	2026-07-16 17:19:04.921583746 +0000
+@@ -16,6 +16,9 @@
+ #include "Volume/EncryptionModeWolfCryptXTS.h"
+ #endif
+ #include "Core.h"
++#if defined(VC_ENABLE_HKF)
++#include "Volume/HardwareKeyFactorMix.h"
++#endif
+ 
+ #ifdef TC_UNIX
+ #include <sys/types.h>
+@@ -148,7 +151,16 @@
+ 				SecureBuffer backupHeaderSalt (VolumeHeader::GetSaltSize());
+ 				RandomNumberGenerator::GetData (backupHeaderSalt);
+ 
+-				int derivationResult = Options->VolumeHeaderKdf->DeriveKey (HeaderKey, *PasswordKey, Options->Pim, backupHeaderSalt);
++#if defined(VC_ENABLE_HKF)
++				// Gate by volume type: the hidden volume's headers get the factor; a decoy (Normal)
++				// outer volume under HKF_APPLY_HIDDEN_ONLY is created password-only.
++				shared_ptr <VolumePassword> creatorPassword =
++					HKFShouldApply (g_hkfActiveConfig, Options->Type == VolumeType::Hidden)
++						? HKFMixPassword (*PasswordKey, backupHeaderSalt) : PasswordKey;
++#else
++				shared_ptr <VolumePassword> creatorPassword = PasswordKey;
++#endif
++				int derivationResult = Options->VolumeHeaderKdf->DeriveKey (HeaderKey, *creatorPassword, Options->Pim, backupHeaderSalt);
+ 				if (derivationResult != 0)
+ 					throw ExternalException (SRC_POS, Options->VolumeHeaderKdf->GetDerivationFailureMessage (derivationResult));
+ 
+@@ -356,7 +368,14 @@
+ 			// Header key
+ 			HeaderKey.Allocate (VolumeHeader::GetHeaderKeyDerivationSize (options->VolumeHeaderKdf));
+ 			PasswordKey = Keyfile::ApplyListToPassword (options->Keyfiles, options->Password, options->EMVSupportEnabled);
+-			int derivationResult = options->VolumeHeaderKdf->DeriveKey (HeaderKey, *PasswordKey, options->Pim, salt);
++#if defined(VC_ENABLE_HKF)
++			shared_ptr <VolumePassword> creatorPassword =
++				HKFShouldApply (g_hkfActiveConfig, options->Type == VolumeType::Hidden)
++					? HKFMixPassword (*PasswordKey, salt) : PasswordKey;
++#else
++			shared_ptr <VolumePassword> creatorPassword = PasswordKey;
++#endif
++			int derivationResult = options->VolumeHeaderKdf->DeriveKey (HeaderKey, *creatorPassword, options->Pim, salt);
+ 			if (derivationResult != 0)
+ 				throw ExternalException (SRC_POS, options->VolumeHeaderKdf->GetDerivationFailureMessage (derivationResult));
+ 			headerOptions.HeaderKey = HeaderKey;
+diff -ruN a/src/Crypto/Crypto.vcxproj b/src/Crypto/Crypto.vcxproj
+--- a/src/Crypto/Crypto.vcxproj	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Crypto/Crypto.vcxproj	2026-07-15 21:28:39.871130608 +0000
+@@ -279,6 +279,7 @@
+       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
+     </ClCompile>
+     <ClCompile Include="Sha2Intel.c" />
++    <ClCompile Include="Sha3.c" />
+     <ClCompile Include="Streebog.c" />
+     <ClCompile Include="t1ha2.c" />
+     <ClCompile Include="t1ha2_selfcheck.c" />
+@@ -312,6 +313,7 @@
+     <ClInclude Include="SerpentFast.h" />
+     <ClInclude Include="SerpentFast_sbox.h" />
+     <ClInclude Include="Sha2.h" />
++    <ClInclude Include="Sha3.h" />
+     <ClInclude Include="Streebog.h" />
+     <ClInclude Include="t1ha.h" />
+     <ClInclude Include="t1ha_bits.h" />
+diff -ruN a/src/Crypto/Crypto.vcxproj.filters b/src/Crypto/Crypto.vcxproj.filters
+--- a/src/Crypto/Crypto.vcxproj.filters	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Crypto/Crypto.vcxproj.filters	2026-07-15 21:28:53.476438678 +0000
+@@ -48,6 +48,9 @@
+     <ClCompile Include="Streebog.c">
+       <Filter>Source Files</Filter>
+     </ClCompile>
++    <ClCompile Include="Sha3.c">
++      <Filter>Source Files</Filter>
++    </ClCompile>
+     <ClCompile Include="SerpentFast.c">
+       <Filter>Source Files</Filter>
+     </ClCompile>
+@@ -164,6 +167,9 @@
+     <ClInclude Include="Whirlpool.h">
+       <Filter>Header Files</Filter>
+     </ClInclude>
++    <ClInclude Include="Sha3.h">
++      <Filter>Header Files</Filter>
++    </ClInclude>
+     <ClInclude Include="kuznyechik.h">
+       <Filter>Header Files</Filter>
+     </ClInclude>
+diff -ruN a/src/Crypto/Sha3.c b/src/Crypto/Sha3.c
+--- a/src/Crypto/Sha3.c	1970-01-01 00:00:00.000000000 +0000
++++ b/src/Crypto/Sha3.c	2026-07-15 21:15:01.820885555 +0000
+@@ -0,0 +1,121 @@
++/*
++ * SHA-3 (Keccak) — FIPS 202, SHA3-512 variant. Public domain (CC0).
++ * See Sha3.h for design notes (endian-portable absorb/squeeze).
++ */
++
++#include "Sha3.h"
++
++#define ROTL64(x, y) (((x) << (y)) | ((x) >> (64 - (y))))
++
++/* Keccak-f[1600] round constants (iota). */
++static const uint64 keccakf_rndc[24] =
++{
++	0x0000000000000001ULL, 0x0000000000008082ULL, 0x800000000000808aULL,
++	0x8000000080008000ULL, 0x000000000000808bULL, 0x0000000080000001ULL,
++	0x8000000080008081ULL, 0x8000000000008009ULL, 0x000000000000008aULL,
++	0x0000000000000088ULL, 0x0000000080008009ULL, 0x000000008000000aULL,
++	0x000000008000808bULL, 0x800000000000008bULL, 0x8000000000008089ULL,
++	0x8000000000008003ULL, 0x8000000000008002ULL, 0x8000000000000080ULL,
++	0x000000000000800aULL, 0x800000008000000aULL, 0x8000000080008081ULL,
++	0x8000000000008080ULL, 0x0000000080000001ULL, 0x8000000080008008ULL
++};
++
++/* Rho rotation offsets. */
++static const int keccakf_rotc[24] =
++{
++	1, 3, 6, 10, 15, 21, 28, 36, 45, 55, 2, 14,
++	27, 41, 56, 8, 25, 43, 62, 18, 39, 61, 20, 44
++};
++
++/* Pi lane permutation. */
++static const int keccakf_piln[24] =
++{
++	10, 7, 11, 17, 18, 3, 5, 16, 8, 21, 24, 4,
++	15, 23, 19, 13, 12, 2, 20, 14, 22, 9, 6, 1
++};
++
++static void keccakf (uint64 st[25])
++{
++	int i, j, r;
++	uint64 t, bc[5];
++
++	for (r = 0; r < 24; r++)
++	{
++		/* Theta */
++		for (i = 0; i < 5; i++)
++			bc[i] = st[i] ^ st[i + 5] ^ st[i + 10] ^ st[i + 15] ^ st[i + 20];
++
++		for (i = 0; i < 5; i++)
++		{
++			t = bc[(i + 4) % 5] ^ ROTL64 (bc[(i + 1) % 5], 1);
++			for (j = 0; j < 25; j += 5)
++				st[j + i] ^= t;
++		}
++
++		/* Rho and Pi */
++		t = st[1];
++		for (i = 0; i < 24; i++)
++		{
++			j = keccakf_piln[i];
++			bc[0] = st[j];
++			st[j] = ROTL64 (t, keccakf_rotc[i]);
++			t = bc[0];
++		}
++
++		/* Chi */
++		for (j = 0; j < 25; j += 5)
++		{
++			for (i = 0; i < 5; i++)
++				bc[i] = st[j + i];
++			for (i = 0; i < 5; i++)
++				st[j + i] ^= (~bc[(i + 1) % 5]) & bc[(i + 2) % 5];
++		}
++
++		/* Iota */
++		st[0] ^= keccakf_rndc[r];
++	}
++}
++
++void sha3_512_init (SHA3_CTX *ctx)
++{
++	int i;
++	for (i = 0; i < 25; i++)
++		ctx->st[i] = 0;
++	ctx->pt = 0;
++	ctx->rsiz = SHA3_512_BLOCKSIZE;    /* 72 */
++	ctx->mdlen = SHA3_512_DIGESTSIZE;  /* 64 */
++}
++
++void sha3_512_update (SHA3_CTX *ctx, const unsigned char *in, size_t inlen)
++{
++	size_t i;
++	int j = ctx->pt;
++
++	for (i = 0; i < inlen; i++)
++	{
++		/* XOR input byte into little-endian lane position j (endian-portable) */
++		ctx->st[j >> 3] ^= (uint64) in[i] << (8 * (j & 7));
++		j++;
++		if (j >= ctx->rsiz)
++		{
++			keccakf (ctx->st);
++			j = 0;
++		}
++	}
++	ctx->pt = j;
++}
++
++void sha3_512_final (SHA3_CTX *ctx, unsigned char *md)
++{
++	int i;
++
++	/* pad10*1 with SHA-3 domain separation (0x06 ... 0x80) */
++	ctx->st[ctx->pt >> 3] ^= (uint64) 0x06 << (8 * (ctx->pt & 7));
++	ctx->st[(ctx->rsiz - 1) >> 3] ^= (uint64) 0x80 << (8 * ((ctx->rsiz - 1) & 7));
++
++	keccakf (ctx->st);
++
++	/* squeeze: mdlen (64) <= rate (72), so a single squeeze suffices */
++	for (i = 0; i < ctx->mdlen; i++)
++		md[i] = (unsigned char) ((ctx->st[i >> 3] >> (8 * (i & 7))) & 0xFF);
++}
+diff -ruN a/src/Crypto/Sha3.h b/src/Crypto/Sha3.h
+--- a/src/Crypto/Sha3.h	1970-01-01 00:00:00.000000000 +0000
++++ b/src/Crypto/Sha3.h	2026-07-15 21:14:42.112884824 +0000
+@@ -0,0 +1,45 @@
++/*
++ * SHA-3 (Keccak) — FIPS 202, SHA3-512 variant.
++ *
++ * Portable public-domain implementation for VeraCrypt. The Keccak-f[1600]
++ * permutation and sponge follow the reference specification; absorb/squeeze use
++ * explicit little-endian lane arithmetic so the code is correct on both little-
++ * and big-endian hosts (no reinterpretation of 64-bit lanes as raw bytes).
++ *
++ * SHA3-512: rate r = 72 bytes (576 bits), capacity c = 1024 bits, digest = 64 bytes.
++ * The HMAC block size for SHA3-512 is the rate, i.e. 72 bytes.
++ *
++ * This implementation is dedicated to the public domain (CC0). It carries no
++ * additional restrictions beyond those of the surrounding VeraCrypt distribution.
++ */
++
++#ifndef TC_HEADER_Crypto_Sha3
++#define TC_HEADER_Crypto_Sha3
++
++#include "Common/Tcdefs.h"
++
++#if defined(__cplusplus)
++extern "C" {
++#endif
++
++#define SHA3_512_BLOCKSIZE   72   /* rate in bytes (HMAC block size)   */
++#define SHA3_512_DIGESTSIZE  64   /* 512-bit output                    */
++
++typedef struct SHA3_CTX_struct
++{
++	uint64 st[25];   /* 1600-bit Keccak state as 25 little-endian lanes */
++	int pt;          /* current byte offset within the rate            */
++	int rsiz;        /* rate in bytes                                  */
++	int mdlen;       /* digest length in bytes                         */
++} SHA3_CTX;
++
++/* SHA3-512 streaming API (mirrors sha512_begin/hash/end and blake2s_init/update/final). */
++void sha3_512_init (SHA3_CTX *ctx);
++void sha3_512_update (SHA3_CTX *ctx, const unsigned char *in, size_t inlen);
++void sha3_512_final (SHA3_CTX *ctx, unsigned char *md);  /* writes SHA3_512_DIGESTSIZE bytes */
++
++#if defined(__cplusplus)
++}
++#endif
++
++#endif // TC_HEADER_Crypto_Sha3
+diff -ruN a/src/Main/CommandLineInterface.cpp b/src/Main/CommandLineInterface.cpp
+--- a/src/Main/CommandLineInterface.cpp	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Main/CommandLineInterface.cpp	2026-07-16 17:45:36.389289218 +0000
+@@ -95,6 +95,15 @@
+ 		parser.AddOption (L"",	L"fs-options",			_("Filesystem mount options"));
+ #endif
+ 		parser.AddOption (L"",	L"hash",				_("Header key derivation algorithm"));
++#if defined(VC_ENABLE_HKF)
++		parser.AddOption (L"",	L"hkf-backend",			_("Hardware key factor: none|yubikey|fido2|simulator"));
++		parser.AddOption (L"",	L"hkf-yk-slot",			_("YubiKey HMAC-SHA1 slot (1 or 2)"));
++		parser.AddOption (L"",	L"hkf-fido-rp",			_("FIDO2 relying-party id"));
++		parser.AddOption (L"",	L"hkf-fido-credid",		_("FIDO2 credential id (hex)"));
++		parser.AddOption (L"",	L"hkf-fido-pin",			_("FIDO2 device PIN (optional)"));
++		parser.AddOption (L"",	L"hkf-sim-secret",		_("Simulator secret (hex, testing only)"));
++		parser.AddOption (L"",	L"hkf-sim-mac",			_("Simulator MAC 1=HMAC-SHA1 2=HMAC-SHA256 (testing only)"));
++#endif
+ 		parser.AddSwitch (L"h", L"help",				_("Display detailed command line help"), wxCMD_LINE_OPTION_HELP);
+ 		parser.AddSwitch (L"",	L"import-token-keyfiles", _("Import keyfiles to security token"));
+ 		parser.AddOption (L"k", L"keyfiles",			_("Keyfiles"));
+@@ -550,6 +559,28 @@
+ 				throw_err (LangString["PARAMETER_INCORRECT"] + L": " + str);
+ 		}
+ 
++#if defined(VC_ENABLE_HKF)
++		{
++			string hkfBackend, hkfRp, hkfCredId, hkfPin, hkfSimSecret;
++			int hkfYkSlot = 2, hkfSimMac = 1;
++			wxString v;
++			if (parser.Found (L"hkf-backend", &v))     hkfBackend   = string (v.mb_str());
++			if (parser.Found (L"hkf-fido-rp", &v))     hkfRp        = string (v.mb_str());
++			if (parser.Found (L"hkf-fido-credid", &v)) hkfCredId    = string (v.mb_str());
++			if (parser.Found (L"hkf-fido-pin", &v))    hkfPin       = string (v.mb_str());
++			if (parser.Found (L"hkf-sim-secret", &v))  hkfSimSecret = string (v.mb_str());
++			if (parser.Found (L"hkf-yk-slot", &v))     hkfYkSlot    = StringConverter::ToInt32 (wstring (v));
++			if (parser.Found (L"hkf-sim-mac", &v))     hkfSimMac    = StringConverter::ToInt32 (wstring (v));
++
++			string hkfError;
++			if (!BuildHKFConfig (hkfBackend, hkfYkSlot, hkfRp, hkfCredId, hkfPin, hkfSimSecret, hkfSimMac, ArgHKFConfig, hkfError))
++				throw_err (wxString (L"Hardware key factor: ") + wxString (hkfError.c_str(), wxConvUTF8));
++
++			if (ArgHKFConfig.backend != HKF_BACKEND_NONE)
++				HKFSetActiveConfig (&ArgHKFConfig);   // applies to this process's mount/create
++		}
++#endif
++
+ 		if (parser.Found (L"protect-hidden", &str))
+ 		{
+ 			if (str == L"yes")
+diff -ruN a/src/Main/CommandLineInterface.h b/src/Main/CommandLineInterface.h
+--- a/src/Main/CommandLineInterface.h	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Main/CommandLineInterface.h	2026-07-16 17:45:36.386029464 +0000
+@@ -21,6 +21,9 @@
+ #include "UserPreferences.h"
+ #include "UserInterfaceType.h"
+ #include "Volume/Pkcs5Kdf.h"
++#if defined(VC_ENABLE_HKF)
++#include "HardwareKeyFactorCli.h"
++#endif
+ 
+ namespace VeraCrypt
+ {
+@@ -81,6 +84,9 @@
+ 		bool ArgNoHiddenVolumeProtection;
+ 		shared_ptr <VolumePassword> ArgPassword;
+ 		int ArgPim;
++#if defined(VC_ENABLE_HKF)
++		HKFConfig ArgHKFConfig;
++#endif
+ 		bool ArgQuick;
+ 		FilesystemPath ArgRandomSourcePath;
+ 		uint64 ArgSize;
+diff -ruN a/src/Main/HardwareKeyFactorCli.h b/src/Main/HardwareKeyFactorCli.h
+--- a/src/Main/HardwareKeyFactorCli.h	1970-01-01 00:00:00.000000000 +0000
++++ b/src/Main/HardwareKeyFactorCli.h	2026-07-16 03:53:59.389643659 +0000
+@@ -0,0 +1,97 @@
++/*
++ * HardwareKeyFactorCli — turns command-line option strings into a validated HKFConfig, and is the
++ * piece the wxWidgets option glue in Main/CommandLineInterface.cpp calls. It is deliberately free of
++ * any wx dependency so it can be unit-tested on its own (see verification/hkf_cli_test.cpp).
++ *
++ * Suggested CLI options (registered in CommandLineInterface.cpp):
++ *   --hkf-backend <none|yubikey|fido2|simulator>
++ *   --hkf-yk-slot <1|2>                     (yubikey; default 2)
++ *   --hkf-fido-rp <relying-party-id>        (fido2)
++ *   --hkf-fido-credid <hex>                 (fido2; credential id from enrollment)
++ *   --hkf-fido-pin <pin>                    (fido2; optional)
++ *   --hkf-sim-secret <hex> --hkf-sim-mac <1|2>   (simulator; testing only)
++ */
++
++#ifndef TC_HEADER_Main_HardwareKeyFactorCli
++#define TC_HEADER_Main_HardwareKeyFactorCli
++
++#include <string>
++#include <cstring>
++
++extern "C" {
++#include "Common/HardwareKeyFactor.h"
++}
++
++namespace VeraCrypt
++{
++	inline bool HKFHexToBytes (const std::string &hex, unsigned char *out, int maxLen, int &outLen, std::string &error)
++	{
++		if (hex.size() % 2 != 0) { error = "hex value must have an even number of digits"; return false; }
++		int n = (int)(hex.size() / 2);
++		if (n > maxLen) { error = "hex value is too long"; return false; }
++		for (int i = 0; i < n; i++)
++		{
++			int hi = -1, lo = -1;
++			char ch = hex[2*i], cl = hex[2*i+1];
++			if      (ch >= '0' && ch <= '9') hi = ch - '0';
++			else if (ch >= 'a' && ch <= 'f') hi = ch - 'a' + 10;
++			else if (ch >= 'A' && ch <= 'F') hi = ch - 'A' + 10;
++			if      (cl >= '0' && cl <= '9') lo = cl - '0';
++			else if (cl >= 'a' && cl <= 'f') lo = cl - 'a' + 10;
++			else if (cl >= 'A' && cl <= 'F') lo = cl - 'A' + 10;
++			if (hi < 0 || lo < 0) { error = "invalid hex digit"; return false; }
++			out[i] = (unsigned char)((hi << 4) | lo);
++		}
++		outLen = n;
++		return true;
++	}
++
++	/* Fill cfg from parsed option strings. Returns false and sets 'error' on invalid input.
++	   An empty / "none" backend yields HKF_BACKEND_NONE (feature off). */
++	inline bool BuildHKFConfig (const std::string &backend, int ykSlot,
++	                            const std::string &fidoRp, const std::string &fidoCredIdHex, const std::string &fidoPin,
++	                            const std::string &simSecretHex, int simMac,
++	                            HKFConfig &cfg, std::string &error)
++	{
++		memset (&cfg, 0, sizeof cfg);
++
++		if (backend.empty() || backend == "none")
++		{
++			cfg.backend = HKF_BACKEND_NONE;
++			return true;
++		}
++		if (backend == "yubikey" || backend == "yk")
++		{
++			cfg.backend = HKF_BACKEND_YK_HMAC_SHA1;
++			if (ykSlot != 1 && ykSlot != 2) { error = "--hkf-yk-slot must be 1 or 2"; return false; }
++			cfg.ykSlot = ykSlot;
++			cfg.ykMayBlock = 1;
++			return true;
++		}
++		if (backend == "fido2")
++		{
++			cfg.backend = HKF_BACKEND_FIDO2_HMAC_SECRET;
++			if (fidoRp.empty()) { error = "--hkf-fido-rp is required for fido2"; return false; }
++			if (fidoRp.size() >= sizeof (cfg.fidoRpId)) { error = "--hkf-fido-rp is too long"; return false; }
++			strncpy (cfg.fidoRpId, fidoRp.c_str(), sizeof (cfg.fidoRpId) - 1);
++			if (fidoCredIdHex.empty()) { error = "--hkf-fido-credid is required for fido2"; return false; }
++			if (!HKFHexToBytes (fidoCredIdHex, cfg.fidoCredId, HKF_MAX_CRED_ID, cfg.fidoCredIdLen, error)) return false;
++			if (fidoPin.size() >= sizeof (cfg.fidoPin)) { error = "--hkf-fido-pin is too long"; return false; }
++			if (!fidoPin.empty()) strncpy (cfg.fidoPin, fidoPin.c_str(), sizeof (cfg.fidoPin) - 1);
++			return true;
++		}
++		if (backend == "simulator" || backend == "sim")
++		{
++			cfg.backend = HKF_BACKEND_SIMULATOR;
++			if (simMac != 1 && simMac != 2) { error = "--hkf-sim-mac must be 1 or 2"; return false; }
++			cfg.simMac = simMac;
++			if (!HKFHexToBytes (simSecretHex, cfg.simSecret, (int) sizeof (cfg.simSecret), cfg.simSecretLen, error)) return false;
++			if (cfg.simSecretLen < 1) { error = "--hkf-sim-secret is required for simulator"; return false; }
++			return true;
++		}
++		error = "unknown --hkf-backend '" + backend + "' (expected none|yubikey|fido2|simulator)";
++		return false;
++	}
++}
++
++#endif /* TC_HEADER_Main_HardwareKeyFactorCli */
+diff -ruN a/src/Volume/HardwareKeyFactorMix.h b/src/Volume/HardwareKeyFactorMix.h
+--- a/src/Volume/HardwareKeyFactorMix.h	1970-01-01 00:00:00.000000000 +0000
++++ b/src/Volume/HardwareKeyFactorMix.h	2026-07-16 03:50:09.641650290 +0000
+@@ -0,0 +1,60 @@
++/*
++ * HardwareKeyFactorMix — C++ glue between the C HardwareKeyFactor module and the Linux/macOS
++ * application's key-derivation path (Volume/, Core/). It produces a VolumePassword with the token's
++ * response mixed in, so VolumeHeader::Decrypt (mount) and VolumeCreator (create) can require a
++ * hardware token. See Common/HardwareKeyFactor.h for the design and Common/Volumes.c for the
++ * equivalent C-path hooks used by the Windows driver.
++ */
++
++#ifndef TC_HEADER_Volume_HardwareKeyFactorMix
++#define TC_HEADER_Volume_HardwareKeyFactorMix
++
++#include <cstring>
++#include "Platform/Platform.h"
++#include "Platform/Memory.h"
++#include "Volume/VolumePassword.h"
++
++extern "C" {
++#include "Common/HardwareKeyFactor.h"
++}
++
++namespace VeraCrypt
++{
++	/*
++	 * If a hardware key factor is configured (g_hkfActiveConfig), returns a NEW password with the
++	 * token's response (computed over 'salt', the header's PBKDF2 salt) mixed in exactly as a keyfile
++	 * would be. If no factor is configured, returns a copy of the original password. Throws
++	 * ExternalException if a configured token is missing or fails. Safe to call unconditionally.
++	 */
++	inline shared_ptr <VolumePassword> HKFMixPassword (const VolumePassword &password, const ConstBufferPtr &salt)
++	{
++		make_shared_auto (VolumePassword, result);
++
++#if defined(VC_ENABLE_HKF)
++		if (g_hkfActiveConfig && g_hkfActiveConfig->backend != HKF_BACKEND_NONE)
++		{
++			SecureBuffer buf (VolumePassword::MaxSize);
++			size_t n = password.Size();
++			if (n > buf.Size())
++				n = buf.Size();
++			if (n)
++				Memory::Copy (buf.Ptr(), password.DataPtr(), n);
++
++			int len = (int) n;
++			int rc = HKFApplyIfConfigured (buf.Ptr(), &len, salt.Get(), (int) salt.Size());
++			if (rc != HKF_OK)
++				throw ExternalException (SRC_POS);   /* configured token missing or failed */
++
++			result->Set (buf.Ptr(), (size_t) len);
++			return result;
++		}
++#else
++		(void) salt;
++#endif
++
++		result->Set (password);
++		return result;
++	}
++}
++
++#endif /* TC_HEADER_Volume_HardwareKeyFactorMix */
+diff -ruN a/src/Volume/Hash.cpp b/src/Volume/Hash.cpp
+--- a/src/Volume/Hash.cpp	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Volume/Hash.cpp	2026-07-15 21:26:57.227234422 +0000
+@@ -17,6 +17,7 @@
+ #include "Crypto/Sha2.h"
+ #include "Crypto/Whirlpool.h"
+ #include "Crypto/Streebog.h"
++#include "Crypto/Sha3.h"
+ 
+ namespace VeraCrypt
+ {
+@@ -30,6 +31,7 @@
+ 		l.push_back (shared_ptr <Hash> (new Blake2s ()));
+ 		l.push_back (shared_ptr <Hash> (new Whirlpool ()));
+ 		l.push_back (shared_ptr <Hash> (new Streebog ()));
++		l.push_back (shared_ptr <Hash> (new Sha3_512 ()));
+         #endif
+ 		return l;
+ 	}
+@@ -192,5 +194,29 @@
+ 		if_debug (ValidateDataParameters (data));
+ 		STREEBOG_add ((STREEBOG_CTX *) Context.Ptr(), data.Get(), (int) data.Size());
+ 	}
++
++	// SHA3-512 (FIPS 202)
++	Sha3_512::Sha3_512 ()
++	{
++		Context.Allocate (sizeof (SHA3_CTX), 32);
++		Init();
++	}
++
++	void Sha3_512::GetDigest (const BufferPtr &buffer)
++	{
++		if_debug (ValidateDigestParameters (buffer));
++		sha3_512_final ((SHA3_CTX *) Context.Ptr(), buffer);
++	}
++
++	void Sha3_512::Init ()
++	{
++		sha3_512_init ((SHA3_CTX *) Context.Ptr());
++	}
++
++	void Sha3_512::ProcessData (const ConstBufferPtr &data)
++	{
++		if_debug (ValidateDataParameters (data));
++		sha3_512_update ((SHA3_CTX *) Context.Ptr(), data.Get(), data.Size());
++	}
+     #endif
+ }
+diff -ruN a/src/Volume/Hash.h b/src/Volume/Hash.h
+--- a/src/Volume/Hash.h	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Volume/Hash.h	2026-07-15 21:26:20.548902278 +0000
+@@ -188,6 +188,29 @@
+ 		Streebog (const Streebog &);
+ 		Streebog &operator= (const Streebog &);
+ 	};
++
++	// SHA3-512 (FIPS 202)
++	class Sha3_512 : public Hash
++	{
++	public:
++		Sha3_512 ();
++		virtual ~Sha3_512 () { }
++
++		virtual void GetDigest (const BufferPtr &buffer);
++		virtual size_t GetBlockSize () const { return 72; }   // Keccak rate for SHA3-512
++		virtual size_t GetDigestSize () const { return 512 / 8; }
++		virtual wstring GetName () const { return L"SHA3-512"; }
++		virtual wstring GetAltName () const { return L"SHA3-512"; }
++		virtual shared_ptr <Hash> GetNew () const { return shared_ptr <Hash> (new Sha3_512); }
++		virtual void Init ();
++		virtual void ProcessData (const ConstBufferPtr &data);
++
++	protected:
++
++	private:
++		Sha3_512 (const Sha3_512 &);
++		Sha3_512 &operator= (const Sha3_512 &);
++	};
+     #endif
+ }
+ 
+diff -ruN a/src/Volume/Pkcs5Kdf.cpp b/src/Volume/Pkcs5Kdf.cpp
+--- a/src/Volume/Pkcs5Kdf.cpp	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Volume/Pkcs5Kdf.cpp	2026-07-15 21:27:42.597258499 +0000
+@@ -84,8 +84,10 @@
+ 		l.push_back (shared_ptr <Pkcs5Kdf> (new Pkcs5HmacBlake2s ()));
+                 l.push_back (shared_ptr <Pkcs5Kdf> (new Pkcs5HmacWhirlpool ()));
+ 		l.push_back (shared_ptr <Pkcs5Kdf> (new Pkcs5HmacStreebog ()));
++		l.push_back (shared_ptr <Pkcs5Kdf> (new Pkcs5HmacSha3_512 ()));
+         #ifndef VC_DCS_DISABLE_ARGON2
+ 		l.push_back (shared_ptr <Pkcs5Kdf> (new Pkcs5Argon2 ()));
++		l.push_back (shared_ptr <Pkcs5Kdf> (new Pkcs5HmacBlake2b ()));
+         #endif
+         #endif
+ 		return l;
+@@ -184,6 +186,18 @@
+ 		return 0;
+ 	}
+ 
++	int Pkcs5HmacSha3_512::DeriveKey (const BufferPtr &key, const VolumePassword &password, const ConstBufferPtr &salt, int iterationCount) const
++	{
++		return DeriveKey (key, password, salt, iterationCount, nullptr);
++	}
++
++	int Pkcs5HmacSha3_512::DeriveKey (const BufferPtr &key, const VolumePassword &password, const ConstBufferPtr &salt, int iterationCount, long volatile *pAbortKeyDerivation) const
++	{
++		ValidateParameters (key, password, salt, iterationCount);
++		derive_key_sha3_512 (password.DataPtr(), (int) password.Size(), salt.Get(), (int) salt.Size(), iterationCount, key.Get(), (int) key.Size(), pAbortKeyDerivation);
++		return 0;
++	}
++
+ 	#ifndef VC_DCS_DISABLE_ARGON2
+ 	int Pkcs5Argon2::DeriveKey (const BufferPtr &key, const VolumePassword &password, int pim, const ConstBufferPtr &salt) const
+ 	{
+@@ -227,6 +241,18 @@
+ 		get_argon2_params (pim, &iterationCount, &memoryCost);
+ 		return iterationCount;
+ 	}
++
++	int Pkcs5HmacBlake2b::DeriveKey (const BufferPtr &key, const VolumePassword &password, const ConstBufferPtr &salt, int iterationCount) const
++	{
++		return DeriveKey (key, password, salt, iterationCount, nullptr);
++	}
++
++	int Pkcs5HmacBlake2b::DeriveKey (const BufferPtr &key, const VolumePassword &password, const ConstBufferPtr &salt, int iterationCount, long volatile *pAbortKeyDerivation) const
++	{
++		ValidateParameters (key, password, salt, iterationCount);
++		derive_key_blake2b (password.DataPtr(), (int) password.Size(), salt.Get(), (int) salt.Size(), iterationCount, key.Get(), (int) key.Size(), pAbortKeyDerivation);
++		return 0;
++	}
+ 	#endif
+ 	
+ 	int Pkcs5HmacStreebog_Boot::DeriveKey (const BufferPtr &key, const VolumePassword &password, const ConstBufferPtr &salt, int iterationCount) const
+diff -ruN a/src/Volume/Pkcs5Kdf.h b/src/Volume/Pkcs5Kdf.h
+--- a/src/Volume/Pkcs5Kdf.h	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Volume/Pkcs5Kdf.h	2026-07-15 21:27:22.870632311 +0000
+@@ -187,6 +187,25 @@
+ 		Pkcs5HmacStreebog &operator= (const Pkcs5HmacStreebog &);
+ 	};
+ 
++	// HMAC-SHA3-512 PBKDF2 PRF (FIPS 202). Independent of Argon2.
++	class Pkcs5HmacSha3_512 : public Pkcs5Kdf
++	{
++	public:
++		Pkcs5HmacSha3_512 () : Pkcs5Kdf() { }
++		virtual ~Pkcs5HmacSha3_512 () { }
++
++		virtual int DeriveKey (const BufferPtr &key, const VolumePassword &password, const ConstBufferPtr &salt, int iterationCount) const;
++		virtual int DeriveKey (const BufferPtr &key, const VolumePassword &password, const ConstBufferPtr &salt, int iterationCount, long volatile *pAbortKeyDerivation) const;
++		virtual shared_ptr <Hash> GetHash () const { return shared_ptr <Hash> (new Sha3_512); }
++		virtual int GetIterationCount (int pim) const { return pim <= 0 ? 500000 : (15000 + (pim * 1000)); }
++		virtual wstring GetName () const { return L"HMAC-SHA3-512"; }
++		virtual Pkcs5Kdf* Clone () const { return new Pkcs5HmacSha3_512(); }
++
++	private:
++		Pkcs5HmacSha3_512 (const Pkcs5HmacSha3_512 &);
++		Pkcs5HmacSha3_512 &operator= (const Pkcs5HmacSha3_512 &);
++	};
++
+ 	#ifndef VC_DCS_DISABLE_ARGON2
+ 	class Pkcs5Argon2 : public Pkcs5Kdf
+ 	{
+@@ -214,6 +233,25 @@
+ 		Pkcs5Argon2 (const Pkcs5Argon2 &);
+ 		Pkcs5Argon2 &operator= (const Pkcs5Argon2 &);
+ 	};
++
++	// HMAC-BLAKE2b-512 PBKDF2 PRF (reuses the BLAKE2b primitive shipped with Argon2).
++	class Pkcs5HmacBlake2b : public Pkcs5Kdf
++	{
++	public:
++		Pkcs5HmacBlake2b () : Pkcs5Kdf() { }
++		virtual ~Pkcs5HmacBlake2b () { }
++
++		virtual int DeriveKey (const BufferPtr &key, const VolumePassword &password, const ConstBufferPtr &salt, int iterationCount) const;
++		virtual int DeriveKey (const BufferPtr &key, const VolumePassword &password, const ConstBufferPtr &salt, int iterationCount, long volatile *pAbortKeyDerivation) const;
++		virtual shared_ptr <Hash> GetHash () const { return shared_ptr <Hash> (new Blake2b); }
++		virtual int GetIterationCount (int pim) const { return pim <= 0 ? 500000 : (15000 + (pim * 1000)); }
++		virtual wstring GetName () const { return L"HMAC-BLAKE2b-512"; }
++		virtual Pkcs5Kdf* Clone () const { return new Pkcs5HmacBlake2b(); }
++
++	private:
++		Pkcs5HmacBlake2b (const Pkcs5HmacBlake2b &);
++		Pkcs5HmacBlake2b &operator= (const Pkcs5HmacBlake2b &);
++	};
+ 	#endif
+ 	
+ 	class Pkcs5HmacStreebog_Boot : public Pkcs5Kdf
+diff -ruN a/src/Volume/Volume.cpp b/src/Volume/Volume.cpp
+--- a/src/Volume/Volume.cpp	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Volume/Volume.cpp	2026-07-16 17:18:34.214961745 +0000
+@@ -17,6 +17,11 @@
+ #include "Volume.h"
+ #include "VolumeHeader.h"
+ #include "VolumeLayout.h"
++#if defined(VC_ENABLE_HKF)
++extern "C" {
++#include "Common/HardwareKeyFactor.h"
++}
++#endif
+ #include "Common/Crypto.h"
+ 
+ namespace VeraCrypt
+@@ -185,7 +190,14 @@
+ 
+ 				shared_ptr <VolumeHeader> header = layout->GetHeader();
+ 
+-				if (header->Decrypt (headerBuffer, *passwordKey, pim, kdf, layout->GetSupportedKeyDerivationFunctions(), layoutEncryptionAlgorithms, layoutEncryptionModes))
++#if defined(VC_ENABLE_HKF)
++				// Factor gating: under HKF_APPLY_HIDDEN_ONLY the hardware factor is mixed only for the
++				// hidden layout, so the outer (decoy) header derives from the password alone.
++				bool hkfApply = HKFShouldApply (g_hkfActiveConfig, layout->GetType() == VolumeType::Hidden) != 0;
++#else
++				bool hkfApply = true;
++#endif
++				if (header->Decrypt (headerBuffer, *passwordKey, pim, kdf, layout->GetSupportedKeyDerivationFunctions(), layoutEncryptionAlgorithms, layoutEncryptionModes, hkfApply))
+ 				{
+ 					// Header decrypted
+ 
+diff -ruN a/src/Volume/Volume.make b/src/Volume/Volume.make
+--- a/src/Volume/Volume.make	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Volume/Volume.make	2026-07-15 21:27:55.783397518 +0000
+@@ -126,6 +126,7 @@
+ OBJS += ../Crypto/Sha2.o
+ OBJS += ../Crypto/Twofish.o
+ OBJS += ../Crypto/Whirlpool.o
++OBJS += ../Crypto/Sha3.o
+ OBJS += ../Crypto/Camellia.o
+ OBJS += ../Crypto/Streebog.o
+ OBJS += ../Crypto/kuznyechik.o
+diff -ruN a/src/Volume/VolumeHeader.cpp b/src/Volume/VolumeHeader.cpp
+--- a/src/Volume/VolumeHeader.cpp	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Volume/VolumeHeader.cpp	2026-07-16 17:18:15.092767514 +0000
+@@ -17,6 +17,9 @@
+ #include "EncryptionModeWolfCryptXTS.h"
+ #endif
+ #include "Pkcs5Kdf.h"
++#if defined(VC_ENABLE_HKF)
++#include "HardwareKeyFactorMix.h"
++#endif
+ #include "VolumeHeader.h"
+ #include "VolumeException.h"
+ #include "Common/Crypto.h"
+@@ -102,13 +105,28 @@
+ 		EncryptNew (headerBuffer, options.Salt, options.HeaderKey, options.Kdf);
+ 	}
+ 
+-	bool VolumeHeader::Decrypt (const ConstBufferPtr &encryptedData, const VolumePassword &password, int pim, shared_ptr <Pkcs5Kdf> kdf, const Pkcs5KdfList &keyDerivationFunctions, const EncryptionAlgorithmList &encryptionAlgorithms, const EncryptionModeList &encryptionModes)
++	bool VolumeHeader::Decrypt (const ConstBufferPtr &encryptedData, const VolumePassword &password, int pim, shared_ptr <Pkcs5Kdf> kdf, const Pkcs5KdfList &keyDerivationFunctions, const EncryptionAlgorithmList &encryptionAlgorithms, const EncryptionModeList &encryptionModes, bool applyHardwareFactor)
+ 	{
+ 		if (password.Size() < 1)
+ 			throw PasswordEmpty (SRC_POS);
+ 
+ 		ConstBufferPtr salt (encryptedData.GetRange (SaltOffset, SaltSize));
+ 
++#if defined(VC_ENABLE_HKF)
++		// Optional hardware key factor: derive an effective password with the token's response
++		// (computed over THIS header's salt) mixed in. With no factor configured this is 'password'.
++		shared_ptr <VolumePassword> hkfPassword;
++		const VolumePassword *effectivePasswordPtr = &password;
++		if (applyHardwareFactor && g_hkfActiveConfig && g_hkfActiveConfig->backend != HKF_BACKEND_NONE)
++		{
++			hkfPassword = HKFMixPassword (password, salt);
++			effectivePasswordPtr = hkfPassword.get();
++		}
++		const VolumePassword &effectivePassword = *effectivePasswordPtr;
++#else
++		const VolumePassword &effectivePassword = password;
++#endif
++
+ 		if (!kdf && EncryptionThreadPool::IsRunning() && keyDerivationFunctions.size() > 1)
+ 		{
+ 			typedef EncryptionThreadPool::KeyDerivationWorkItem KeyDerivationWorkItem;
+@@ -128,7 +146,7 @@
+ 				{
+ 					shared_ptr <KeyDerivationWorkItem> keyDerivationWorkItem (new KeyDerivationWorkItem (pkcs5, GetHeaderKeyDerivationSize (pkcs5)));
+ 					keyDerivationWorkItems.push_back (keyDerivationWorkItem);
+-					EncryptionThreadPool::BeginKeyDerivation (*keyDerivationWorkItem, password, pim, salt, keyDerivationCompletedEvent, noOutstandingWorkItemEvent, outstandingWorkItemCount, &abortKeyDerivation);
++					EncryptionThreadPool::BeginKeyDerivation (*keyDerivationWorkItem, effectivePassword, pim, salt, keyDerivationCompletedEvent, noOutstandingWorkItemEvent, outstandingWorkItemCount, &abortKeyDerivation);
+ 					++enqueuedWorkItemCount;
+ 				}
+ 
+@@ -185,7 +203,7 @@
+ 				continue;
+ 
+ 			SecureBuffer headerKey (GetHeaderKeyDerivationSize (pkcs5));
+-			int derivationResult = pkcs5->DeriveKey (headerKey, password, pim, salt);
++			int derivationResult = pkcs5->DeriveKey (headerKey, effectivePassword, pim, salt);
+ 			if (derivationResult != 0)
+ 			{
+ 				if (!kdf)
+diff -ruN a/src/Volume/VolumeHeader.h b/src/Volume/VolumeHeader.h
+--- a/src/Volume/VolumeHeader.h	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Volume/VolumeHeader.h	2026-07-16 17:18:06.568825040 +0000
+@@ -60,7 +60,7 @@
+ 		virtual ~VolumeHeader ();
+ 
+ 		void Create (const BufferPtr &headerBuffer, VolumeHeaderCreationOptions &options);
+-		bool Decrypt (const ConstBufferPtr &encryptedData, const VolumePassword &password, int pim, shared_ptr <Pkcs5Kdf> kdf, const Pkcs5KdfList &keyDerivationFunctions, const EncryptionAlgorithmList &encryptionAlgorithms, const EncryptionModeList &encryptionModes);
++		bool Decrypt (const ConstBufferPtr &encryptedData, const VolumePassword &password, int pim, shared_ptr <Pkcs5Kdf> kdf, const Pkcs5KdfList &keyDerivationFunctions, const EncryptionAlgorithmList &encryptionAlgorithms, const EncryptionModeList &encryptionModes, bool applyHardwareFactor = true);
+ 		void EncryptNew (const BufferPtr &newHeaderBuffer, const ConstBufferPtr &newSalt, const ConstBufferPtr &newHeaderKey, shared_ptr <Pkcs5Kdf> newPkcs5Kdf);
+ 		uint64 GetEncryptedAreaStart () const { return EncryptedAreaStart; }
+ 		uint64 GetEncryptedAreaLength () const { return EncryptedAreaLength; }

@@ -1,0 +1,433 @@
+--- a/Common/Crypto.h	2026-06-09 10:55:00.000000000 +0000
++++ b/Common/Crypto.h	2026-07-15 20:39:53.137667287 +0000
+@@ -63,6 +63,9 @@
+ 	STREEBOG,
+ #ifndef VC_DCS_DISABLE_ARGON2
+ 	ARGON2,
++	BLAKE2B,	// BLAKE2b-512 used as an HMAC/PBKDF2 PRF. Gated with Argon2 because it
++			// reuses the in-tree BLAKE2b primitive that ships with Argon2 (absent from
++			// the space-constrained DCS/UEFI bootloader). Non-boot PRF only.
+ #endif
+ 	HASH_ENUM_END_ID
+ };
+@@ -72,6 +75,7 @@
+ 
+ #define BLAKE2S_BLOCKSIZE		64
+ #define BLAKE2S_DIGESTSIZE		32
++#define BLAKE2B_BLOCKSIZE		128
+ #define BLAKE2B_DIGESTSIZE		64
+ 
+ #define SHA256_BLOCKSIZE		64
+--- a/Common/Crypto.c	2026-06-09 10:55:00.000000000 +0000
++++ b/Common/Crypto.c	2026-07-15 20:41:15.905192080 +0000
+@@ -135,6 +135,7 @@
+ 	{ STREEBOG,		L"Streebog",	FALSE,	FALSE },
+ #ifndef VC_DCS_DISABLE_ARGON2
+ 	{ ARGON2,		L"BLAKE2b-512",	FALSE,	FALSE },
++	{ BLAKE2B,		L"BLAKE2b",		FALSE,	FALSE },	// HMAC-BLAKE2b-512 PBKDF2 PRF (non-boot). Distinct label from Argon2's internal "BLAKE2b-512".
+ #endif
+     #endif
+         { 0, 0, 0 }
+--- a/Common/Pkcs5.h	2026-06-09 10:55:00.000000000 +0000
++++ b/Common/Pkcs5.h	2026-07-15 20:42:28.390596806 +0000
+@@ -47,6 +47,11 @@
+ #ifndef VC_DCS_DISABLE_ARGON2
+ int derive_key_argon2(const unsigned char *pwd, int pwd_len, const unsigned char *salt, int salt_len, uint32 iterations, uint32 memcost, unsigned char *dk, int dklen, long volatile *pAbortKeyDerivation);
+ void get_argon2_params(int pim, int* pIterations, int* pMemcost);
++
++/* HMAC-BLAKE2b-512 PRF. Output written to d/input_digest which must be at least 64 bytes long.
++   Gated with Argon2 as it reuses the BLAKE2b primitive that ships with Argon2. */
++void hmac_blake2b (unsigned char *key, int keylen, unsigned char *input_digest, int len);
++void derive_key_blake2b (const unsigned char *pwd, int pwd_len, const unsigned char *salt, int salt_len, uint32 iterations, unsigned char *dk, int dklen, long volatile *pAbortKeyDerivation);
+ #endif
+ 
+ /* check if given PRF supported.*/
+--- a/Common/Pkcs5.c	2026-06-09 10:55:00.000000000 +0000
++++ b/Common/Pkcs5.c	2026-07-15 20:42:16.415420431 +0000
+@@ -807,6 +807,214 @@
+ 
+ #endif
+ 
++/* ---- HMAC-BLAKE2b-512 and PBKDF2-HMAC-BLAKE2b ----
++   Reuses the in-tree BLAKE2b primitive that ships with Argon2 (declared via Crypto.h),
++   hence the shared VC_DCS_DISABLE_ARGON2 guard. Non-boot PRF only.
++   NOTE: unlike the BLAKE2s HMAC above, the ipad/opad block is BLAKE2B_BLOCKSIZE (128) bytes,
++   which does not fit in the (PKCS5_SALT_SIZE + 4) scratch buffer, so a dedicated 128-byte
++   pad buffer is used for key padding. */
++#if !defined(TC_WINDOWS_BOOT) && !defined(VC_DCS_DISABLE_ARGON2)
++
++typedef struct hmac_blake2b_ctx_struct
++{
++	blake2b_state ctx;
++	blake2b_state inner_digest_ctx;	/* pre-computed inner digest context */
++	blake2b_state outer_digest_ctx;	/* pre-computed outer digest context */
++	unsigned char k[PKCS5_SALT_SIZE + 4];	/* holds (salt_len + 4) and also the 64-byte BLAKE2b hash */
++	unsigned char u[BLAKE2B_DIGESTSIZE];
++} hmac_blake2b_ctx;
++
++static void hmac_blake2b_internal
++(
++	unsigned char *d,		/* input data; d is guaranteed to be at least 64 bytes long */
++	int ld,			/* length of input data in bytes */
++	hmac_blake2b_ctx* hmac	/* HMAC-BLAKE2b context which holds temporary variables */
++)
++{
++	blake2b_state* ctx = &(hmac->ctx);
++
++	/**** Restore Precomputed Inner Digest Context ****/
++	memcpy (ctx, &(hmac->inner_digest_ctx), sizeof (blake2b_state));
++	blake2b_update (ctx, d, ld);
++	blake2b_final (ctx, d, BLAKE2B_DIGESTSIZE);	/* d = inner digest */
++
++	/**** Restore Precomputed Outer Digest Context ****/
++	memcpy (ctx, &(hmac->outer_digest_ctx), sizeof (blake2b_state));
++	blake2b_update (ctx, d, BLAKE2B_DIGESTSIZE);
++	blake2b_final (ctx, d, BLAKE2B_DIGESTSIZE);	/* d = outer digest */
++}
++
++void hmac_blake2b
++(
++	unsigned char *k,	/* secret key */
++	int lk,		/* length of the key in bytes */
++	unsigned char *d,	/* data */
++	int ld		/* length of data in bytes */
++)
++{
++	hmac_blake2b_ctx hmac;
++	blake2b_state* ctx;
++	unsigned char pad[BLAKE2B_BLOCKSIZE];	/* 128-byte HMAC key-pad block */
++	int b;
++	unsigned char key[BLAKE2B_DIGESTSIZE];
++
++	/* If the key is longer than the hash block size, let key = blake2b(key), per HMAC. */
++	if (lk > BLAKE2B_BLOCKSIZE)
++	{
++		blake2b_state tctx;
++
++		blake2b_init (&tctx, BLAKE2B_DIGESTSIZE);
++		blake2b_update (&tctx, k, lk);
++		blake2b_final (&tctx, key, BLAKE2B_DIGESTSIZE);
++
++		k = key;
++		lk = BLAKE2B_DIGESTSIZE;
++
++		burn (&tctx, sizeof(tctx));	/* Prevent leaks */
++	}
++
++	/**** Precompute HMAC Inner Digest ****/
++	ctx = &(hmac.inner_digest_ctx);
++	blake2b_init (ctx, BLAKE2B_DIGESTSIZE);
++
++	for (b = 0; b < lk; ++b)
++		pad[b] = (unsigned char) (k[b] ^ 0x36);
++	memset (&pad[lk], 0x36, BLAKE2B_BLOCKSIZE - lk);
++
++	blake2b_update (ctx, pad, BLAKE2B_BLOCKSIZE);
++
++	/**** Precompute HMAC Outer Digest ****/
++	ctx = &(hmac.outer_digest_ctx);
++	blake2b_init (ctx, BLAKE2B_DIGESTSIZE);
++
++	for (b = 0; b < lk; ++b)
++		pad[b] = (unsigned char) (k[b] ^ 0x5C);
++	memset (&pad[lk], 0x5C, BLAKE2B_BLOCKSIZE - lk);
++
++	blake2b_update (ctx, pad, BLAKE2B_BLOCKSIZE);
++
++	hmac_blake2b_internal (d, ld, &hmac);
++
++	/* Prevent leaks */
++	burn (&hmac, sizeof(hmac));
++	burn (pad, sizeof(pad));
++	burn (key, sizeof(key));
++}
++
++static void derive_u_blake2b (const unsigned char *salt, int salt_len, uint32 iterations, int b, hmac_blake2b_ctx* hmac, volatile long *pAbortKeyDerivation)
++{
++	unsigned char* k = hmac->k;
++	unsigned char* u = hmac->u;
++	uint32 c;
++	int i;
++
++	c = iterations;
++
++	/* iteration 1 */
++	memcpy (k, salt, salt_len);	/* salt */
++
++	/* big-endian block number */
++	b = bswap_32 (b);
++	memcpy (&k[salt_len], &b, 4);
++
++	hmac_blake2b_internal (k, salt_len + 4, hmac);
++	memcpy (u, k, BLAKE2B_DIGESTSIZE);
++
++	/* remaining iterations */
++	while (c > 1)
++	{
++		/* CANCELLATION CHECK: check every 1024 iterations */
++		if (pAbortKeyDerivation && (c & 1023) == 0 && *pAbortKeyDerivation)
++			return;	/* Abort derivation */
++
++		hmac_blake2b_internal (k, BLAKE2B_DIGESTSIZE, hmac);
++		for (i = 0; i < BLAKE2B_DIGESTSIZE; i++)
++		{
++			u[i] ^= k[i];
++		}
++		c--;
++	}
++}
++
++void derive_key_blake2b (const unsigned char *pwd, int pwd_len, const unsigned char *salt, int salt_len, uint32 iterations, unsigned char *dk, int dklen, volatile long *pAbortKeyDerivation)
++{
++	hmac_blake2b_ctx hmac;
++	blake2b_state* ctx;
++	unsigned char pad[BLAKE2B_BLOCKSIZE];	/* 128-byte HMAC key-pad block */
++	int b, l, r;
++	unsigned char key[BLAKE2B_DIGESTSIZE];
++
++	/* If the password is longer than the hash block size, let pwd = blake2b(pwd), per HMAC. */
++	if (pwd_len > BLAKE2B_BLOCKSIZE)
++	{
++		blake2b_state tctx;
++
++		blake2b_init (&tctx, BLAKE2B_DIGESTSIZE);
++		blake2b_update (&tctx, pwd, pwd_len);
++		blake2b_final (&tctx, key, BLAKE2B_DIGESTSIZE);
++
++		pwd = key;
++		pwd_len = BLAKE2B_DIGESTSIZE;
++
++		burn (&tctx, sizeof(tctx));	/* Prevent leaks */
++	}
++
++	if (dklen % BLAKE2B_DIGESTSIZE)
++	{
++		l = 1 + dklen / BLAKE2B_DIGESTSIZE;
++	}
++	else
++	{
++		l = dklen / BLAKE2B_DIGESTSIZE;
++	}
++
++	r = dklen - (l - 1) * BLAKE2B_DIGESTSIZE;
++
++	/**** Precompute HMAC Inner Digest ****/
++	ctx = &(hmac.inner_digest_ctx);
++	blake2b_init (ctx, BLAKE2B_DIGESTSIZE);
++
++	for (b = 0; b < pwd_len; ++b)
++		pad[b] = (unsigned char) (pwd[b] ^ 0x36);
++	memset (&pad[pwd_len], 0x36, BLAKE2B_BLOCKSIZE - pwd_len);
++
++	blake2b_update (ctx, pad, BLAKE2B_BLOCKSIZE);
++
++	/**** Precompute HMAC Outer Digest ****/
++	ctx = &(hmac.outer_digest_ctx);
++	blake2b_init (ctx, BLAKE2B_DIGESTSIZE);
++
++	for (b = 0; b < pwd_len; ++b)
++		pad[b] = (unsigned char) (pwd[b] ^ 0x5C);
++	memset (&pad[pwd_len], 0x5C, BLAKE2B_BLOCKSIZE - pwd_len);
++
++	blake2b_update (ctx, pad, BLAKE2B_BLOCKSIZE);
++
++	/* first l - 1 blocks */
++	for (b = 1; b < l; b++)
++	{
++		derive_u_blake2b (salt, salt_len, iterations, b, &hmac, pAbortKeyDerivation);
++		if (pAbortKeyDerivation && *pAbortKeyDerivation)
++			goto cancelled;
++		memcpy (dk, hmac.u, BLAKE2B_DIGESTSIZE);
++		dk += BLAKE2B_DIGESTSIZE;
++	}
++
++	/* last block */
++	derive_u_blake2b (salt, salt_len, iterations, b, &hmac, pAbortKeyDerivation);
++	if (pAbortKeyDerivation && *pAbortKeyDerivation)
++		goto cancelled;
++	memcpy (dk, hmac.u, r);
++
++cancelled:
++	/* Prevent possible leaks. */
++	burn (&hmac, sizeof(hmac));
++	burn (pad, sizeof(pad));
++	burn (key, sizeof(key));
++}
++
++#endif // !defined(TC_WINDOWS_BOOT) && !defined(VC_DCS_DISABLE_ARGON2)
++
+ #ifndef TC_WINDOWS_BOOT
+ 
+ typedef struct hmac_whirlpool_ctx_struct
+@@ -1236,6 +1444,9 @@
+ #ifndef VC_DCS_DISABLE_ARGON2
+ 	case ARGON2:
+ 		return L"Argon2";
++
++	case BLAKE2B:
++		return L"BLAKE2b-PBKDF2";
+ #endif
+ 
+ 	default:		
+@@ -1287,6 +1498,11 @@
+ 		case ARGON2:
+ 			get_argon2_params (pim, &iteration_count, pMemoryCost);
+ 			break;
++
++		case BLAKE2B:
++			// Non-boot PRF (no pre-boot authentication support), so no bBoot branch.
++			iteration_count = (pim == 0) ? 500000 : 15000 + pim * 1000;
++			break;
+ #endif
+ 
+ 		default:
+--- a/Common/Volumes.c	2026-06-09 10:55:00.000000000 +0000
++++ b/Common/Volumes.c	2026-07-15 20:46:28.906830269 +0000
+@@ -458,6 +458,11 @@
+ 
+ 
+ #ifndef VC_DCS_DISABLE_ARGON2
++			case BLAKE2B:
++				derive_key_blake2b (keyInfo->userKey, keyInfo->keyLength, keyInfo->salt,
++					PKCS5_SALT_SIZE, keyInfo->noIterations, dk, GetMaxPkcs5OutSize(), effectiveAbortKeyDerivation);
++				break;
++
+ 			case ARGON2:
+ 				{
+ 					int derivationResult = derive_key_argon2(keyInfo->userKey, keyInfo->keyLength, keyInfo->salt,
+@@ -1169,6 +1174,11 @@
+ 			break;
+ 
+ #ifndef VC_DCS_DISABLE_ARGON2
++		case BLAKE2B:
++			derive_key_blake2b (keyInfo.userKey, keyInfo.keyLength, keyInfo.salt,
++				PKCS5_SALT_SIZE, keyInfo.noIterations, dk, GetMaxPkcs5OutSize(), NULL);
++			break;
++
+ 		case ARGON2:
+ 			{
+ 				int derivationResult = derive_key_argon2(keyInfo.userKey, keyInfo.keyLength, keyInfo.salt,
+--- a/Common/EncryptionThreadPool.c	2026-06-09 10:55:00.000000000 +0000
++++ b/Common/EncryptionThreadPool.c	2026-07-15 20:46:47.072385079 +0000
+@@ -275,6 +275,13 @@
+ 					workItem->KeyDerivation.IterationCount, workItem->KeyDerivation.DerivedKey, GetMaxPkcs5OutSize(), workItem->KeyDerivation.pAbortKeyDerivation);
+ 				break;
+ 
++#ifndef VC_DCS_DISABLE_ARGON2
++			case BLAKE2B:
++				derive_key_blake2b (workItem->KeyDerivation.Password, workItem->KeyDerivation.PasswordLength, workItem->KeyDerivation.Salt, PKCS5_SALT_SIZE,
++					workItem->KeyDerivation.IterationCount, workItem->KeyDerivation.DerivedKey, GetMaxPkcs5OutSize(), workItem->KeyDerivation.pAbortKeyDerivation);
++				break;
++#endif
++
+ 			case ARGON2:
+ 				derivationResult = derive_key_argon2(workItem->KeyDerivation.Password, workItem->KeyDerivation.PasswordLength, workItem->KeyDerivation.Salt, PKCS5_SALT_SIZE,
+ 					workItem->KeyDerivation.IterationCount, workItem->KeyDerivation.Memorycost, workItem->KeyDerivation.DerivedKey, ARGON2_HEADER_KEYDATA_SIZE, workItem->KeyDerivation.pAbortKeyDerivation);
+--- a/Common/Random.c	2026-06-09 10:55:00.000000000 +0000
++++ b/Common/Random.c	2026-07-15 20:47:22.711188583 +0000
+@@ -285,6 +285,12 @@
+ 			case ARGON2:
+ 				digestSize = BLAKE2B_DIGESTSIZE;
+ 				break;
++
++#ifndef VC_DCS_DISABLE_ARGON2
++			case BLAKE2B:
++				digestSize = BLAKE2B_DIGESTSIZE;
++				break;
++#endif
+ 	
+ 		case WHIRLPOOL:
+ 			digestSize = WHIRLPOOL_DIGESTSIZE;
+@@ -343,6 +349,14 @@
+ 				blake2b_update(&b2ctx, pRandPool, RNG_POOL_SIZE);
+ 				blake2b_final(&b2ctx, hashOutputBuffer, BLAKE2B_OUTBYTES);
+ 				break;
++
++#ifndef VC_DCS_DISABLE_ARGON2
++			case BLAKE2B:
++				blake2b_init(&b2ctx, BLAKE2B_OUTBYTES);
++				blake2b_update(&b2ctx, pRandPool, RNG_POOL_SIZE);
++				blake2b_final(&b2ctx, hashOutputBuffer, BLAKE2B_OUTBYTES);
++				break;
++#endif
+ #endif
+ 			default:
+ 				// Unknown/wrong ID
+--- a/Common/Tests.c	2026-06-09 10:55:00.000000000 +0000
++++ b/Common/Tests.c	2026-07-15 20:50:22.275331738 +0000
+@@ -1763,6 +1763,18 @@
+ 	if (memcmp (dk, "\x8d\x51\xfa\x31\x46\x25\x37\x67\xa3\x29\x6b\x3c\x6b\xc1\x5d\xb2\xee\xe1\x6c\x28\x00\x26\xea\x08\x65\x9c\x12\xf1\x07\xde\x0d\xb9\x9b\x4f\x39\xfa\xc6\x80\x26\xb1\x8f\x8e\x48\x89\x85\x2d\x24\x2d", 48) != 0)
+ 		return FALSE;
+ 
++#ifndef VC_DCS_DISABLE_ARGON2
++	/* PKCS-5 test 1 with HMAC-BLAKE2b-512 used as the PRF */
++	derive_key_blake2b ((unsigned char*)"password", 8, (unsigned char*)"\x12\x34\x56\x78", 4, 5, dk, 4, NULL);
++	if (memcmp (dk, "\x97\x78\xa4\x7f", 4) != 0)
++		return FALSE;
++
++	/* PKCS-5 test 2 with HMAC-BLAKE2b-512 used as the PRF (derives a key longer than the underlying hash) */
++	derive_key_blake2b ((unsigned char*)"password", 8, (unsigned char*)"\x12\x34\x56\x78", 4, 5, dk, 96, NULL);
++	if (memcmp (dk, "\x97\x78\xa4\x7f\xaa\x44\xcf\x2d\x2d\x05\x80\x68\x78\x55\xff\xc2\x2c\x78\xba\x94\x12\x2e\x70\xc0\x3e\x86\xdc\x3b\xfd\xea\x31\x23\x71\x5a\x2a\xa2\x4f\x87\x1a\xc1\xd4\x58\xd4\x64\xdf\x9a\xed\x1c\x2d\x52\xf2\x9d\xca\x3a\x86\x9a\xea\xba\x02\xdb\x21\xb9\x2d\xbd\xca\x60\xdd\x69\xa5\x6f\x97\xc7\xef\xa7\x0a\x75\x64\x3b\x1f\xe1\x62\xb0\x67\x0f\x0c\x55\x03\x20\xe4\x23\xcb\x76\xe4\x13\xc7\x05", 96) != 0)
++		return FALSE;
++#endif
++
+ 	/* PKCS-5 test 1 with HMAC-Whirlpool used as the PRF */
+ 	derive_key_whirlpool ((unsigned char*)"password", 8, (unsigned char*)"\x12\x34\x56\x78", 4, 5, dk, 4, NULL);
+ 	if (memcmp (dk, "\x50\x7c\x36\x6f", 4) != 0)
+--- a/Volume/Pkcs5Kdf.h	2026-06-09 10:55:00.000000000 +0000
++++ b/Volume/Pkcs5Kdf.h	2026-07-15 20:49:23.060583413 +0000
+@@ -214,6 +214,25 @@
+ 		Pkcs5Argon2 (const Pkcs5Argon2 &);
+ 		Pkcs5Argon2 &operator= (const Pkcs5Argon2 &);
+ 	};
++
++	// HMAC-BLAKE2b-512 PBKDF2 PRF (reuses the BLAKE2b primitive shipped with Argon2).
++	class Pkcs5HmacBlake2b : public Pkcs5Kdf
++	{
++	public:
++		Pkcs5HmacBlake2b () : Pkcs5Kdf() { }
++		virtual ~Pkcs5HmacBlake2b () { }
++
++		virtual int DeriveKey (const BufferPtr &key, const VolumePassword &password, const ConstBufferPtr &salt, int iterationCount) const;
++		virtual int DeriveKey (const BufferPtr &key, const VolumePassword &password, const ConstBufferPtr &salt, int iterationCount, long volatile *pAbortKeyDerivation) const;
++		virtual shared_ptr <Hash> GetHash () const { return shared_ptr <Hash> (new Blake2b); }
++		virtual int GetIterationCount (int pim) const { return pim <= 0 ? 500000 : (15000 + (pim * 1000)); }
++		virtual wstring GetName () const { return L"HMAC-BLAKE2b-512"; }
++		virtual Pkcs5Kdf* Clone () const { return new Pkcs5HmacBlake2b(); }
++
++	private:
++		Pkcs5HmacBlake2b (const Pkcs5HmacBlake2b &);
++		Pkcs5HmacBlake2b &operator= (const Pkcs5HmacBlake2b &);
++	};
+ 	#endif
+ 	
+ 	class Pkcs5HmacStreebog_Boot : public Pkcs5Kdf
+--- a/Volume/Pkcs5Kdf.cpp	2026-06-09 10:55:00.000000000 +0000
++++ b/Volume/Pkcs5Kdf.cpp	2026-07-15 20:49:54.407322831 +0000
+@@ -86,6 +86,7 @@
+ 		l.push_back (shared_ptr <Pkcs5Kdf> (new Pkcs5HmacStreebog ()));
+         #ifndef VC_DCS_DISABLE_ARGON2
+ 		l.push_back (shared_ptr <Pkcs5Kdf> (new Pkcs5Argon2 ()));
++		l.push_back (shared_ptr <Pkcs5Kdf> (new Pkcs5HmacBlake2b ()));
+         #endif
+         #endif
+ 		return l;
+@@ -227,6 +228,18 @@
+ 		get_argon2_params (pim, &iterationCount, &memoryCost);
+ 		return iterationCount;
+ 	}
++
++	int Pkcs5HmacBlake2b::DeriveKey (const BufferPtr &key, const VolumePassword &password, const ConstBufferPtr &salt, int iterationCount) const
++	{
++		return DeriveKey (key, password, salt, iterationCount, nullptr);
++	}
++
++	int Pkcs5HmacBlake2b::DeriveKey (const BufferPtr &key, const VolumePassword &password, const ConstBufferPtr &salt, int iterationCount, long volatile *pAbortKeyDerivation) const
++	{
++		ValidateParameters (key, password, salt, iterationCount);
++		derive_key_blake2b (password.DataPtr(), (int) password.Size(), salt.Get(), (int) salt.Size(), iterationCount, key.Get(), (int) key.Size(), pAbortKeyDerivation);
++		return 0;
++	}
+ 	#endif
+ 	
+ 	int Pkcs5HmacStreebog_Boot::DeriveKey (const BufferPtr &key, const VolumePassword &password, const ConstBufferPtr &salt, int iterationCount) const

@@ -1,0 +1,40 @@
+--- a/src/Core/VolumeCreator.cpp	2026-06-09 10:55:00.000000000 +0000
++++ b/src/Core/VolumeCreator.cpp	2026-07-16 03:51:22.907405617 +0000
+@@ -16,6 +16,9 @@
+ #include "Volume/EncryptionModeWolfCryptXTS.h"
+ #endif
+ #include "Core.h"
++#if defined(VC_ENABLE_HKF)
++#include "Volume/HardwareKeyFactorMix.h"
++#endif
+ 
+ #ifdef TC_UNIX
+ #include <sys/types.h>
+@@ -148,7 +151,12 @@
+ 				SecureBuffer backupHeaderSalt (VolumeHeader::GetSaltSize());
+ 				RandomNumberGenerator::GetData (backupHeaderSalt);
+ 
+-				int derivationResult = Options->VolumeHeaderKdf->DeriveKey (HeaderKey, *PasswordKey, Options->Pim, backupHeaderSalt);
++#if defined(VC_ENABLE_HKF)
++				shared_ptr <VolumePassword> creatorPassword = HKFMixPassword (*PasswordKey, backupHeaderSalt);
++#else
++				shared_ptr <VolumePassword> creatorPassword = PasswordKey;
++#endif
++				int derivationResult = Options->VolumeHeaderKdf->DeriveKey (HeaderKey, *creatorPassword, Options->Pim, backupHeaderSalt);
+ 				if (derivationResult != 0)
+ 					throw ExternalException (SRC_POS, Options->VolumeHeaderKdf->GetDerivationFailureMessage (derivationResult));
+ 
+@@ -356,7 +364,12 @@
+ 			// Header key
+ 			HeaderKey.Allocate (VolumeHeader::GetHeaderKeyDerivationSize (options->VolumeHeaderKdf));
+ 			PasswordKey = Keyfile::ApplyListToPassword (options->Keyfiles, options->Password, options->EMVSupportEnabled);
+-			int derivationResult = options->VolumeHeaderKdf->DeriveKey (HeaderKey, *PasswordKey, options->Pim, salt);
++#if defined(VC_ENABLE_HKF)
++			shared_ptr <VolumePassword> creatorPassword = HKFMixPassword (*PasswordKey, salt);
++#else
++			shared_ptr <VolumePassword> creatorPassword = PasswordKey;
++#endif
++			int derivationResult = options->VolumeHeaderKdf->DeriveKey (HeaderKey, *creatorPassword, options->Pim, salt);
+ 			if (derivationResult != 0)
+ 				throw ExternalException (SRC_POS, options->VolumeHeaderKdf->GetDerivationFailureMessage (derivationResult));
+ 			headerOptions.HeaderKey = HeaderKey;
