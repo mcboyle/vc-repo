@@ -43,6 +43,24 @@ extern "C" {
 /* Zero cbData bytes at pbData in a way the compiler may not elide. Safe on NULL/0. */
 void VcSecureWipe (volatile void *pbData, size_t cbData);
 
+/* ---- process memory-hygiene lockdown ----------------------------------------------------- */
+
+/* Bits returned by VcKeyMemoryLockdown reporting which protections were applied. */
+#define VC_LOCKDOWN_MLOCK     0x01   /* mlockall: pages will not be swapped out */
+#define VC_LOCKDOWN_NO_CORE   0x02   /* RLIMIT_CORE = 0: no core dump can leak keys */
+#define VC_LOCKDOWN_NO_DUMP   0x04   /* PR_SET_DUMPABLE 0: no ptrace attach / no core */
+
+/*
+ * Best-effort process hardening against key material leaking OUT of RAM: prevent swapping (so a key
+ * never reaches an unencrypted swap file), disable core dumps, and mark the process non-dumpable
+ * (blocks ptrace-based live extraction). Scrubbing RAM does not help if the key already reached swap
+ * or a hibernation image — call this once at startup, before any secret is derived. Returns a bitmask
+ * of the VC_LOCKDOWN_* protections that succeeded (mlockall commonly needs privilege and may be 0).
+ * NOTE: hibernation writes the whole of RAM to disk and is NOT prevented by mlock — warn users to
+ * disable hibernation on machines holding mounted volumes (see docs/MEMORY-SCRUB.md).
+ */
+int VcKeyMemoryLockdown (void);
+
 /* ---- scrub registry ---------------------------------------------------------------------- */
 
 /* Maximum number of secret regions tracked at once. Small and fixed: no allocation on the scrub

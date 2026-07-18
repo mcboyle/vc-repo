@@ -54,6 +54,38 @@ void VcSecureWipe (volatile void *pbData, size_t cbData)
 }
 
 /* ================================================================================================
+ *  Process memory-hygiene lockdown
+ * ============================================================================================== */
+
+#if defined(__linux__)
+#	include <sys/mman.h>       /* mlockall */
+#	include <sys/resource.h>   /* setrlimit */
+#	include <sys/prctl.h>      /* prctl */
+#endif
+
+int VcKeyMemoryLockdown (void)
+{
+	int applied = 0;
+#if defined(__linux__) || defined(__APPLE__)
+	if (mlockall (MCL_CURRENT | MCL_FUTURE) == 0)
+		applied |= VC_LOCKDOWN_MLOCK;    /* keys never swapped to disk (needs privilege) */
+#endif
+#if defined(__linux__) || defined(__APPLE__)
+	{
+		struct rlimit rl;
+		rl.rlim_cur = 0; rl.rlim_max = 0;
+		if (setrlimit (RLIMIT_CORE, &rl) == 0)
+			applied |= VC_LOCKDOWN_NO_CORE;   /* a crash cannot dump keys to a core file */
+	}
+#endif
+#if defined(__linux__)
+	if (prctl (PR_SET_DUMPABLE, 0, 0, 0, 0) == 0)
+		applied |= VC_LOCKDOWN_NO_DUMP;      /* blocks ptrace attach / core generation */
+#endif
+	return applied;
+}
+
+/* ================================================================================================
  *  Scrub registry
  * ============================================================================================== */
 

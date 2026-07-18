@@ -38,6 +38,21 @@ byte-for-byte stock.
 - `HKFScrubActiveConfig()` (`src/Common/HardwareKeyFactor.c`) wipes the active factor's secret
   fields and detaches the process-wide config pointer.
 
+### 1b. Process memory-hygiene lockdown (`VcKeyMemoryLockdown`)
+
+Scrubbing RAM is useless if a key already leaked *out* of RAM. Called once at startup (from
+`KeyScrubManager::Enable`, before any secret is derived), best-effort:
+
+- **`mlockall(MCL_CURRENT|MCL_FUTURE)`** — pages are never swapped, so a key never reaches an
+  unencrypted swap file (needs privilege; reported but not required).
+- **`RLIMIT_CORE = 0`** — a crash cannot dump keys to a core file.
+- **`PR_SET_DUMPABLE = 0`** (Linux) — blocks `ptrace` attach and core generation, closing trivial
+  live-key extraction.
+
+Returns a bitmask of what was applied. **Hibernation is NOT covered** — it writes all of RAM to disk
+regardless of `mlock`; users must disable hibernation on machines holding mounted volumes. Verified in
+the harness (step `[6]` `[G]`): after the call, `RLIMIT_CORE==0` and the process is non-dumpable.
+
 ### 2. RAM encryption at rest (`VcKsRamTransform`, mirrors the Windows scheme)
 
 This reproduces VeraCrypt's own Windows RAM-key-encryption construction

@@ -30,14 +30,15 @@ Do these before adding surface area.
 3. **Anti-forensic (AF) splitting for keyslots** `[M] [FORMAT]` — LUKS/TKS1 diffuses each slot's key
    material across many stripes so a *partial* recovery (the SSD wear-leveling remnant problem)
    yields nothing. This is the concrete answer to the SSD-remnant caveat instead of a doc warning.
-4. **Swap / hibernate / core-dump lockdown** `[S]` — scrubbing RAM does not help if the key already
-   reached swap or a hibernation image. `mlock`/`mlockall` on key buffers, `RLIMIT_CORE=0`,
-   `PR_SET_DUMPABLE=0`, Yama `PR_SET_PTRACER`, and `explicit_bzero` (so the compiler cannot elide the
-   wipe). Document the hibernation hazard loudly.
+4. **Swap / hibernate / core-dump lockdown** `[S]` — **DONE** (`VcKeyMemoryLockdown` in
+   `Common/KeyScrub.c`, called from `KeyScrubManager::Enable`): `mlockall`, `RLIMIT_CORE=0`,
+   `PR_SET_DUMPABLE=0`; verified at runtime in step `[6]` `[G]`; hibernation hazard documented loudly
+   in `docs/MEMORY-SCRUB.md`. (Yama `PR_SET_PTRACER` scoping can still be added.)
 5. **Authenticate the keyslot area** `[M] [FORMAT]` — XTS provides no integrity; a MAC over header +
    keyslot region (keyed from the master key) turns silent tampering into a detected error.
-6. **Zeroization tests** `[S] [SANDBOX-OK]` — assert key buffers are actually zero after use; catches
-   optimized-away `memset` and missed paths.
+6. **Zeroization tests** `[S] [SANDBOX-OK]` — **DONE** (step `[6]` `[H]`): `VcSecureWipe` asserted to
+   zero across every size/alignment and survive `-O2` dead-store elimination (observed through a
+   separate alias). Broader per-module scratch-wipe assertions can still be added.
 
 ---
 

@@ -78,6 +78,7 @@ namespace VeraCrypt
 		pthread_mutex_lock (&Lock);
 		if (!Enabled)
 		{
+			VcKeyMemoryLockdown ();   // no swap / no core / no ptrace, before any secret is derived
 			VcKsRamProtectInit (&KeyScrubManager::RandSeed);
 			Enabled = true;
 			IdleTimeoutSeconds = idleTimeoutSeconds;

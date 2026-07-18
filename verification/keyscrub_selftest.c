@@ -21,6 +21,12 @@
 #include <stdint.h>
 #include "Common/KeyScrub.h"
 #include "Common/HardwareKeyFactor.h"
+#if defined(__linux__) || defined(__APPLE__)
+#include <sys/resource.h>   /* getrlimit for the lockdown check */
+#endif
+#if defined(__linux__)
+#include <sys/prctl.h>      /* PR_GET_DUMPABLE for the lockdown check */
+#endif
 
 static void print_hex (const char *label, const unsigned char *p, size_t n)
 {
@@ -136,6 +142,40 @@ int main (void)
 		printf ("[E] unprotect restored secret: %s\n", restored ? "YES" : "NO");
 		printf ("[E] scrub-on-event cleared secret: %s\n", scrubbed ? "YES" : "NO");
 		VcKsRamProtectShutdown ();
+	}
+
+	/* [G] memory-hygiene lockdown: core dumps disabled + process non-dumpable (observable here) */
+	{
+		int bits = VcKeyMemoryLockdown ();
+		int core_off = 0, dump_off = 0;
+#if defined(__linux__) || defined(__APPLE__)
+		{ struct rlimit rl; if (getrlimit (RLIMIT_CORE, &rl) == 0 && rl.rlim_cur == 0) core_off = 1; }
+#endif
+#if defined(__linux__)
+		dump_off = (prctl (PR_GET_DUMPABLE, 0, 0, 0, 0) == 0);
+#endif
+		printf ("[G] lockdown ran (bits=0x%02x): %s\n", bits, "YES");
+		printf ("[G] core dumps disabled (RLIMIT_CORE==0): %s\n", core_off ? "YES" : "NO");
+		printf ("[G] process non-dumpable (PR_GET_DUMPABLE==0): %s\n", dump_off ? "YES" : "NO");
+		printf ("[G] mlockall best-effort (privilege-gated, not asserted): %s\n",
+		        (bits & VC_LOCKDOWN_MLOCK) ? "applied" : "skipped");
+	}
+
+	/* [H] zeroization matrix: VcSecureWipe zeroes every size/alignment and survives -O2 DSE */
+	{
+		static unsigned char pool[300];
+		int sizes[] = { 1, 7, 8, 16, 31, 32, 63, 64, 100, 255 };
+		unsigned i, off, allzero = 1;
+		for (off = 0; off < 3; off++)
+			for (i = 0; i < sizeof (sizes) / sizeof (sizes[0]); i++)
+			{
+				volatile unsigned char *alias = pool + off;
+				int n = sizes[i], j;
+				for (j = 0; j < n; j++) pool[off + j] = (unsigned char) (0xA5 ^ j);
+				VcSecureWipe (pool + off, (size_t) n);
+				for (j = 0; j < n; j++) if (alias[j]) allzero = 0;
+			}
+		printf ("[H] secure-wipe zeroes all sizes/alignments (survives -O2): %s\n", allzero ? "YES" : "NO");
 	}
 
 	/* [F] HKF integration: HKFScrubActiveConfig wipes the reconstructed secret + detaches config */

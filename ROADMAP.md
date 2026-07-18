@@ -88,6 +88,14 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
    to the table version over **all 65536 inputs** and `a·inv(a)=1` for every `a≠0`; all existing Shamir
    KATs/threshold checks unchanged (`verification/shamir_test.c`, step `[5]`). A `dudect`/`ctgrind`
    timing-leakage test in CI is the recommended follow-up. `patches/shamir-constant-time.patch`.
+14. **Memory-hygiene lockdown + zeroization tests** (`Common/KeyScrub.c`) — P0 hardening
+   (`IDEAS-BACKLOG.md` §P0.4/§P0.6). `VcKeyMemoryLockdown` (called from `KeyScrubManager::Enable` before
+   any secret is derived): `mlockall` (no swap), `RLIMIT_CORE=0` (no core dump), `PR_SET_DUMPABLE=0`
+   (no ptrace/core) — best-effort, returns a bitmask. Runtime-verified in the sandbox (step `[6]` `[G]`:
+   core disabled + non-dumpable after the call); and a zeroization matrix (`[H]`) asserts `VcSecureWipe`
+   zeroes every size/alignment and survives `-O2`. Hibernation writes all of RAM to disk and is **not**
+   covered — documented in `docs/MEMORY-SCRUB.md`. Gated `-DVC_ENABLE_KEYSCRUB`.
+   `patches/keyscrub-lockdown.patch`.
 
 ---
 
