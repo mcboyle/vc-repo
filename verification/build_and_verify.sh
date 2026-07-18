@@ -477,3 +477,32 @@ if "$PS_CC" -O2 $PS_WNO $PS_NOASM $PS_GC $PS_INC -c "$SRCROOT/Crypto/chacha256.c
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/ps_log)"
 fi
+
+echo "[22] Rollback/replay protection via a monotonic counter — snapshot-replay detection vs independent python"
+# Bind a hardware monotonic counter (TPM NV / token) into the top-level commit authenticator:
+# otk = ChaCha20(commit_key, le64(counter))[0..32], tag = Poly1305(otk, state_root). A restored older
+# snapshot carries an old counter and fails vs the advanced hardware counter -- the replay that Merkle/
+# per-sector MACs cannot catch. Links the REAL in-tree chacha256.c + step-18 Poly1305. See docs/ROLLBACK-COUNTER-SPEC.md.
+MC_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then MC_CC="$c"; break; fi; done
+MC_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+MC_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+MC_GC="-ffunction-sections -fdata-sections"
+MC_INC="$INC -I$SRCROOT/Crypto"
+if "$MC_CC" -O2 $MC_WNO $MC_NOASM $MC_GC $MC_INC -c "$SRCROOT/Crypto/chacha256.c" -o /tmp/mc_cc.o 2>/tmp/mc_log \
+   && "$MC_CC" -O2 $MC_WNO $MC_NOASM $MC_INC "$HERE/monotcounter_poc.c" /tmp/mc_cc.o -Wl,--gc-sections -o /tmp/mc_poc 2>>/tmp/mc_log; then
+	/tmp/mc_poc > /tmp/mc_c.txt; grep -E '^REF (fresh|rollback|forged|tamper|monotonic|wrongkey)' /tmp/mc_c.txt
+	python3 "$HERE/monotcounter_reference.py" > /tmp/mc_py.txt
+	grep '^REF' /tmp/mc_c.txt > /tmp/mc_c_ref.txt; grep '^REF' /tmp/mc_py.txt > /tmp/mc_py_ref.txt
+	if diff -q /tmp/mc_c_ref.txt /tmp/mc_py_ref.txt >/dev/null; then
+		echo "    MATCH: rollback counter (real chacha256 + Poly1305) == independent python over $(wc -l < /tmp/mc_c_ref.txt) vectors"
+	else
+		echo "    MISMATCH"; diff /tmp/mc_c_ref.txt /tmp/mc_py_ref.txt; exit 1
+	fi
+	for k in fresh_accept rollback_detected forged_marker_detected tamper_state_detected monotonic_enforced wrongkey_detected; do
+		grep -q "^REF $k YES$" /tmp/mc_c.txt || { echo "    PROPERTY $k FAILED"; exit 1; }
+	done
+	echo "    snapshot rollback + forged marker + tamper rejected; counter is increment-only"
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/mc_log)"
+fi

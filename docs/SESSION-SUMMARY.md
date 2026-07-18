@@ -3,7 +3,7 @@
 Work on branch `claude/project-structure-review-5p44w9`. Every crypto-relevant change is proven **two
 ways** (independent Python **and** real compiled VeraCrypt objects); every default build stays
 byte-for-byte stock; not-sandbox-testable integration is scoped in docs, not written blind.
-`verification/build_and_verify.sh` runs **21 green steps**.
+`verification/build_and_verify.sh` runs **22 green steps**.
 
 ## Built + verified (product code, gated)
 
@@ -39,6 +39,7 @@ byte-for-byte stock; not-sandbox-testable integration is scoped in docs, not wri
 | Merkle tree over the volume (off-disk root, offline-tamper detection) | root `6dbdb1c1…` [19] | `docs/MERKLE-SPEC.md` |
 | Keyslot-area MAC (ChaCha20-Poly1305; tamper/truncation detected before unwrap) | tag `446592f2…` [20] | `docs/KEYSLOT-MAC-SPEC.md` |
 | Per-sector authentication (index-bound MAC; per-sector independence + relocation resistance) | tag `74e883b1…` [21] | `docs/PERSECTOR-AUTH-SPEC.md` |
+| Rollback/replay protection (monotonic counter bound into the commit authenticator) | tag `e8bbc4f0…` [22] | `docs/ROLLBACK-COUNTER-SPEC.md` |
 
 ## Remaining — real build / real hardware only
 

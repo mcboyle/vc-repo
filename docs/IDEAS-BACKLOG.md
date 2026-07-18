@@ -75,7 +75,12 @@ bits and produce controlled plaintext garbage without detection. Every item here
   crash-consistent path updates.
 - **Rollback / replay protection via a monotonic counter** `[M] [HW]` — TPM NV counter or a
   token-backed counter, so restoring an older snapshot of the volume is detectable. Directly counters
-  the snapshot-*replay* variant of the multi-snapshot problem.
+  the snapshot-*replay* variant of the multi-snapshot problem. *Binding construction + replay properties
+  proven* (step `[22]`, `docs/ROLLBACK-COUNTER-SPEC.md`): the monotonic counter doubles as the one-time
+  nonce (`otk = ChaCha20(commit_key, le64(counter))[0..32]`, `tag = Poly1305(otk, state_root)`) on the
+  real in-tree ChaCha20 + step-`[18]` Poly1305 — rollback, forged counter marker, tamper, and wrong-key
+  all rejected; the modeled NV counter is increment-only. Open work is the `[HW]` counter source
+  (TPM2_NV_Increment / token), commit granularity, and the bricking-recovery path.
 - **Header version + anti-downgrade binding** `[S]` — bind the KDF/parameters into the MAC so an
   attacker cannot silently downgrade a volume to weaker parameters.
 
