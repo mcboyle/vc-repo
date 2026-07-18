@@ -103,3 +103,30 @@ if "$DT_CC" -O2 $DT_WNO $DT_NOASM $DT_GC -DVC_ENABLE_DURESS $DT_INC -c "$SRCROOT
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/dt_cc.log)"
 fi
+
+echo ""
+echo "[8] Keyslots PoC: per-slot master-key wrap/unwrap (PBKDF2->ChaCha20+HMAC) vs independent python"
+# Proof-of-concept anchoring docs/KEYSLOTS-SPEC.md. Links the REAL in-tree Sha2.c + chacha256.c;
+# keyslot_reference.py is independent (hashlib PBKDF2/HMAC + reimplemented ChaCha20).
+KP_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then KP_CC="$c"; break; fi; done
+KP_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+KP_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+KP_GC="-ffunction-sections -fdata-sections"
+KP_INC="$INC -I$SRCROOT/Crypto"
+if "$KP_CC" -O2 $KP_WNO $KP_NOASM $KP_GC $KP_INC -c "$SRCROOT/Crypto/Sha2.c"     -o /tmp/kp_sha2.o 2>/tmp/kp_cc.log \
+   && "$KP_CC" -O2 $KP_WNO $KP_NOASM $KP_GC $KP_INC -c "$SRCROOT/Crypto/chacha256.c" -o /tmp/kp_chacha.o 2>>/tmp/kp_cc.log \
+   && "$KP_CC" -O2 $KP_WNO $KP_NOASM $KP_INC "$HERE/keyslot_poc.c" \
+        /tmp/kp_sha2.o /tmp/kp_chacha.o -Wl,--gc-sections -o /tmp/keyslot_poc 2>>/tmp/kp_cc.log; then
+	/tmp/keyslot_poc > /tmp/kp_c.txt; cat /tmp/kp_c.txt
+	python3 "$HERE/keyslot_reference.py" > /tmp/kp_py.txt
+	grep '^REF' /tmp/kp_c.txt > /tmp/kp_c_ref.txt
+	if diff -q /tmp/kp_c_ref.txt /tmp/kp_py.txt >/dev/null; then
+		echo "    MATCH: keyslot wrap/unwrap (real Sha2/chacha objects) == independent python reference"
+	else
+		echo "    MISMATCH"; diff /tmp/kp_c_ref.txt /tmp/kp_py.txt; exit 1
+	fi
+	if grep -Eq ': NO$' /tmp/kp_c.txt; then echo "    KEYSLOT POC FAILED"; exit 1; fi
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/kp_cc.log)"
+fi

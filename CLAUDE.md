@@ -104,10 +104,11 @@ Shamir 3-of-5 header key `a8b0cbb7…`; wrong secret / below-threshold flips 64/
 
 ## Good next tasks (see ROADMAP.md)
 
-1. **Network-bound share source** (Tang/Clevis-style) for the split-key factor.
-2. **Multiple keyslots** (header/keyslot-table format work) — unlocks per-person keys, rotation,
-   revocation, and a real duress *keyslot* (a stronger home for the duress passphrase than the current
-   local salt+tag).
+1. **Multiple keyslots — build the specced design** (`docs/KEYSLOTS-SPEC.md`; the per-slot wrapping
+   crypto is already proven, `verification/keyslot_poc.c`). Build the `KeyslotStore` seam + three
+   backends (in-header table / deniable free-space / sidecar), enroll/open/rotate/revoke CLI, mount-time
+   slot search, and the duress-slot hook. Swap the PoC's PBKDF2-SHA256 for the in-tree `derive_key_sha512`.
+2. **Network-bound share source** (Tang/Clevis-style) for the split-key factor.
 3. **Validate the KeyScrub OS triggers on real hardware** (logind screen-lock, udev device-connect)
    and, separately, the kernel-side dm-crypt master-key scrub the user-space scrub can't reach.
 4. **End-to-end duress-dismount test on a real build** (mounted volumes → `--duress-dismount` and the

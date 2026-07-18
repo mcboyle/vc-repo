@@ -68,6 +68,16 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
 
 ## DESIGN — specced, not yet built
 
+- **Multiple independent keyslots** (like LUKS2's 8+). *(The enabling primitive for per-person keys,
+  rotation, revocation, and a real duress keyslot — the one deliberately fork-only on-disk format.)*
+  One master key, many independent wrappings: slot 0 is the untouched native header, slots 1..N wrap
+  the same VMK under their own passphrase/factor, so add/rotate/revoke never re-encrypts the body.
+  **All three storage backends** behind one seam: in-header table (visible, in the 63.5 KiB header
+  slack), deniable free-space slots (presence deniable; inherits hidden-volume limits), and a sidecar
+  file (volume untouched; sidecar is a tell). The **per-slot wrapping crypto is proven** two ways
+  (PBKDF2→ChaCha20 wrap + HMAC auth; round-trip + wrong-passphrase rejection; real Sha2/chacha objects
+  vs. independent Python; anchor `56434b53…`, `verification/keyslot_poc.c` step `[8]`). Storage
+  backends + mount/CLI integration remain to build. `docs/KEYSLOTS-SPEC.md`.
 - **Decoy content generator** (Phase 2 of the decoy) — prepare believable staged content with
   consistent metadata (filesystem vs in-file timestamps, coherent persona). Content helper only.
   `docs/DECOY-VOLUME-SPEC.md §4`.
@@ -78,10 +88,6 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
 
 ## BACKLOG — good ideas from the research, not started
 
-- **Multiple independent keyslots** (like LUKS2's 8+). VeraCrypt has one password/keyfile set per
-  volume. Keyslots enable per-person keys, key rotation, revocation, and dedicated duress/recovery
-  slots **without re-encrypting the volume body**. Requires a header/keyslot-table format change —
-  the enabling primitive for much of the rest.
 - **Network-bound unlock** (Tang/Clevis-style, McCallum–Relyea). Bind a share/key to a network
   server's presence; a stolen or off-network machine stays locked; the server never sees the key.
   Composes cleanly as a **Shamir share source** (fits the split-key factor already built).
