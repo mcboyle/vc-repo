@@ -318,3 +318,28 @@ if "$AF_CC" -O2 $AF_WNO $AF_NOASM $AF_GC $AF_INC -c "$SRCROOT/Crypto/Sha2.c" -o 
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/af_log)"
 fi
+
+echo ""
+echo "[16] Balloon memory-hard KDF (candidate alongside Argon2id) vs independent python"
+# Balloon (Boneh-Corrigan-Gibbs-Schechter) over the in-tree SHA-256: expand/mix(delta=3)/extract with
+# explicit space + time cost. Links the REAL in-tree Sha2.c; balloon_reference.py is independent (hashlib).
+BL_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then BL_CC="$c"; break; fi; done
+BL_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+BL_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+BL_GC="-ffunction-sections -fdata-sections"
+BL_INC="$INC -I$SRCROOT/Crypto"
+if "$BL_CC" -O2 $BL_WNO $BL_NOASM $BL_GC $BL_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/bl_sha2.o 2>/tmp/bl_log \
+   && "$BL_CC" -O2 $BL_WNO $BL_NOASM $BL_INC "$HERE/balloon_poc.c" /tmp/bl_sha2.o -Wl,--gc-sections -o /tmp/balloon_poc 2>>/tmp/bl_log; then
+	/tmp/balloon_poc > /tmp/bl_c.txt; cat /tmp/bl_c.txt
+	python3 "$HERE/balloon_reference.py" > /tmp/bl_py.txt
+	grep '^REF' /tmp/bl_c.txt > /tmp/bl_c_ref.txt; grep '^REF' /tmp/bl_py.txt > /tmp/bl_py_ref.txt
+	if diff -q /tmp/bl_c_ref.txt /tmp/bl_py_ref.txt >/dev/null; then
+		echo "    MATCH: Balloon KDF (real Sha2 object) == independent python reference"
+	else
+		echo "    MISMATCH"; diff /tmp/bl_c_ref.txt /tmp/bl_py_ref.txt; exit 1
+	fi
+	if grep -Eq ': NO$' /tmp/bl_c.txt; then echo "    BALLOON POC FAILED"; exit 1; fi
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/bl_log)"
+fi

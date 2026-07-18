@@ -80,11 +80,12 @@ bits and produce controlled plaintext garbage without detection. Every item here
 
 ## C. KDF and password hardening
 
-- **Memory-hard alternatives to benchmark against Argon2id** `[M] [SANDBOX-OK]` — **Balloon hashing**
-  (provably memory-hard, builds on a standard hash), **yescrypt** (ROM-hard; now common for Linux
-  password hashing), **Lyra2**, **Catena** (cache-timing resistant), **scrypt**. All are "slow by
-  design," which is the point. Argon2**d** is also worth exposing where side-channel exposure is not a
-  concern (a local disk header is arguably such a case) since it maximizes GPU resistance.
+- **Memory-hard alternatives to benchmark against Argon2id** `[M] [SANDBOX-OK]` — **Balloon hashing
+  algorithm PROVEN** (step `[16]`, `docs/BALLOON-SPEC.md`): expand/mix(delta=3)/extract over the in-tree
+  SHA-256, deterministic + salt/space/time-dependent, real `Sha2.c` vs. independent Python byte-for-byte
+  (anchor `635ebeac…`). Remaining: wire it as a selectable PRF and benchmark vs Argon2id at equal time
+  budgets. Still to survey: **yescrypt** (ROM-hard), **Lyra2**, **Catena**, **scrypt**; and exposing
+  Argon2**d** where side-channel exposure is not a concern (a local disk header) for max GPU resistance.
 - **ROM-hard KDF with a large local ROM file** `[M]` — derivation reads pseudo-randomly from a
   multi-GB file the user keeps (external disk, second device). An attacker must exfiltrate the ROM as
   well as the header; brute forcing without it is infeasible. Effectively "a keyfile that also imposes

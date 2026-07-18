@@ -171,6 +171,15 @@ brief:
 
 ---
 
+- **Balloon memory-hard KDF** (candidate alongside Argon2id, `IDEAS-BACKLOG.md` §C) — **algorithm
+  proven; selectable-PRF integration pending.** Provably memory-hard password hash built on the in-tree
+  SHA-256 (expand/mix `delta=3`/extract, explicit space+time cost). Proven two ways — deterministic +
+  salt/space/time-dependent, real `Sha2.c` vs. independent Python, byte-for-byte (anchor `635ebeac…`,
+  `verification/balloon_poc.c` step `[16]`). Remaining: wire as a mountable PRF and benchmark vs
+  Argon2id. `docs/BALLOON-SPEC.md`.
+
+---
+
 ## DECIDED — advisory conclusions (no code, keep for reference)
 
 - **Cipher choice.** At a 256-bit key, brute force is moot. AES-256 is the most-analyzed;
