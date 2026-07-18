@@ -41,9 +41,12 @@ Do these before adding surface area.
    in `docs/MEMORY-SCRUB.md`. (Yama `PR_SET_PTRACER` scoping can still be added.)
 5. **Authenticate the keyslot area** `[M] [FORMAT]` — XTS provides no integrity; a MAC over header +
    keyslot region (keyed from the master key) turns silent tampering into a detected error.
-   *Primitive ready:* the Poly1305 one-time authenticator this needs is **built + proven** (step
-   `[18]`, `docs/POLY1305-SPEC.md`); the natural first consumer once the keyslot volume-I/O bindings
-   land. Remaining is the MAC-key discipline + slot-table framing, not the MAC math.
+   *MAC construction proven* (step `[20]`, `docs/KEYSLOT-MAC-SPEC.md`): ChaCha20-Poly1305 one-time MAC
+   over the area (`otk = ChaCha20(mac_key, nonce)[0..32]`, `tag = Poly1305(otk, area)`), driving the
+   real in-tree ChaCha20 + the step-`[18]` Poly1305 — tamper, truncation, and wrong-key all rejected by
+   a constant-time check, nonce binds, no volume-format change. Remaining is only where the
+   `(nonce, tag)` trailer lives per `KeyslotArea` backend and calling the check before the mount-time
+   slot search (rides with the keyslot volume-I/O bindings, `docs/KEYSLOTS-SPEC.md §9`).
 6. **Zeroization tests** `[S] [SANDBOX-OK]` — **DONE** (step `[6]` `[H]`): `VcSecureWipe` asserted to
    zero across every size/alignment and survive `-O2` dead-store elimination (observed through a
    separate alias). Broader per-module scratch-wipe assertions can still be added.

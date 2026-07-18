@@ -376,7 +376,7 @@ echo "[18] Poly1305 one-shot (RFC 8439) vs independent python reference + publis
 # published tags (Sec 2.5.2 and A.3). Candidate for the integrity tier / wide-block modes; see docs/POLY1305-SPEC.md.
 PL_CC=""
 for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then PL_CC="$c"; break; fi; done
-if "$PL_CC" -O2 -Wall "$HERE/poly1305_poc.c" -o /tmp/poly1305_poc 2>/tmp/pl_log; then
+if "$PL_CC" -O2 -Wall -I"$HERE" "$HERE/poly1305_poc.c" -o /tmp/poly1305_poc 2>/tmp/pl_log; then
 	/tmp/poly1305_poc > /tmp/pl_c.txt; sed -n '1,3p' /tmp/pl_c.txt
 	python3 "$HERE/poly1305_reference.py" > /tmp/pl_py.txt
 	grep '^REF' /tmp/pl_c.txt > /tmp/pl_c_ref.txt; grep '^REF' /tmp/pl_py.txt > /tmp/pl_py_ref.txt
@@ -418,4 +418,34 @@ if "$MK_CC" -O2 $MK_WNO $MK_NOASM $MK_GC $MK_INC -c "$SRCROOT/Crypto/Sha2.c" -o 
 	echo "    single-bit sector flip changes the root and its authentication path is rejected"
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/mk_log)"
+fi
+
+echo "[20] Keyslot-area MAC (ChaCha20-Poly1305 one-time) — tamper/truncation detection vs independent python"
+# Authenticate the keyslot table under a key derived from the master key: one_time_key = ChaCha20(mac_key,
+# nonce)[0..32], tag = Poly1305(otk, area). Any edit/truncation/slot-count change fails a constant-time
+# check before unwrap. Links the REAL in-tree chacha256.c + the step-18 Poly1305; python is independent
+# (pure-python ChaCha + bigint Poly1305). No on-disk format change. See docs/KEYSLOT-MAC-SPEC.md.
+KM_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then KM_CC="$c"; break; fi; done
+KM_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+KM_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+KM_GC="-ffunction-sections -fdata-sections"
+KM_INC="$INC -I$SRCROOT/Crypto"
+if "$KM_CC" -O2 $KM_WNO $KM_NOASM $KM_GC $KM_INC -c "$SRCROOT/Crypto/chacha256.c" -o /tmp/km_cc.o 2>/tmp/km_log \
+   && "$KM_CC" -O2 $KM_WNO $KM_NOASM $KM_INC "$HERE/keyslot_mac_poc.c" /tmp/km_cc.o -Wl,--gc-sections -o /tmp/km_poc 2>>/tmp/km_log; then
+	/tmp/km_poc > /tmp/km_c.txt; grep -E '^REF (mac|accept|reject|nonce|chacha)' /tmp/km_c.txt
+	python3 "$HERE/keyslot_mac_reference.py" > /tmp/km_py.txt
+	grep '^REF' /tmp/km_c.txt > /tmp/km_c_ref.txt; grep '^REF' /tmp/km_py.txt > /tmp/km_py_ref.txt
+	if diff -q /tmp/km_c_ref.txt /tmp/km_py_ref.txt >/dev/null; then
+		echo "    MATCH: keyslot-area MAC (real chacha256 + Poly1305) == independent python over $(wc -l < /tmp/km_c_ref.txt) vectors"
+	else
+		echo "    MISMATCH"; diff /tmp/km_c_ref.txt /tmp/km_py_ref.txt; exit 1
+	fi
+	grep -q '^REF chacha_zero_kat 76b8e0ada0f13d90405d6ae55386bd28bdd219b8a08ded1aa836efcc8b770dc7$' /tmp/km_c.txt || { echo "    CHACHA KAT FAILED"; exit 1; }
+	for k in accept_valid reject_tamper reject_trunc reject_wrongkey nonce_binds; do
+		grep -q "^REF $k YES$" /tmp/km_c.txt || { echo "    PROPERTY $k FAILED"; exit 1; }
+	done
+	echo "    tamper, truncation, wrong-key all rejected by constant-time tag check; nonce binds"
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/km_log)"
 fi

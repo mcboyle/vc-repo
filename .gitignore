@@ -17,3 +17,7 @@ run_*
 *.swp
 .vscode/
 .idea/
+
+# Python bytecode cache from verification cross-imports
+verification/__pycache__/
+*.pyc

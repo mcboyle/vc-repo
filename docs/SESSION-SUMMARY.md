@@ -3,7 +3,7 @@
 Work on branch `claude/project-structure-review-5p44w9`. Every crypto-relevant change is proven **two
 ways** (independent Python **and** real compiled VeraCrypt objects); every default build stays
 byte-for-byte stock; not-sandbox-testable integration is scoped in docs, not written blind.
-`verification/build_and_verify.sh` runs **19 green steps**.
+`verification/build_and_verify.sh` runs **20 green steps**.
 
 ## Built + verified (product code, gated)
 
@@ -37,10 +37,11 @@ byte-for-byte stock; not-sandbox-testable integration is scoped in docs, not wri
 | OPRF password hardening (offline-guess resistance) | `ca5691bd…` [17] | `docs/OPRF-SPEC.md` |
 | Poly1305 one-time authenticator (integrity-tier primitive) | RFC 8439 `a8061dc1…` [18] | `docs/POLY1305-SPEC.md` |
 | Merkle tree over the volume (off-disk root, offline-tamper detection) | root `6dbdb1c1…` [19] | `docs/MERKLE-SPEC.md` |
+| Keyslot-area MAC (ChaCha20-Poly1305; tamper/truncation detected before unwrap) | tag `446592f2…` [20] | `docs/KEYSLOT-MAC-SPEC.md` |
 
 ## Remaining — real build / real hardware only
 
-- **Keyslots §9** — `KeyslotArea` volume-I/O, mount-time slot search + duress-slot hook, enroll/rotate/revoke CLI, keyslot-area MAC (§P0.5).
+- **Keyslots §9** — `KeyslotArea` volume-I/O, mount-time slot search + duress-slot hook, enroll/rotate/revoke CLI. The keyslot-area MAC (§P0.5) crypto is now **proven** [20]; only its per-backend `(nonce, tag)` placement + the pre-search check call remain.
 - **Network-share / OPRF servers** — real CFRG group (ristretto255/P-256) or 2048-bit MODP, transport, threshold OPRF/PPSS split.
 - **ORAM / decoy-fragments / AF-split integration** — block layer, real hidden-volume offsets, stripe layout; validate on real SSDs.
 - **End-to-end validations** — KeyScrub OS triggers, duress round-trip, Argon2/salt-bind create↔mount, on real volumes/desktop.
