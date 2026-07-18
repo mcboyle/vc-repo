@@ -47,6 +47,21 @@ static unsigned char gf_inv (unsigned char a)
 	return r;
 }
 
+/* ---- CRC-32 (standard, polynomial 0xEDB88320) — self-contained, for verifiable reconstruction ---- */
+
+unsigned int shamir_secret_checksum (const unsigned char *secret, int len)
+{
+	unsigned int crc = 0xFFFFFFFFu;
+	int i, b;
+	for (i = 0; i < len; i++)
+	{
+		crc ^= secret[i];
+		for (b = 0; b < 8; b++)
+			crc = (crc >> 1) ^ (0xEDB88320u & (unsigned int) (-(int) (crc & 1u)));
+	}
+	return crc ^ 0xFFFFFFFFu;
+}
+
 /* Evaluate the polynomial with coefficients coef[0..degree] at point x (Horner). */
 static unsigned char gf_poly_eval (const unsigned char *coef, int degree, unsigned char x)
 {

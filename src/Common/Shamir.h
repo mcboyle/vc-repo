@@ -56,6 +56,16 @@ int shamir_split (const unsigned char *secret, int secret_len,
 int shamir_combine (const ShamirShare *shares, int count,
                     unsigned char *secret_out, int *secret_len_out);
 
+/*
+ * CRC-32 checksum of a secret, so a reconstruction can be *verified* rather than trusted blindly.
+ * shamir_combine returns an incorrect secret (not an error) when given wrong or below-threshold shares;
+ * compute this checksum at split time and keep it with the recovery kit (it reveals nothing about the
+ * secret beyond a 32-bit fingerprint), then recompute it after shamir_combine and compare — a mistyped
+ * share or an insufficient set is then detected instead of silently producing garbage. Detects
+ * accidental corruption/transcription; for adversarial tamper-resistance use a keyed MAC instead.
+ */
+unsigned int shamir_secret_checksum (const unsigned char *secret, int len);
+
 #if defined(__cplusplus)
 }
 #endif

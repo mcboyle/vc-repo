@@ -88,6 +88,12 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
    to the table version over **all 65536 inputs** and `a·inv(a)=1` for every `a≠0`; all existing Shamir
    KATs/threshold checks unchanged (`verification/shamir_test.c`, step `[5]`). A `dudect`/`ctgrind`
    timing-leakage test in CI is the recommended follow-up. `patches/shamir-constant-time.patch`.
+15. **Verifiable Shamir reconstruction** (`Common/Shamir.c`) — `shamir_secret_checksum` (CRC-32) so a
+   reconstruction is *verified*: a mistyped share or a below-threshold combine is detected instead of
+   silently returning garbage (the header's own "wrong shares yield an incorrect secret" caveat). Matches
+   Python `zlib.crc32` byte-for-byte (`3b8cfe40`); detection shown in step `[5]`. Self-contained, no new
+   dependency. A keyed per-share MAC (adversarial) and Feldman/Pedersen VSS remain
+   (`IDEAS-BACKLOG.md` §D). `patches/shamir-verifiable-shares.patch`.
 14. **Memory-hygiene lockdown + zeroization tests** (`Common/KeyScrub.c`) — P0 hardening
    (`IDEAS-BACKLOG.md` §P0.4/§P0.6). `VcKeyMemoryLockdown` (called from `KeyScrubManager::Enable` before
    any secret is derived): `mlockall` (no swap), `RLIMIT_CORE=0` (no core dump), `PR_SET_DUMPABLE=0`

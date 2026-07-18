@@ -112,9 +112,13 @@ bits and produce controlled plaintext garbage without detection. Every item here
 - **Per-slot policy metadata** `[M] [FORMAT]` — mount read-only, "this slot is decoy", "this slot is
   duress", force hidden-volume protection, max attempts, expiry. Cheap fields in a record you already
   wrap; converts a lot of desired behavior into configuration.
-- **Verifiable secret sharing / share checksums** `[M] [SANDBOX-OK]` — today a corrupt or mistyped
-  share fails opaquely. Add per-share checksums+MACs (simplest) or Feldman/Pedersen VSS (note: VSS
-  needs a prime-order group, so it does not drop into GF(2⁸) — it implies a second sharing scheme).
+- **Verifiable secret sharing / share checksums** `[M] [SANDBOX-OK]` — **checksum DONE** (step `[5]`):
+  `shamir_secret_checksum` (CRC-32) in `Common/Shamir.c` verifies a reconstruction — a below-threshold
+  or wrong-share combine is detected instead of returning garbage; matches Python `zlib.crc32`
+  byte-for-byte (`3b8cfe40` for the test secret), `patches/shamir-verifiable-shares.patch`. Detects
+  accidental corruption/transcription; a **keyed per-share MAC** (adversarial tamper) and full
+  Feldman/Pedersen VSS (needs a prime-order group — a second sharing scheme) are the remaining, larger
+  steps. Pairs with the SLIP-39 encoding below for the recovery kit.
 - **SLIP-39 style share encoding** `[M] [SANDBOX-OK]` — standardized mnemonic words with checksums and
   two-level groups ("2 of 3 family shares AND 1 of 2 lawyer shares"). Solves both transcription errors
   and group policy in one move; the natural encoding for the recovery kit below.

@@ -20,7 +20,7 @@ echo ""
 echo "[5] Shamir threshold: GF(2^8) KATs + split/combine + threshold property"
 gcc -O2 -I"$SRCROOT" -I"$SRCROOT/Common" "$HERE/shamir_test.c" -o /tmp/shamir_test
 /tmp/shamir_test > /tmp/shamir_c.txt || { echo "shamir_test FAILED"; cat /tmp/shamir_c.txt; exit 1; }
-sed -n '1,12p' /tmp/shamir_c.txt
+sed -n '1,14p' /tmp/shamir_c.txt
 python3 - /tmp/shamir_c.txt <<'PYEOF'
 import sys,re
 exp=[0]*512; log=[0]*256; x=1

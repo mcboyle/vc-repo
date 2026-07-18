@@ -47,6 +47,16 @@ int main(void){
   printf("combine {2,4,5}: same secret?      %s\n", ok2?"YES":"no");
   printf("combine {1,2} (below threshold):   %s  <- must be 'no'\n", bad?"YES":"no");
 
+  /* verifiable reconstruction: the checksum accepts a correct combine and detects a below-threshold one */
+  {
+    unsigned int cs_secret = shamir_secret_checksum(secret, L);
+    unsigned int cs_good = shamir_secret_checksum(rec, L);    /* combine {1,3,5} */
+    unsigned int cs_bad  = shamir_secret_checksum(rec3, L);   /* combine {1,2}   */
+    printf("checksum verifies correct reconstruction: %s\n", cs_good==cs_secret ? "YES":"NO");
+    printf("checksum detects below-threshold garbage:  %s\n", cs_bad !=cs_secret ? "YES":"NO");
+    if(cs_good!=cs_secret || cs_bad==cs_secret){ printf("FAIL: checksum\n"); return 1; }
+  }
+
   printf("\nSHARES_FOR_PY\n");
   for(int s=0;s<N;s++){ printf("%d:",sh[s].x); for(int i=0;i<L;i++) printf("%02x",sh[s].y[i]); printf("\n"); }
   printf("\n%s\n", (ok1&&ok2&&!bad)?"PASS: any 3 shares reconstruct; 2 shares do not":"FAIL");

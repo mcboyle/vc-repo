@@ -1,0 +1,54 @@
+# shamir-verifiable-shares.patch — verifiable reconstruction checksum for Shamir (IDEAS-BACKLOG §D)
+#
+# Path relative to src/ (apply -p1 from src/). Adds shamir_secret_checksum (CRC-32) to this fork's
+# Common/Shamir.{c,h} so a reconstruction can be verified (a mistyped share / below-threshold combine is
+# detected instead of silently returning garbage). Self-contained, no new dependency. Verified to apply
+# onto the fork baseline.
+#
+diff --git a/Common/Shamir.c b/Common/Shamir.c
+index 2ad729c..84f4e8c 100644
+--- a/Common/Shamir.c
++++ b/Common/Shamir.c
+@@ -47,6 +47,21 @@ static unsigned char gf_inv (unsigned char a)
+ 	return r;
+ }
+ 
++/* ---- CRC-32 (standard, polynomial 0xEDB88320) — self-contained, for verifiable reconstruction ---- */
++
++unsigned int shamir_secret_checksum (const unsigned char *secret, int len)
++{
++	unsigned int crc = 0xFFFFFFFFu;
++	int i, b;
++	for (i = 0; i < len; i++)
++	{
++		crc ^= secret[i];
++		for (b = 0; b < 8; b++)
++			crc = (crc >> 1) ^ (0xEDB88320u & (unsigned int) (-(int) (crc & 1u)));
++	}
++	return crc ^ 0xFFFFFFFFu;
++}
++
+ /* Evaluate the polynomial with coefficients coef[0..degree] at point x (Horner). */
+ static unsigned char gf_poly_eval (const unsigned char *coef, int degree, unsigned char x)
+ {
+diff --git a/Common/Shamir.h b/Common/Shamir.h
+index f4c32f4..c832838 100644
+--- a/Common/Shamir.h
++++ b/Common/Shamir.h
+@@ -56,6 +56,16 @@ int shamir_split (const unsigned char *secret, int secret_len,
+ int shamir_combine (const ShamirShare *shares, int count,
+                     unsigned char *secret_out, int *secret_len_out);
+ 
++/*
++ * CRC-32 checksum of a secret, so a reconstruction can be *verified* rather than trusted blindly.
++ * shamir_combine returns an incorrect secret (not an error) when given wrong or below-threshold shares;
++ * compute this checksum at split time and keep it with the recovery kit (it reveals nothing about the
++ * secret beyond a 32-bit fingerprint), then recompute it after shamir_combine and compare — a mistyped
++ * share or an insufficient set is then detected instead of silently producing garbage. Detects
++ * accidental corruption/transcription; for adversarial tamper-resistance use a keyed MAC instead.
++ */
++unsigned int shamir_secret_checksum (const unsigned char *secret, int len);
++
+ #if defined(__cplusplus)
+ }
+ #endif
