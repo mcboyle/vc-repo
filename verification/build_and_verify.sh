@@ -265,3 +265,30 @@ if "$OR_CC" -O2 $OR_WNO $OR_NOASM $OR_GC $OR_INC -c "$SRCROOT/Crypto/chacha256.c
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/or_log)"
 fi
+
+echo ""
+echo "[14] Decoy-fragments-by-default: real hidden header vs decoy fragment are indistinguishable-random"
+# A real hidden-volume header (salt||ChaCha20-encrypted) and a decoy fragment (salt||keystream) are the
+# same uniform distribution, so a free-space scanner can't tell a with-hidden volume from a decoy one.
+# Links the REAL in-tree chacha256.c; decoyfrag_reference.py is the independent reference.
+DF_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then DF_CC="$c"; break; fi; done
+DF_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+DF_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+DF_GC="-ffunction-sections -fdata-sections"
+DF_INC="$INC -I$SRCROOT/Crypto"
+if "$DF_CC" -O2 $DF_WNO $DF_NOASM $DF_GC $DF_INC -c "$SRCROOT/Crypto/chacha256.c" -o /tmp/df_cc.o 2>/tmp/df_log \
+   && "$DF_CC" -O2 $DF_WNO $DF_NOASM $DF_INC "$HERE/decoyfrag_poc.c" /tmp/df_cc.o -Wl,--gc-sections -o /tmp/decoyfrag_poc 2>>/tmp/df_log; then
+	/tmp/decoyfrag_poc > /tmp/df_c.txt; cat /tmp/df_c.txt
+	python3 "$HERE/decoyfrag_reference.py" > /tmp/df_py.txt
+	grep '^REF' /tmp/df_c.txt > /tmp/df_c_ref.txt
+	grep '^REF' /tmp/df_py.txt > /tmp/df_py_ref.txt
+	if diff -q /tmp/df_c_ref.txt /tmp/df_py_ref.txt >/dev/null; then
+		echo "    MATCH: decoy fragment generator (real chacha) == independent python reference"
+	else
+		echo "    MISMATCH"; diff /tmp/df_c_ref.txt /tmp/df_py_ref.txt; exit 1
+	fi
+	if grep -Eq ': NO$' /tmp/df_c.txt; then echo "    DECOYFRAG POC FAILED"; exit 1; fi
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/df_log)"
+fi

@@ -22,20 +22,18 @@ into the volume layout is the large real-build part. Full write-up in `docs/ORAM
 - *Sandbox-verifiable:* the core property (done). Integration + a real two-snapshot experiment: no.
 - *Effort:* large (research-grade feature, its own project).
 
-## 2. Decoy-fragments-by-default (upstream issue #1072)
+## 2. Decoy-fragments-by-default (upstream issue #1072) — **core proven; moved to DESIGN**
 
-Write plausible "hidden-volume / hidden-OS creation" artifacts on **every** volume by default, so the
-mere presence of such fragments on an SSD (via wear-leveling remnants) proves nothing — it is expected
-on all volumes. Partial hardening for the SSD-deniability gap `THREAT-MODEL.md` calls out.
-- *In scope:* yes, and it stays clean **if** the fragments are indistinguishable-random storage
-  artifacts (not a fabricated *record of user activity*). The line to hold: writing random-looking
-  creation remnants = deniable storage (fine); synthesizing fake usage history/timestamps to fool an
-  examiner = the DESCOPED evidence-fabrication tool (not fine). Keep it to the former.
-- *Sandbox-verifiable:* partially — one can verify that with-hidden and without-hidden volumes carry
-  the same fragment distribution (an indistinguishability check much like the ORAM one). The actual
-  SSD/FTL remnant behaviour is **not** sandbox-testable (needs real flash).
-- *Effort:* medium. A verifiable "fragments look identical with/without a real hidden volume" PoC is
-  feasible next; the format must match VeraCrypt's real creation artifacts.
+Write plausible hidden-volume creation artifacts on **every** volume by default, so the mere presence
+of such fragments proves nothing. **Status: the indistinguishability core is proven** — a real hidden
+header (`salt || encrypted`) and a decoy fragment (`salt || keystream`) are the same uniform
+distribution, so a free-space scanner cannot tell a with-hidden volume from a decoy-only one
+(`verification/decoyfrag_poc.c`, step `[14]`). Full write-up in `docs/DECOY-FRAGMENTS-SPEC.md`.
+- *In scope:* yes — it stays clean because the fragments carry **no information** (uniform random), the
+  opposite of fabricated activity records (which remain DESCOPED).
+- *Sandbox-verifiable:* the indistinguishability core (done). The actual SSD/FTL remnant behaviour and
+  writing at real hidden-volume offsets: no (needs real flash).
+- *Effort:* medium; remaining work is the write-into-volumes integration + SSD validation.
 
 ## 3. Mobile (Android/iOS) — PDE for phones
 

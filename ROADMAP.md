@@ -113,6 +113,16 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
   yield a byte-identical observable access trace; correctness reads==writes; real in-tree ChaCha20/Sha2
   vs. independent Python; anchor `203b068d…`, `verification/oram_poc.c` step `[13]`). The block-layer +
   position-map integration into the volume layout is a large real-build effort. `docs/ORAM-SPEC.md`.
+- **Decoy-fragments-by-default** (upstream issue #1072) — **indistinguishability core proven;
+  write-into-volumes + SSD validation remain.** Write plausible hidden-volume creation artifacts on
+  *every* volume so their presence proves nothing. A real hidden header (`salt || encrypted`) and a
+  decoy fragment (`salt || keystream`) are the same uniform distribution, so a free-space scanner
+  cannot tell a with-hidden volume from a decoy-only one. **Proven** two ways (identical layout; real
+  and decoy batches pass the same integer byte-uniformity test; real in-tree ChaCha20 vs. independent
+  Python, byte-for-byte; anchors `47067dd6…`/`a52a1326…`, `verification/decoyfrag_poc.c` step `[14]`).
+  Strictly indistinguishable-random storage — not fabricated activity (stays on the right side of the
+  DESCOPED line). Remaining (real-build): write the fragments at real hidden-volume offsets on every
+  volume, and validate remnant behaviour on real SSDs. `docs/DECOY-FRAGMENTS-SPEC.md`.
 - **Decoy content generator** (Phase 2 of the decoy) — prepare believable staged content with
   consistent metadata (filesystem vs in-file timestamps, coherent persona). Content helper only.
   *Caution:* on reflection this sits close to the DESCOPED evidence-fabrication line — keep it to
@@ -124,12 +134,10 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
 ## BACKLOG — good ideas from the research, not started
 
 The research-grade tracks below are surveyed with honest verifiability/effort/scope assessments in
-**`docs/RESEARCH-NOTES.md`** (read that before starting one). (Write-only **ORAM** has moved to DESIGN
-above — its core property is now proven.) In brief:
+**`docs/RESEARCH-NOTES.md`** (read that before starting one). (Write-only **ORAM** and
+**decoy-fragments-by-default** have moved to DESIGN above — their core properties are now proven.) In
+brief:
 
-- **Decoy-fragments-by-default** (upstream issue #1072). Write hidden-volume/creation artifacts on
-  *every* volume so their presence on an SSD proves nothing. Partly verifiable; keep it to
-  indistinguishable-random artifacts (not fabricated activity records — see the DESCOPED line).
 - **Mobile (Android/iOS).** VeraCrypt has none; academic PDE-for-mobile work shows flash-specific
   attacks. Very large; a platform port, not sandbox-verifiable.
 - **UEFI/GPT hidden OS.** Upstream hidden-OS creation is MBR/legacy-BIOS only. Firmware/bootloader work;
