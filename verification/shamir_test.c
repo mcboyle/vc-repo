@@ -1,12 +1,32 @@
 #include <stdio.h>
 #include <string.h>
 #include "Shamir.c"   /* include impl to KAT the static GF helpers */
+/* Independent table-based reference (the pre-fix algorithm) to prove the constant-time gf_mul/gf_inv
+   in Shamir.c compute byte-identical field results over the WHOLE input space. */
+static unsigned char R_exp[512], R_log[256];
+static void ref_init(void){
+  unsigned int x=1; for(int i=0;i<255;i++){ R_exp[i]=(unsigned char)x; R_log[x]=(unsigned char)i;
+    unsigned int hi=x&0x80; x=(x<<1)&0xff; if(hi)x^=0x1b; x^=R_exp[i]; }
+  for(int i=255;i<512;i++) R_exp[i]=R_exp[i-255];
+}
+static unsigned char ref_mul(unsigned char a,unsigned char b){ return (a==0||b==0)?0:R_exp[R_log[a]+R_log[b]]; }
+static unsigned char ref_inv(unsigned char a){ return R_exp[255-R_log[a]]; }
+
 int main(void){
-  gf_init();
+  ref_init();
   printf("=== GF(2^8) known-answer tests (AES field) ===\n");
   printf("gf_mul(0x57,0x83)=%02x (want c1)\n", gf_mul(0x57,0x83));
   printf("gf_mul(0x53,0xca)=%02x (want 01)\n", gf_mul(0x53,0xca));
   printf("gf_inv(0x53)=%02x (want ca)\n", gf_inv(0x53));
+
+  /* constant-time gf_mul/gf_inv (Shamir.c) vs the table reference over all inputs */
+  int mul_ok=1, inv_ok=1;
+  for(int a=0;a<256;a++) for(int b=0;b<256;b++) if(gf_mul((unsigned char)a,(unsigned char)b)!=ref_mul((unsigned char)a,(unsigned char)b)) mul_ok=0;
+  for(int a=1;a<256;a++){ if(gf_inv((unsigned char)a)!=ref_inv((unsigned char)a)) inv_ok=0;
+                          if(gf_mul((unsigned char)a,gf_inv((unsigned char)a))!=1) inv_ok=0; }
+  printf("CT gf_mul == table reference over all 65536 inputs: %s\n", mul_ok?"YES":"NO");
+  printf("CT gf_inv == table + a*inv(a)==1 for all a!=0: %s\n", inv_ok?"YES":"NO");
+  if(!mul_ok||!inv_ok){ printf("FAIL: constant-time GF mismatch\n"); return 1; }
 
   unsigned char secret[32]; for(int i=0;i<32;i++) secret[i]=(unsigned char)(0x10+i);
   int T=3,N=5,L=32;

@@ -19,11 +19,12 @@ review before code.
 
 Do these before adding surface area.
 
-1. **Constant-time GF(2⁸) in Shamir** `[S] [SANDBOX-OK]` — the shipped `gf_mul` does
-   `gf_exp[gf_log[a] + gf_log[b]]` plus an `if (a==0||b==0)` early-out. Both the table index and the
-   branch depend on secret share bytes: a cache-timing/branch side channel in the reconstruction path
-   of the strongest coercion primitive. Replace with a bitsliced or carry-less (`CLMUL`) multiply —
-   no tables, no secret-dependent branches. Verify with `dudect`/`ctgrind`, not just KATs.
+1. **Constant-time GF(2⁸) in Shamir** `[S] [SANDBOX-OK]` — **DONE** (ROADMAP DONE #13,
+   `patches/shamir-constant-time.patch`). Replaced the table+branch `gf_mul`/`gf_inv` with a branchless
+   Russian-peasant multiply and `a^254` fixed-exponent square-multiply — no tables, no secret-dependent
+   control flow. Proven byte-identical to the table version over all 65536 inputs (step `[5]`). A
+   `dudect`/`ctgrind` timing test in CI remains the recommended follow-up.
+   ~~the shipped `gf_mul` does `gf_exp[gf_log[a] + gf_log[b]]` plus an `if (a==0||b==0)` early-out.~~
 2. **Constant-time keyslot search** `[S]` — naive iteration can leak which slot matched or how many
    are populated. Trial-decrypt all slots, select in constant time.
 3. **Anti-forensic (AF) splitting for keyslots** `[M] [FORMAT]` — LUKS/TKS1 diffuses each slot's key

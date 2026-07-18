@@ -79,6 +79,15 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
    in-tree `Sha2.c` vs. independent Python HMAC-SHA256, byte-for-byte (anchor `4619ed18…`), plus
    unbound-unchanged and salt-dependence checks (`verification/saltbind_test.c`, step `[12]`).
    `docs/SALT-BINDING-SPEC.md`, `patches/salt-binding.patch`.
+13. **Constant-time GF(2⁸) in Shamir** (`Common/Shamir.c`) — P0 hardening (`IDEAS-BACKLOG.md` §P0.1).
+   The reconstruction path's `gf_mul` did `gf_exp[gf_log[a]+gf_log[b]]` with an `if (a==0||b==0)`
+   early-out, and `gf_inv` indexed a table by `gf_log[a]` — both **secret-dependent memory indices and
+   branches**, a cache-timing / branch side channel in the strongest coercion primitive. Replaced with
+   a branchless Russian-peasant multiply (fixed 8 iterations, reduction 0x1b) and `a^254` via a
+   fixed-exponent square-multiply — no tables, no secret-dependent control flow. Proven byte-identical
+   to the table version over **all 65536 inputs** and `a·inv(a)=1` for every `a≠0`; all existing Shamir
+   KATs/threshold checks unchanged (`verification/shamir_test.c`, step `[5]`). A `dudect`/`ctgrind`
+   timing-leakage test in CI is the recommended follow-up. `patches/shamir-constant-time.patch`.
 
 ---
 
