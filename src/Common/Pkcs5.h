@@ -52,6 +52,22 @@ wchar_t *get_kdf_name (int kdf_id);
 int derive_key_argon2(const unsigned char *pwd, int pwd_len, const unsigned char *salt, int salt_len, uint32 iterations, uint32 memcost, unsigned char *dk, int dklen, long volatile *pAbortKeyDerivation);
 void get_argon2_params(int pim, int* pIterations, int* pMemcost);
 
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+/*
+ * Explicit Argon2id parameter override. Stock VeraCrypt shoehorns Argon2's memory/time cost into the
+ * single PIM value (get_argon2_params) and fixes parallelism at 1. This lets the caller (the CLI) set
+ * memory (KiB), iterations, and parallelism explicitly for the current process's create/mount, exactly
+ * the way PIM is supplied: the values are NOT stored in the header, so the same three must be given at
+ * mount as at create. See docs/ARGON2-PARAMS-SPEC.md. Gated; a build without it is byte-for-byte stock.
+ */
+void   Argon2SetParamsOverride (int active, uint32 memCostKiB, uint32 iterations, uint32 parallelism);
+/* Resolve the effective (iterations, memCostKiB, parallelism) for a PIM: the override when active,
+   else the stock PIM formula with parallelism 1. Returns 1 if the override was used, 0 otherwise. */
+int    Argon2GetResolvedParams (int pim, uint32 *iterations, uint32 *memCostKiB, uint32 *parallelism);
+/* Effective parallelism (override when active, else 1) — used at the argon2id_hash_raw call site. */
+uint32 Argon2GetParallelism (void);
+#endif
+
 /* HMAC-BLAKE2b-512 PRF. Output written to d/input_digest which must be at least 64 bytes long.
    Gated with Argon2 as it reuses the BLAKE2b primitive that ships with Argon2. */
 void hmac_blake2b (unsigned char *key, int keylen, unsigned char *input_digest, int len);

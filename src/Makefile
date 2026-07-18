@@ -150,6 +150,7 @@ export ENABLE_WOLFCRYPT ?= 0
 export VC_ENABLE_KEYSCRUB ?= 0
 export VC_ENABLE_DURESS ?= 0
 export VC_ENABLE_KEYSLOTS ?= 0
+export VC_ENABLE_ARGON2_PARAMS ?= 0
 
 export GCC_GTEQ_440 := 0
 export GCC_GTEQ_430 := 0
@@ -225,6 +226,14 @@ endif
 ifeq "$(origin KEYSLOTS)" "command line"
 	VC_ENABLE_KEYSLOTS := 1
 	C_CXX_FLAGS += -DVC_ENABLE_KEYSLOTS
+endif
+
+# Explicit Argon2id parameters (opt-in). `make ARGON2PARAMS=1` exposes --argon2-memory/-iterations/
+# -parallelism, overriding the PIM-derived defaults. Only touches Common/Pkcs5.c (already in the
+# build) + the CLI; a plain `make` stays byte-for-byte stock. See docs/ARGON2-PARAMS-SPEC.md.
+ifeq "$(origin ARGON2PARAMS)" "command line"
+	VC_ENABLE_ARGON2_PARAMS := 1
+	C_CXX_FLAGS += -DVC_ENABLE_ARGON2_PARAMS
 endif
 
 #------ Linux configuration ------

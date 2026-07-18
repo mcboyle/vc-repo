@@ -64,6 +64,10 @@ Keyslots model: one master key (VMK), many independent wrappings. Slot 0 = untou
 slots 1..N wrap the same VMK, so add/rotate/revoke never re-encrypts the body. Payload = flags[1]||vmk
 (duress bit encrypted). CLI + mount-time slot search remain (docs/KEYSLOTS-SPEC.md §9).
 
+src/Common/Pkcs5.c (gated -DVC_ENABLE_ARGON2_PARAMS) — explicit Argon2id memory/iterations/parallelism
+   Argon2SetParamsOverride()/Argon2GetResolvedParams()/Argon2GetParallelism(); CLI --argon2-memory/
+   -iterations/-parallelism. Not stored (supplied like PIM at create+mount). docs/ARGON2-PARAMS-SPEC.md
+
 Config: `HKFConfig` (in `HardwareKeyFactor.h`) carries the backend, YubiKey slot, FIDO2 rp/credid/pin,
 simulator secret, `rawSecret` (Shamir reconstruction), and `applyPolicy`.
 
@@ -119,6 +123,9 @@ Shamir 3-of-5 header key `a8b0cbb7…`; wrong secret / below-threshold flips 64/
 2. **Network-bound share source — finish the integration** (`docs/NETWORK-SHARE-SPEC.md`). The
    McCallum–Relyea exchange is proven (step `[10]`). Remaining, real-build only: EC/bignum at
    production parameters (P-256/Ed25519 or 2048-bit MODP), the client transport, and enroll/unlock CLI.
+3. **End-to-end validate the explicit Argon2id params on a real build** (create with
+   `--argon2-memory/-iterations/-parallelism` → mount with the same → opens; mount without → fails).
+   The crypto is proven (step `[11]`); the create/mount round-trip is not sandbox-testable.
 3. **Validate the KeyScrub OS triggers on real hardware** (logind screen-lock, udev device-connect)
    and, separately, the kernel-side dm-crypt master-key scrub the user-space scrub can't reach.
 4. **End-to-end duress-dismount test on a real build** (mounted volumes → `--duress-dismount` and the

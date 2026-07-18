@@ -1710,7 +1710,16 @@ int get_pkcs5_iteration_count(int pkcs5_prf_id, int pim, BOOL bBoot, int* pMemor
 
 #ifndef VC_DCS_DISABLE_ARGON2
 		case ARGON2:
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+			{
+				uint32 it = 0, mc = 0, par = 1;
+				Argon2GetResolvedParams (pim, &it, &mc, &par);   /* override, else stock PIM formula */
+				iteration_count = (int) it;
+				*pMemoryCost    = (int) mc;
+			}
+#else
 			get_argon2_params (pim, &iteration_count, pMemoryCost);
+#endif
 			break;
 
 		case BLAKE2B:
@@ -1758,7 +1767,11 @@ int derive_key_argon2(const unsigned char *pwd, int pwd_len, const unsigned char
 	result = argon2id_hash_raw(
 		iterations, // number of iterations
 		memcost, // memory cost in KiB
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+		Argon2GetParallelism(), // parallelism factor (explicit override, else 1)
+#else
 		1, // parallelism factor (number of threads)
+#endif
 		pwd, pwd_len, // password and its length
 		salt, salt_len, // salt and its length
 		dk, dklen,// derived key and its length
@@ -1857,6 +1870,45 @@ void get_argon2_params(int pim, int* pIterations, int* pMemcost)
         *pIterations = 13 + (pim - 31);
     }
 }
+
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+/* Process-wide explicit Argon2id parameters (set by the CLI before a create/mount). Not stored in the
+   header — the same values must be supplied at mount as at create, exactly like PIM. */
+static struct { int active; uint32 memCostKiB; uint32 iterations; uint32 parallelism; }
+	g_argon2Override = { 0, 0, 0, 1 };
+
+void Argon2SetParamsOverride (int active, uint32 memCostKiB, uint32 iterations, uint32 parallelism)
+{
+	g_argon2Override.active      = active;
+	g_argon2Override.memCostKiB  = memCostKiB;
+	g_argon2Override.iterations  = iterations;
+	g_argon2Override.parallelism = parallelism ? parallelism : 1;
+}
+
+int Argon2GetResolvedParams (int pim, uint32 *iterations, uint32 *memCostKiB, uint32 *parallelism)
+{
+	if (g_argon2Override.active)
+	{
+		*iterations   = g_argon2Override.iterations;
+		*memCostKiB   = g_argon2Override.memCostKiB;
+		*parallelism  = g_argon2Override.parallelism;
+		return 1;
+	}
+	{
+		int it = 0, mc = 0;
+		get_argon2_params (pim, &it, &mc);   /* stock PIM formula, parallelism 1 */
+		*iterations  = (uint32) it;
+		*memCostKiB  = (uint32) mc;
+		*parallelism = 1;
+	}
+	return 0;
+}
+
+uint32 Argon2GetParallelism (void)
+{
+	return g_argon2Override.active ? g_argon2Override.parallelism : 1;
+}
+#endif
 #endif
 
 #endif //!TC_WINDOWS_BOOT

@@ -20,6 +20,9 @@
 #if defined(VC_ENABLE_DURESS)
 #include "Common/DuressToken.h"
 #endif
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+#include "Common/Pkcs5.h"
+#endif
 #include "Application.h"
 #include "CommandLineInterface.h"
 #include "LanguageStrings.h"
@@ -144,6 +147,11 @@ namespace VeraCrypt
 		parser.AddSwitch (L"",	L"duress-dismount",		_("Safe duress action: dismount all volumes + scrub RAM keys, mount nothing (non-destructive)"));
 		parser.AddOption (L"",	L"duress-hash",			_("Duress passphrase tag (hex, 32 bytes): if the mount password matches, run the safe duress action instead of mounting"));
 		parser.AddOption (L"",	L"duress-salt",			_("Duress passphrase salt (hex, 16 bytes), paired with --duress-hash"));
+#endif
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+		parser.AddOption (L"",	L"argon2-memory",		_("Argon2id memory cost in MiB (explicit; overrides the PIM-derived default). Supply the same at mount as at create"));
+		parser.AddOption (L"",	L"argon2-iterations",	_("Argon2id time cost / iterations (explicit; overrides the PIM-derived default)"));
+		parser.AddOption (L"",	L"argon2-parallelism",	_("Argon2id parallelism / lanes (explicit; stock is fixed at 1)"));
 #endif
 		parser.AddSwitch (L"h", L"help",				_("Display detailed command line help"), wxCMD_LINE_OPTION_HELP);
 		parser.AddSwitch (L"",	L"import-token-keyfiles", _("Import keyfiles to security token"));
@@ -630,6 +638,29 @@ namespace VeraCrypt
 			if (parser.Found (L"keyscrub-idle", &v))
 				idle = StringConverter::ToInt32 (wstring (v));
 			KeyScrubManager::Instance().Enable (idle);
+		}
+#endif
+
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+		{
+			// Explicit Argon2id parameters override the PIM-derived defaults for this process's
+			// create/mount. They are NOT stored in the header, so the same values must be given at
+			// mount as at create (like PIM). If any one is set, the others take sane high-risk
+			// defaults (1024 MiB, 4 iterations, 4 lanes). See docs/ARGON2-PARAMS-SPEC.md.
+			wxString v;
+			bool anyArgon2 = parser.Found (L"argon2-memory") || parser.Found (L"argon2-iterations")
+			              || parser.Found (L"argon2-parallelism");
+			if (anyArgon2)
+			{
+				uint32 memMiB = 1024, iters = 4, par = 4;
+				if (parser.Found (L"argon2-memory", &v))      memMiB = (uint32) StringConverter::ToUInt32 (wstring (v));
+				if (parser.Found (L"argon2-iterations", &v))  iters  = (uint32) StringConverter::ToUInt32 (wstring (v));
+				if (parser.Found (L"argon2-parallelism", &v)) par    = (uint32) StringConverter::ToUInt32 (wstring (v));
+				if (memMiB < 8)  memMiB = 8;      // Argon2 needs >= 8*parallelism KiB; keep a sane floor
+				if (iters < 1)   iters = 1;
+				if (par < 1)     par = 1;
+				Argon2SetParamsOverride (1, memMiB * 1024u, iters, par);   // MiB -> KiB
+			}
 		}
 #endif
 

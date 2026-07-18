@@ -176,3 +176,39 @@ if "$NS_CC" -O2 $NS_WNO $NS_NOASM $NS_GC $NS_INC -c "$SRCROOT/Crypto/Sha2.c" -o 
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/ns_cc.log)"
 fi
+
+echo ""
+echo "[11] Argon2id explicit params: RFC 9106 KAT + parallelism plumbing + resolver vs python"
+# The Argon2 algorithm is anchored to the published RFC 9106 vector inside the harness (real in-tree
+# argon2). This step proves the override plumbs memory/iterations/parallelism and that the resolver
+# formula matches an independent Python reimplementation. Links the REAL Pkcs5.c + Argon2 sources
+# (reference fill_segment path via stub CPU flags; --gc-sections drops the other PRFs in Pkcs5's TU).
+AP_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then AP_CC="$c"; break; fi; done
+AP_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+AP_GC="-ffunction-sections -fdata-sections"
+AP_INC="$INC -I$SRCROOT/Crypto -I$SRCROOT/Crypto/Argon2/include -I$SRCROOT/Crypto/Argon2/src"
+AP_ARG="$SRCROOT/Crypto/Argon2/src"
+printf 'volatile int g_hasSSE2=1,g_hasAVX2=0,g_hasSSE42=0,g_hasAVX=0,g_hasSSSE3=0,g_hasAESNI=0,g_hasSHA256=0,g_isIntel=0,g_isAMD=0,g_hasSSE41=0,g_hasRDRAND=0,g_hasRDSEED=0;\n' > /tmp/ap_stub.c
+if "$AP_CC" -O2 $AP_WNO $AP_GC -DARGON2_NO_THREADS $AP_INC -c "$AP_ARG/argon2.c" -o /tmp/ap_argon2.o 2>/tmp/ap_cc.log \
+   && "$AP_CC" -O2 $AP_WNO $AP_GC -DARGON2_NO_THREADS $AP_INC -c "$AP_ARG/core.c"   -o /tmp/ap_core.o   2>>/tmp/ap_cc.log \
+   && "$AP_CC" -O2 $AP_WNO $AP_GC -DARGON2_NO_THREADS $AP_INC -c "$AP_ARG/ref.c"    -o /tmp/ap_ref.o    2>>/tmp/ap_cc.log \
+   && "$AP_CC" -O2 $AP_WNO $AP_GC -DARGON2_NO_THREADS $AP_INC -c "$AP_ARG/blake2/blake2b.c" -o /tmp/ap_b2.o 2>>/tmp/ap_cc.log \
+   && "$AP_CC" -O2 $AP_WNO $AP_GC -DARGON2_NO_THREADS -msse2 $AP_INC -c "$AP_ARG/opt_sse2.c" -o /tmp/ap_sse2.o 2>>/tmp/ap_cc.log \
+   && "$AP_CC" -O2 $AP_WNO $AP_GC -DARGON2_NO_THREADS -mavx2 -msse2 $AP_INC -c "$AP_ARG/opt_avx2.c" -o /tmp/ap_avx2.o 2>>/tmp/ap_cc.log \
+   && "$AP_CC" -O2 $AP_WNO $AP_GC -DARGON2_NO_THREADS -DVC_ENABLE_ARGON2_PARAMS $AP_INC -c "$SRCROOT/Common/Pkcs5.c" -o /tmp/ap_pkcs5.o 2>>/tmp/ap_cc.log \
+   && "$AP_CC" -O2 $AP_WNO -DARGON2_NO_THREADS -DVC_ENABLE_ARGON2_PARAMS $AP_INC "$HERE/argon2_params_test.c" /tmp/ap_stub.c \
+        /tmp/ap_pkcs5.o /tmp/ap_argon2.o /tmp/ap_core.o /tmp/ap_ref.o /tmp/ap_b2.o /tmp/ap_sse2.o /tmp/ap_avx2.o \
+        -Wl,--gc-sections -o /tmp/argon2_params_test 2>>/tmp/ap_cc.log; then
+	/tmp/argon2_params_test > /tmp/ap_c.txt; cat /tmp/ap_c.txt
+	python3 "$HERE/argon2_params_reference.py" > /tmp/ap_py.txt
+	grep '^REF' /tmp/ap_c.txt > /tmp/ap_c_ref.txt
+	if diff -q /tmp/ap_c_ref.txt /tmp/ap_py.txt >/dev/null; then
+		echo "    MATCH: Argon2 param resolver == independent python reference"
+	else
+		echo "    MISMATCH"; diff /tmp/ap_c_ref.txt /tmp/ap_py.txt; exit 1
+	fi
+	if grep -Eq ': NO$' /tmp/ap_c.txt; then echo "    ARGON2 PARAMS TEST FAILED"; exit 1; fi
+else
+	echo "    SKIP: no compiler accepted the stock Argon2/Pkcs5 sources (see /tmp/ap_cc.log)"
+fi

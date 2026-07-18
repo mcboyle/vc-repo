@@ -63,6 +63,14 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
    Python HMAC vs. real compiled Sha2; anchor `3d874ea9…`). Gated `-DVC_ENABLE_DURESS`
    (`make DURESS=1`). Destroys nothing on disk, leaves no "destruction" tell.
    `docs/DURESS-DISMOUNT-SPEC.md`, `patches/duress-dismount.patch`.
+11. **Explicit Argon2id parameters** (`Common/Pkcs5.c`, gated `-DVC_ENABLE_ARGON2_PARAMS`,
+   `make ARGON2PARAMS=1`) — expose Argon2's **memory / iterations / parallelism** as explicit CLI
+   inputs (`--argon2-memory/-iterations/-parallelism`) instead of shoehorning them into PIM and fixing
+   parallelism at 1. No header change (supplied like PIM at both create and mount). Verified: the real
+   in-tree Argon2 reproduces the **RFC 9106** Argon2id vector (parallelism 4); the override plumbs
+   parallelism (p=1 == stock, p=4 differs); the resolver matches an independent Python reimpl; and the
+   stock `Pkcs5.o` is byte-for-byte identical without the flag (`verification/argon2_params_test.c`,
+   step `[11]`). `docs/ARGON2-PARAMS-SPEC.md`, `patches/argon2-params.patch`.
 
 ---
 
@@ -99,10 +107,6 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
 ---
 
 ## BACKLOG — good ideas from the research, not started
-
-- **Argon2id multi-parameter UI.** Argon2id shipped upstream (1.26.29) but its memory/time/
-  parallelism are shoehorned into the single PIM value. Expose them as explicit inputs with sane
-  high-risk defaults. In the same KDF seam this project already works in.
 - **TPM / measured boot / Secure Boot signing.** VeraCrypt deliberately omits the TPM; measured boot
   and first-class bootloader signing would harden evil-maid resistance beyond the existing bootloader
   fingerprint check. (The DCS/EFI bootloader has experimental TPM support.)
