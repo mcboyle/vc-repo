@@ -116,7 +116,9 @@ Shamir 3-of-5 header key `a8b0cbb7…`; wrong secret / below-threshold flips 64/
    verified (`Common/Keyslot*.{c,h}`, `KeyslotKdf.c`; steps `[8]`/`[9]`). Remaining, real-build only:
    the `KeyslotArea` volume-I/O bindings per backend, the mount-time slot search + duress-slot hook,
    the enroll/open/rotate/revoke/list CLI, and multi-snapshot validation of the deniable backend.
-2. **Network-bound share source** (Tang/Clevis-style) for the split-key factor.
+2. **Network-bound share source — finish the integration** (`docs/NETWORK-SHARE-SPEC.md`). The
+   McCallum–Relyea exchange is proven (step `[10]`). Remaining, real-build only: EC/bignum at
+   production parameters (P-256/Ed25519 or 2048-bit MODP), the client transport, and enroll/unlock CLI.
 3. **Validate the KeyScrub OS triggers on real hardware** (logind screen-lock, udev device-connect)
    and, separately, the kernel-side dm-crypt master-key scrub the user-space scrub can't reach.
 4. **End-to-end duress-dismount test on a real build** (mounted volumes → `--duress-dismount` and the

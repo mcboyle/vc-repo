@@ -81,6 +81,15 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
   `KeyslotArea` volume-I/O bindings, mount-time slot search + duress-slot hook, and the enroll/rotate/
   revoke CLI (`docs/KEYSLOTS-SPEC.md §9`); the deniable backend needs multi-snapshot validation on real
   media. `docs/KEYSLOTS-SPEC.md`.
+- **Network-bound share source** (Tang/Clevis-style, McCallum–Relyea) — **exchange proven; network
+  client + real curve/wire format remain.** A split-key share whose recovery needs a network server's
+  participation, where the **server never sees the key** and a stolen off-network machine stays locked;
+  composes as a Shamir share (no new derivation seam). The **MR exchange is proven** two ways
+  (provision `K=S^c`; blinded recover `X=C·g^e`, `Y=X^s`, `K=Y·(S^e)⁻¹`): recovered `K` == provisioned
+  `K`, the server sees only the blinded `X` (a different ephemeral recovers the same `K`), and a wrong
+  server key fails — real `Sha2.c` share vs. independent Python bigint, anchor `cc288fab…`,
+  `verification/netshare_poc.c` step `[10]`. Remaining (real-build): EC/bignum at production
+  parameters, the client transport, and the enroll/unlock CLI. `docs/NETWORK-SHARE-SPEC.md`.
 - **Decoy content generator** (Phase 2 of the decoy) — prepare believable staged content with
   consistent metadata (filesystem vs in-file timestamps, coherent persona). Content helper only.
   `docs/DECOY-VOLUME-SPEC.md §4`.
@@ -91,9 +100,6 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
 
 ## BACKLOG — good ideas from the research, not started
 
-- **Network-bound unlock** (Tang/Clevis-style, McCallum–Relyea). Bind a share/key to a network
-  server's presence; a stolen or off-network machine stays locked; the server never sees the key.
-  Composes cleanly as a **Shamir share source** (fits the split-key factor already built).
 - **Argon2id multi-parameter UI.** Argon2id shipped upstream (1.26.29) but its memory/time/
   parallelism are shoehorned into the single PIM value. Expose them as explicit inputs with sane
   high-risk defaults. In the same KDF seam this project already works in.

@@ -151,3 +151,28 @@ if "$KL_CC" -O2 $KL_WNO $KL_NOASM $KL_GC -DVC_ENABLE_KEYSLOTS $KL_INC -c "$SRCRO
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/kl_cc.log)"
 fi
+
+echo ""
+echo "[10] Network-bound share: McCallum-Relyea exchange vs independent python (server never sees the key)"
+# Proof-of-concept for the Tang/Clevis-style share source (docs/NETWORK-SHARE-SPEC.md). Links the REAL
+# in-tree Sha2.c for the share hash; netshare_reference.py is the independent reference (python bigint).
+NS_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then NS_CC="$c"; break; fi; done
+NS_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+NS_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+NS_GC="-ffunction-sections -fdata-sections"
+NS_INC="$INC -I$SRCROOT/Crypto"
+if "$NS_CC" -O2 $NS_WNO $NS_NOASM $NS_GC $NS_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/ns_sha2.o 2>/tmp/ns_cc.log \
+   && "$NS_CC" -O2 $NS_WNO $NS_NOASM $NS_INC "$HERE/netshare_poc.c" /tmp/ns_sha2.o -Wl,--gc-sections -o /tmp/netshare_poc 2>>/tmp/ns_cc.log; then
+	/tmp/netshare_poc > /tmp/ns_c.txt; cat /tmp/ns_c.txt
+	python3 "$HERE/netshare_reference.py" > /tmp/ns_py.txt
+	grep '^REF' /tmp/ns_c.txt > /tmp/ns_c_ref.txt
+	if diff -q /tmp/ns_c_ref.txt /tmp/ns_py.txt >/dev/null; then
+		echo "    MATCH: McCallum-Relyea exchange (real Sha2 object) == independent python reference"
+	else
+		echo "    MISMATCH"; diff /tmp/ns_c_ref.txt /tmp/ns_py.txt; exit 1
+	fi
+	if grep -Eq ': NO$' /tmp/ns_c.txt; then echo "    NETSHARE POC FAILED"; exit 1; fi
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/ns_cc.log)"
+fi
