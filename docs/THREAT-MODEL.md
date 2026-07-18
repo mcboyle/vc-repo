@@ -32,7 +32,10 @@ overselling deniability gets high-risk people hurt.
 - **SSDs.** TRIM leaks the free-space map; the flash translation layer's out-of-place writes and
   wear-leveling can retain fragments — including of the hidden-volume creation itself. Classic
   hidden-volume deniability is **weak on flash**. Prefer factor/threshold protection (confidentiality)
-  over relying on deniability on an SSD.
+  over relying on deniability on an SSD. Two mitigations now have proven cores (keyslot/format
+  integration pending): **anti-forensic key splitting** (`docs/AF-SPLIT-SPEC.md`) makes a *partial*
+  keyslot remnant worthless, and **decoy-fragments-by-default** (`docs/DECOY-FRAGMENTS-SPEC.md`) makes a
+  hidden-volume artifact's presence uninformative.
 - **Imaged-first.** An adversary who copies the disk *before* coercion holds an untouched copy; no
   post-hoc measure on your machine affects it. (This is also why destructive duress-wipe is a trap —
   it hits a copy that no longer matters, and destroys deniability by leaving a "destruction"

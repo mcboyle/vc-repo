@@ -30,9 +30,11 @@ Do these before adding surface area.
    (regardless of the `VCKS` marker), uses config cost/length not the stored bytes, and selects in
    constant time with no early return — leaking neither which slot matched nor how many are populated.
    Cost: one KDF per slot per open (the LUKS trade-off). Lifecycle unchanged (step `[9]`).
-3. **Anti-forensic (AF) splitting for keyslots** `[M] [FORMAT]` — LUKS/TKS1 diffuses each slot's key
-   material across many stripes so a *partial* recovery (the SSD wear-leveling remnant problem)
-   yields nothing. This is the concrete answer to the SSD-remnant caveat instead of a doc warning.
+3. **Anti-forensic (AF) splitting for keyslots** `[M] [FORMAT]` — **core proven** (step `[15]`,
+   `docs/AF-SPLIT-SPEC.md`): LUKS/TKS1 split/merge diffuses a slot's key across s stripes so a *partial*
+   recovery (SSD wear-leveling remnant) yields nothing — round-trip + any-missing-stripe-defeats-recovery
+   verified vs. real `Sha2.c` and an independent Python ref (anchor `ddb23937…`). Remaining: wire the s
+   stripes into the keyslot record (`[FORMAT]`) and validate against real flash.
 4. **Swap / hibernate / core-dump lockdown** `[S]` — **DONE** (`VcKeyMemoryLockdown` in
    `Common/KeyScrub.c`, called from `KeyScrubManager::Enable`): `mlockall`, `RLIMIT_CORE=0`,
    `PR_SET_DUMPABLE=0`; verified at runtime in step `[6]` `[G]`; hibernation hazard documented loudly

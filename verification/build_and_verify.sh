@@ -292,3 +292,29 @@ if "$DF_CC" -O2 $DF_WNO $DF_NOASM $DF_GC $DF_INC -c "$SRCROOT/Crypto/chacha256.c
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/df_log)"
 fi
+
+echo ""
+echo "[15] Anti-forensic key splitting (SSD-remnant answer): split/merge + partial-recovery-defeated"
+# LUKS/TKS1 AFsplit: diffuse a wrapped key across s stripes so recovery needs ALL of them; any missing
+# stripe (an SSD wear-leveling remnant) yields nothing. Links the REAL in-tree Sha2.c; afsplit_reference.py
+# is the independent reference (hashlib).
+AF_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then AF_CC="$c"; break; fi; done
+AF_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+AF_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+AF_GC="-ffunction-sections -fdata-sections"
+AF_INC="$INC -I$SRCROOT/Crypto"
+if "$AF_CC" -O2 $AF_WNO $AF_NOASM $AF_GC $AF_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/af_sha2.o 2>/tmp/af_log \
+   && "$AF_CC" -O2 $AF_WNO $AF_NOASM $AF_INC "$HERE/afsplit_poc.c" /tmp/af_sha2.o -Wl,--gc-sections -o /tmp/afsplit_poc 2>>/tmp/af_log; then
+	/tmp/afsplit_poc > /tmp/af_c.txt; cat /tmp/af_c.txt
+	python3 "$HERE/afsplit_reference.py" > /tmp/af_py.txt
+	grep '^REF' /tmp/af_c.txt > /tmp/af_c_ref.txt; grep '^REF' /tmp/af_py.txt > /tmp/af_py_ref.txt
+	if diff -q /tmp/af_c_ref.txt /tmp/af_py_ref.txt >/dev/null; then
+		echo "    MATCH: AF split/merge (real Sha2 object) == independent python reference"
+	else
+		echo "    MISMATCH"; diff /tmp/af_c_ref.txt /tmp/af_py_ref.txt; exit 1
+	fi
+	if grep -Eq ': NO$' /tmp/af_c.txt; then echo "    AFSPLIT POC FAILED"; exit 1; fi
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/af_log)"
+fi
