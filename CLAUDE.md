@@ -107,6 +107,9 @@ need compiled VeraCrypt objects (`htest.c`, `hkf_cpp.cpp`, `hkf_decoy.cpp`, `sha
 
 Key proven values (regression anchors): mixed password `f965c9e3…`; SHA3-512 header key `628882be…`;
 Shamir 3-of-5 header key `a8b0cbb7…`; wrong secret / below-threshold flips 64/64 header-key bytes.
+Fork feature anchors: KeyScrub RAM-protect `d28b461b…` [6]; duress tag `3d874ea9…` [7]; keyslot record
+`56434b53…` [8]; MR network-share `cc288fab…` [10]; Argon2 RFC-9106 `0d640df5…` [11]; salt-bind
+`4619ed18…` [12]; write-only ORAM state `203b068d…` [13]. `verification/build_and_verify.sh` runs all.
 
 ## Conventions
 

@@ -106,24 +106,37 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
   server key fails — real `Sha2.c` share vs. independent Python bigint, anchor `cc288fab…`,
   `verification/netshare_poc.c` step `[10]`. Remaining (real-build): EC/bignum at production
   parameters, the client transport, and the enroll/unlock CLI. `docs/NETWORK-SHARE-SPEC.md`.
+- **Write-only ORAM access-pattern hiding** *(the real mitigation for the multi-snapshot attack — the
+  #1 documented limitation).* Every logical write touches K PRNG-chosen physical blocks with fresh
+  ciphertext, independent of the logical target, so repeat-imaging cannot detect hidden-volume activity.
+  **The access-pattern-hiding property is proven** two ways (public-only vs public+hidden workloads
+  yield a byte-identical observable access trace; correctness reads==writes; real in-tree ChaCha20/Sha2
+  vs. independent Python; anchor `203b068d…`, `verification/oram_poc.c` step `[13]`). The block-layer +
+  position-map integration into the volume layout is a large real-build effort. `docs/ORAM-SPEC.md`.
 - **Decoy content generator** (Phase 2 of the decoy) — prepare believable staged content with
   consistent metadata (filesystem vs in-file timestamps, coherent persona). Content helper only.
+  *Caution:* on reflection this sits close to the DESCOPED evidence-fabrication line — keep it to
+  indistinguishable-random storage artifacts, not a synthesized record of user activity.
   `docs/DECOY-VOLUME-SPEC.md §4`.
 
 ---
 
 ## BACKLOG — good ideas from the research, not started
-- **TPM / measured boot / Secure Boot signing.** VeraCrypt deliberately omits the TPM; measured boot
-  and first-class bootloader signing would harden evil-maid resistance beyond the existing bootloader
-  fingerprint check. (The DCS/EFI bootloader has experimental TPM support.)
-- **ORAM access-pattern hiding** (write-only ORAM: HIVE, DataLair). The real mitigation for the
-  multi-snapshot deniability attack — hides which blocks the hidden volume touches.
-- **Decoy-fragments-by-default** (upstream issue #1072). Write fake hidden-volume/creation artifacts
-  on *every* volume so their presence on an SSD (via wear-leveling remnants) proves nothing. Partial
-  SSD-deniability hardening.
-- **Mobile (Android/iOS).** VeraCrypt has none. Academic PDE-for-mobile work (MobiGyges, Mobiflage,
-  MobiPluto) shows demand and flash-specific attacks (capacity-comparison, fill-to-full).
-- **UEFI/GPT hidden OS.** Upstream hidden-OS creation is MBR/legacy-BIOS only.
+
+The five research-grade tracks below are surveyed with honest verifiability/effort/scope assessments in
+**`docs/RESEARCH-NOTES.md`** (read that before starting one). In brief:
+
+- **ORAM access-pattern hiding** (write-only ORAM) — **core property now proven; moved to DESIGN above.**
+- **Decoy-fragments-by-default** (upstream issue #1072). Write hidden-volume/creation artifacts on
+  *every* volume so their presence on an SSD proves nothing. Partly verifiable; keep it to
+  indistinguishable-random artifacts (not fabricated activity records — see the DESCOPED line).
+- **Mobile (Android/iOS).** VeraCrypt has none; academic PDE-for-mobile work shows flash-specific
+  attacks. Very large; a platform port, not sandbox-verifiable.
+- **UEFI/GPT hidden OS.** Upstream hidden-OS creation is MBR/legacy-BIOS only. Firmware/bootloader work;
+  not sandbox-verifiable.
+- **TPM / measured boot / Secure Boot signing.** Hardens evil-maid resistance beyond the bootloader
+  fingerprint check, with a deniability/portability tradeoff. PCR-policy logic could be tested against a
+  software TPM; real sealing needs hardware.
 
 ---
 

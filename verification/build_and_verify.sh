@@ -238,3 +238,30 @@ if "$SB_CC" -O2 $SB_WNO $SB_NOASM $SB_GC -DVC_ENABLE_HKF -DVC_ENABLE_HKF_SALT_BI
 else
 	echo "    SKIP: no compiler accepted the stock sources (see /tmp/sb_cc.log)"
 fi
+
+echo ""
+echo "[13] Write-only ORAM: access-pattern hiding (multi-snapshot deniability) vs independent python"
+# HIVE-style write-only ORAM: every write touches K uniform physical blocks (fresh ChaCha20 ciphertext)
+# independent of the logical target, so a public-only and a public+hidden workload produce an IDENTICAL
+# observable access trace. Links the REAL in-tree chacha256.c + Sha2.c; oram_reference.py is independent.
+OR_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then OR_CC="$c"; break; fi; done
+OR_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+OR_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+OR_GC="-ffunction-sections -fdata-sections"
+OR_INC="$INC -I$SRCROOT/Crypto"
+if "$OR_CC" -O2 $OR_WNO $OR_NOASM $OR_GC $OR_INC -c "$SRCROOT/Crypto/chacha256.c" -o /tmp/or_cc.o 2>/tmp/or_log \
+   && "$OR_CC" -O2 $OR_WNO $OR_NOASM $OR_GC $OR_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/or_sha2.o 2>>/tmp/or_log \
+   && "$OR_CC" -O2 $OR_WNO $OR_NOASM $OR_INC "$HERE/oram_poc.c" /tmp/or_cc.o /tmp/or_sha2.o -Wl,--gc-sections -o /tmp/oram_poc 2>>/tmp/or_log; then
+	/tmp/oram_poc > /tmp/or_c.txt; cat /tmp/or_c.txt
+	python3 "$HERE/oram_reference.py" > /tmp/or_py.txt
+	grep '^REF' /tmp/or_c.txt > /tmp/or_c_ref.txt
+	if diff -q /tmp/or_c_ref.txt /tmp/or_py.txt >/dev/null; then
+		echo "    MATCH: write-only ORAM (real chacha/Sha2 objects) == independent python reference"
+	else
+		echo "    MISMATCH"; diff /tmp/or_c_ref.txt /tmp/or_py.txt; exit 1
+	fi
+	if grep -Eq ': NO$' /tmp/or_c.txt; then echo "    ORAM POC FAILED"; exit 1; fi
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/or_log)"
+fi
