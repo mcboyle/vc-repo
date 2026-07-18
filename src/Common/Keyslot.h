@@ -60,6 +60,19 @@ int  KeyslotUnwrapWithDK (const unsigned char dk[KEYSLOT_DK_SIZE],
                           const unsigned char tag[KEYSLOT_TAG_SIZE],
                           unsigned char *vmkOut);
 
+/* Constant-time unwrap for scanning multiple slots: ALWAYS derives the key, ALWAYS computes the MAC,
+   and ALWAYS decrypts into vmkOut (even on a non-match, so the per-slot work and timing do not reveal
+   which slot matched or how many are populated). Returns 1 on match, 0 otherwise, via a constant-time
+   comparison. vmkOut holds ctLen bytes either way (garbage on a non-match — the caller selects in
+   constant time). */
+int  KeyslotUnwrapCT (KeyslotKdfFn kdf, unsigned int cost,
+                      const unsigned char *pass, int passLen,
+                      const unsigned char *salt, int saltLen,
+                      const unsigned char *aad, int aadLen,
+                      const unsigned char *ct, int ctLen,
+                      const unsigned char tag[KEYSLOT_TAG_SIZE],
+                      unsigned char *vmkOut);
+
 /* ---- passphrase-based wrap/unwrap (derive dk via kdf, then the above) ---- */
 
 void KeyslotWrap   (KeyslotKdfFn kdf, unsigned int cost,

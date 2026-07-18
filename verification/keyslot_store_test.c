@@ -70,7 +70,9 @@ int main (void)
 	unsigned char out[VMK_LEN]; int flags, idxA, idxB, idx3, idx4;
 
 	fill_vmk();
-	cfg.kdf=test_kdf; cfg.cost=2048; cfg.vmkLen=VMK_LEN; cfg.maxSlots=AREA_SLOTS; cfg.randBytes=det_rand;
+	/* cost kept low: this harness tests the store logic + constant-time search (KDF on every slot),
+	   not the KDF iteration count. The constant-time search runs cfg.cost per slot per open. */
+	cfg.kdf=test_kdf; cfg.cost=256; cfg.vmkLen=VMK_LEN; cfg.maxSlots=AREA_SLOTS; cfg.randBytes=det_rand;
 
 	/* ===== labeled backend (KSB_HEADER; KSB_SIDECAR shares this path) ===== */
 	printf("[labeled: KSB_HEADER]\n");

@@ -96,6 +96,31 @@ int KeyslotUnwrapWithDK (const unsigned char dk[KEYSLOT_DK_SIZE],
 	return ok;
 }
 
+int KeyslotUnwrapCT (KeyslotKdfFn kdf, unsigned int cost,
+                     const unsigned char *pass, int passLen,
+                     const unsigned char *salt, int saltLen,
+                     const unsigned char *aad, int aadLen,
+                     const unsigned char *ct, int ctLen,
+                     const unsigned char tag[KEYSLOT_TAG_SIZE],
+                     unsigned char *vmkOut)
+{
+	unsigned char dk[KEYSLOT_DK_SIZE], calc[KEYSLOT_TAG_SIZE];
+	ChaCha256Ctx cc;
+	int ok;
+
+	kdf (pass, passLen, salt, saltLen, cost, dk, KEYSLOT_DK_SIZE);
+	ks_hmac_sha256 (dk + 40, 32, aad, aadLen, ct, ctLen, calc);
+	ok = KeyslotConstTimeEqual (calc, tag, KEYSLOT_TAG_SIZE);
+	/* decrypt unconditionally so timing is identical for matching and non-matching slots */
+	ChaCha256Init    (&cc, dk, dk + 32, 20);
+	ChaCha256Encrypt (&cc, ct, (size_t) ctLen, vmkOut);
+
+	ks_wipe (dk, sizeof (dk));
+	ks_wipe (calc, sizeof (calc));
+	ks_wipe ((volatile unsigned char *) &cc, sizeof (cc));
+	return ok;
+}
+
 void KeyslotWrap (KeyslotKdfFn kdf, unsigned int cost,
                   const unsigned char *pass, int passLen,
                   const unsigned char *salt, int saltLen,

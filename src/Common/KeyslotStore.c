@@ -40,8 +40,6 @@ static const unsigned char KS_BARE_DOMAIN[8] = { 'V','C','K','S','b','a','r','e'
 static void ks_wipe (volatile unsigned char *p, size_t n) { while (n--) *p++ = 0; }
 static void put_u16 (unsigned char *p, unsigned v) { p[0]=(unsigned char)v; p[1]=(unsigned char)(v>>8); }
 static void put_u32 (unsigned char *p, unsigned v) { p[0]=(unsigned char)v; p[1]=(unsigned char)(v>>8); p[2]=(unsigned char)(v>>16); p[3]=(unsigned char)(v>>24); }
-static unsigned get_u16 (const unsigned char *p) { return (unsigned)p[0] | ((unsigned)p[1]<<8); }
-static unsigned get_u32 (const unsigned char *p) { return (unsigned)p[0] | ((unsigned)p[1]<<8) | ((unsigned)p[2]<<16) | ((unsigned)p[3]<<24); }
 
 static int is_labeled (KeyslotBackend b) { return b == KSB_HEADER || b == KSB_SIDECAR; }
 
@@ -151,30 +149,6 @@ int KeyslotAdd (const KeyslotStoreCfg *cfg, KeyslotArea *area,
 
 /* ---- open ---- */
 
-static int try_labeled_slot (const KeyslotStoreCfg *cfg, const unsigned char *rec,
-                             const unsigned char *pass, int passLen,
-                             unsigned char *vmkOut, int *flagsOut)
-{
-	unsigned char aad[L_CT], payload[KEYSLOT_VMK_MAX + 1];
-	int plen;
-	if (memcmp (rec, "VCKS", 4) != 0)
-		return 0;
-	plen = (int) get_u16 (rec + L_PLEN);
-	if (plen != plen_of (cfg))
-		return 0;
-	memcpy (aad, rec, L_AAD_LEN);
-	if (!KeyslotUnwrap (cfg->kdf, get_u32 (rec + L_COST),
-	                    pass, passLen, rec + L_SALT, KEYSLOT_SALT_SIZE, aad, L_AAD_LEN,
-	                    rec + L_CT, plen, rec + L_CT + plen, payload))
-	{
-		ks_wipe (payload, sizeof (payload));
-		return 0;
-	}
-	if (flagsOut) *flagsOut = payload[0];
-	memcpy (vmkOut, payload + 1, cfg->vmkLen);
-	ks_wipe (payload, sizeof (payload));
-	return 1;
-}
 
 int KeyslotOpen (const KeyslotStoreCfg *cfg, KeyslotArea *area,
                  const unsigned char *pass, int passLen,
@@ -185,21 +159,43 @@ int KeyslotOpen (const KeyslotStoreCfg *cfg, KeyslotArea *area,
 
 	if (is_labeled (cfg->backend))
 	{
+		/* Constant-time slot search: scan a fixed number of slots (the config's table size, a public
+		   value), run the KDF and MAC on EVERY slot regardless of the "VCKS" marker, and select the
+		   result in constant time with no early return. This leaks neither which slot matched nor how
+		   many are populated. The KDF cost and payload length come from the config (public), never from
+		   the possibly-random slot bytes, so the per-slot work is fixed and a garbage slot cannot force
+		   a huge iteration count. Cost: one KDF per table slot per open (the LUKS trade-off). */
+		unsigned char aad[L_AAD_LEN];
+		unsigned char tmp[KEYSLOT_VMK_MAX + 1], selp[KEYSLOT_VMK_MAX + 1];
 		uint64 i, ns = n_slots (cfg, area);
+		int found = 0, b;
+
+		memset (selp, 0, sizeof (selp));
 		for (i = 0; i < ns; i++)
 		{
+			int m, sel; unsigned char mask;
 			if (area->read (area->ctx, i * KEYSLOT_TABLE_STRIDE, rec, sizeof (rec)) != 0)
 				continue;
-			if (try_labeled_slot (cfg, rec, pass, passLen, vmkOut, flagsOut))
-			{
-				ks_wipe (rec, sizeof (rec));
-				return 1;
-			}
+			memcpy (aad, rec, L_AAD_LEN);
+			m = KeyslotUnwrapCT (cfg->kdf, cfg->cost, pass, passLen, rec + L_SALT, KEYSLOT_SALT_SIZE,
+			                     aad, L_AAD_LEN, rec + L_CT, plen, rec + L_CT + plen, tmp);
+			sel  = m & (found ^ 1);                       /* take the first match only */
+			mask = (unsigned char) (0u - (unsigned) sel);
+			for (b = 0; b < plen; b++)
+				selp[b] = (unsigned char) ((selp[b] & ~mask) | (tmp[b] & mask));
+			found |= m;
 		}
+		if (found)
+		{
+			if (flagsOut) *flagsOut = selp[0];
+			memcpy (vmkOut, selp + 1, cfg->vmkLen);
+		}
+		ks_wipe (tmp, sizeof (tmp));
+		ks_wipe (selp, sizeof (selp));
 		ks_wipe (rec, sizeof (rec));
-		return 0;
+		return found;
 	}
-	else /* KSB_DENIABLE: go straight to the passphrase-derived slot */
+	else /* KSB_DENIABLE: the passphrase-derived slot (a single always-decrypt unwrap) */
 	{
 		unsigned char aad[8 + KEYSLOT_SALT_SIZE], payload[KEYSLOT_VMK_MAX + 1];
 		uint64 off = deniable_index (cfg, area, pass, passLen) * KEYSLOT_TABLE_STRIDE;
@@ -208,8 +204,8 @@ int KeyslotOpen (const KeyslotStoreCfg *cfg, KeyslotArea *area,
 			return 0;
 		memcpy (aad, KS_BARE_DOMAIN, 8);
 		memcpy (aad + 8, rec + B_SALT, KEYSLOT_SALT_SIZE);
-		ok = KeyslotUnwrap (cfg->kdf, cfg->cost, pass, passLen, rec + B_SALT, KEYSLOT_SALT_SIZE,
-		                    aad, sizeof (aad), rec + B_CT, plen, rec + B_CT + plen, payload);
+		ok = KeyslotUnwrapCT (cfg->kdf, cfg->cost, pass, passLen, rec + B_SALT, KEYSLOT_SALT_SIZE,
+		                      aad, sizeof (aad), rec + B_CT, plen, rec + B_CT + plen, payload);
 		if (ok)
 		{
 			if (flagsOut) *flagsOut = payload[0];

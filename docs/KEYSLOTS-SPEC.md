@@ -174,6 +174,12 @@ Built (gated `-DVC_ENABLE_KEYSLOTS`):
 - `src/Common/KeyslotKdf.c` — the shipping `KeyslotKdfSha512` binding to the in-tree
   `derive_key_sha512` (PBKDF2-HMAC-SHA512), kept in its own TU so only it pulls `Pkcs5`.
 
+**Constant-time search** (P0 hardening): `KeyslotOpen` scans a fixed number of slots and runs the KDF,
+MAC, and decrypt on *every* slot via `KeyslotUnwrapCT` (always-decrypt), using the config's cost and
+length rather than the possibly-random stored bytes, and selects the match in constant time with no
+early return. This leaks neither which slot matched nor how many are populated. The cost is one KDF per
+table slot per open (the standard LUKS trade-off); size the table accordingly.
+
 Proven:
 - **Wrapping crypto, two ways** — real compiled `Sha2.c`/`chacha256.c` vs. an independent Python
   reference, byte-for-byte; round-trip + wrong-passphrase rejection (`verification/keyslot_poc.c`,

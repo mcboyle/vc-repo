@@ -25,8 +25,11 @@ Do these before adding surface area.
    control flow. Proven byte-identical to the table version over all 65536 inputs (step `[5]`). A
    `dudect`/`ctgrind` timing test in CI remains the recommended follow-up.
    ~~the shipped `gf_mul` does `gf_exp[gf_log[a] + gf_log[b]]` plus an `if (a==0||b==0)` early-out.~~
-2. **Constant-time keyslot search** `[S]` — naive iteration can leak which slot matched or how many
-   are populated. Trial-decrypt all slots, select in constant time.
+2. **Constant-time keyslot search** `[S]` — **DONE** (`KeyslotUnwrapCT` + rewritten `KeyslotOpen` in
+   `Common/Keyslot*.c`): scans a fixed slot count, runs the KDF + MAC + decrypt on EVERY slot
+   (regardless of the `VCKS` marker), uses config cost/length not the stored bytes, and selects in
+   constant time with no early return — leaking neither which slot matched nor how many are populated.
+   Cost: one KDF per slot per open (the LUKS trade-off). Lifecycle unchanged (step `[9]`).
 3. **Anti-forensic (AF) splitting for keyslots** `[M] [FORMAT]` — LUKS/TKS1 diffuses each slot's key
    material across many stripes so a *partial* recovery (the SSD wear-leveling remnant problem)
    yields nothing. This is the concrete answer to the SSD-remnant caveat instead of a doc warning.
