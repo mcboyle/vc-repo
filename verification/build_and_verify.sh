@@ -368,3 +368,27 @@ if "$OP_CC" -O2 $OP_WNO $OP_NOASM $OP_GC $OP_INC -c "$SRCROOT/Crypto/Sha2.c" -o 
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/op_log)"
 fi
+
+echo "[18] Poly1305 one-shot (RFC 8439) vs independent python reference + published KATs"
+# Poly1305 is NOT in the VeraCrypt tree, so there is no in-tree object to link. It is proven the two
+# independent ways this fork requires: (a) poly1305_poc.c (radix-2^26) == poly1305_reference.py (bigint)
+# byte-for-byte over the RFC KATs plus a deterministic fuzz battery, and (b) both reproduce the RFC 8439
+# published tags (Sec 2.5.2 and A.3). Candidate for the integrity tier / wide-block modes; see docs/POLY1305-SPEC.md.
+PL_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then PL_CC="$c"; break; fi; done
+if "$PL_CC" -O2 -Wall "$HERE/poly1305_poc.c" -o /tmp/poly1305_poc 2>/tmp/pl_log; then
+	/tmp/poly1305_poc > /tmp/pl_c.txt; sed -n '1,3p' /tmp/pl_c.txt
+	python3 "$HERE/poly1305_reference.py" > /tmp/pl_py.txt
+	grep '^REF' /tmp/pl_c.txt > /tmp/pl_c_ref.txt; grep '^REF' /tmp/pl_py.txt > /tmp/pl_py_ref.txt
+	if diff -q /tmp/pl_c_ref.txt /tmp/pl_py_ref.txt >/dev/null; then
+		echo "    MATCH: Poly1305 C (radix-2^26) == python bigint over $(wc -l < /tmp/pl_c_ref.txt) vectors (3 KAT + fuzz)"
+	else
+		echo "    MISMATCH"; diff /tmp/pl_c_ref.txt /tmp/pl_py_ref.txt; exit 1
+	fi
+	# assert the two RFC 8439 published tags explicitly
+	grep -q '^REF rfc_2.5.2 a8061dc1305136c6c22b8baf0c0127a9$' /tmp/pl_c.txt || { echo "    RFC 2.5.2 KAT FAILED"; exit 1; }
+	grep -q '^REF a3_1 36e5f6b5c5e06070f0efca96227a863e$'   /tmp/pl_c.txt || { echo "    RFC A.3 #2 KAT FAILED"; exit 1; }
+	echo "    RFC 8439 published tags reproduced (Sec 2.5.2 + A.3)"
+else
+	echo "    SKIP: no compiler available (see /tmp/pl_log)"
+fi

@@ -41,6 +41,9 @@ Do these before adding surface area.
    in `docs/MEMORY-SCRUB.md`. (Yama `PR_SET_PTRACER` scoping can still be added.)
 5. **Authenticate the keyslot area** `[M] [FORMAT]` — XTS provides no integrity; a MAC over header +
    keyslot region (keyed from the master key) turns silent tampering into a detected error.
+   *Primitive ready:* the Poly1305 one-time authenticator this needs is **built + proven** (step
+   `[18]`, `docs/POLY1305-SPEC.md`); the natural first consumer once the keyslot volume-I/O bindings
+   land. Remaining is the MAC-key discipline + slot-table framing, not the MAC math.
 6. **Zeroization tests** `[S] [SANDBOX-OK]` — **DONE** (step `[6]` `[H]`): `VcSecureWipe` asserted to
    zero across every size/alignment and survive `-O2` dead-store elimination (observed through a
    separate alias). Broader per-module scratch-wipe assertions can still be added.
@@ -54,7 +57,9 @@ bits and produce controlled plaintext garbage without detection. Every item here
 
 - **Per-sector authentication (dm-integrity style)** `[L] [FORMAT] [RESEARCH]` — a MAC per sector in a
   separate area/journal. Costs space and write amplification; the payoff is that silent data tampering
-  becomes impossible. The honest tradeoff to document is crash-consistency.
+  becomes impossible. The honest tradeoff to document is crash-consistency. *The MAC primitive
+  (Poly1305) is proven* (step `[18]`, `docs/POLY1305-SPEC.md`); the open work is the per-sector
+  key/nonce discipline and the tag-storage format `[FORMAT]`.
 - **Merkle tree over the volume with the root held off-disk** `[L] [FORMAT]` — root stored in the
   header, on the hardware token, or in TPM NV. Detects *any* offline modification, which is the data
   half of evil-maid that the bootloader fingerprint does not cover.
@@ -71,7 +76,9 @@ bits and produce controlled plaintext garbage without detection. Every item here
   POLYVAL) is already used in the Linux kernel for filename encryption and is the most practical
   starting point. This is the single strongest *cryptographic* upgrade available to a disk encryptor.
 - **Adiantum** `[M]` — XChaCha12 + NH + Poly1305, length-preserving; designed for devices without AES
-  acceleration. Relevant if mobile or low-end hardware ever enters scope.
+  acceleration. Relevant if mobile or low-end hardware ever enters scope. *Two of its three primitives
+  are now in hand:* ChaCha is in-tree and Poly1305 is **built + proven** (step `[18]`,
+  `docs/POLY1305-SPEC.md`); NH and the length-preserving wrapper remain.
 - **Large-block ciphers: Threefish-1024, Rijndael-256 (256-bit block)** `[M]` — larger blocks push out
   birthday-bound concerns at very large data volumes. Rijndael-256 is not AES; document the interop
   consequences.
