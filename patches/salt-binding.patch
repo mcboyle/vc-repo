@@ -1,0 +1,145 @@
+# salt-binding.patch — RAW_SECRET salt-binding (VC_ENABLE_HKF_SALT_BIND)
+#
+# Paths are relative to src/ (apply with -p1 from src/). Builds on this fork's HardwareKeyFactor
+# module (not present in stock 1.26.29): apply the HKF series first, or use
+# patches/ALL-changes-vs-1.26.29.patch for the cumulative diff. Verified to apply cleanly onto the fork
+# baseline; a build without -DVC_ENABLE_HKF_SALT_BIND is unchanged. See docs/SALT-BINDING-SPEC.md.
+#
+diff --git a/Common/HardwareKeyFactor.c b/Common/HardwareKeyFactor.c
+index 405c5c5..6d4d84d 100644
+--- a/Common/HardwareKeyFactor.c
++++ b/Common/HardwareKeyFactor.c
+@@ -377,6 +377,48 @@ done:
+ }
+ #endif /* VC_ENABLE_FIDO2 */
+ 
++/* ================================================================== *
++ *  Salt-binding for RAW_SECRET (production HMAC-SHA256 over sha256)   *
++ * ================================================================== */
++
++#if defined(VC_ENABLE_HKF_SALT_BIND)
++#include "Crypto/Sha2.h"   /* VeraCrypt's real SHA-256 */
++
++/* out = HMAC-SHA256(key = secret, msg = salt). Standard ipad/opad over the in-tree sha256(). */
++static void hkf_saltbind_hmac_sha256 (const unsigned char *key, int keyLen,
++                                      const unsigned char *msg, int msgLen,
++                                      unsigned char out[32])
++{
++	sha256_ctx    ctx;
++	unsigned char k0[64], pad[64], inner[32], keyHash[32];
++	int i;
++
++	if (keyLen > 64)
++	{
++		sha256_begin (&ctx); sha256_hash (key, (uint_32t) keyLen, &ctx); sha256_end (keyHash, &ctx);
++		memcpy (k0, keyHash, 32); memset (k0 + 32, 0, 32);
++	}
++	else
++	{
++		if (keyLen > 0) memcpy (k0, key, (size_t) keyLen);
++		memset (k0 + keyLen, 0, (size_t) (64 - keyLen));
++	}
++
++	for (i = 0; i < 64; i++) pad[i] = (unsigned char) (k0[i] ^ 0x36);
++	sha256_begin (&ctx); sha256_hash (pad, 64, &ctx);
++	if (msgLen > 0) sha256_hash (msg, (uint_32t) msgLen, &ctx);
++	sha256_end (inner, &ctx);
++
++	for (i = 0; i < 64; i++) pad[i] = (unsigned char) (k0[i] ^ 0x5c);
++	sha256_begin (&ctx); sha256_hash (pad, 64, &ctx); sha256_hash (inner, 32, &ctx);
++	sha256_end (out, &ctx);
++
++	{ volatile unsigned char *p = k0;      size_t n = sizeof (k0);      while (n--) *p++ = 0; }
++	{ volatile unsigned char *p = inner;   size_t n = sizeof (inner);   while (n--) *p++ = 0; }
++	{ volatile unsigned char *p = keyHash; size_t n = sizeof (keyHash); while (n--) *p++ = 0; }
++}
++#endif /* VC_ENABLE_HKF_SALT_BIND */
++
+ /* ================================================================== *
+  *  Dispatcher                                                         *
+  * ================================================================== */
+@@ -412,10 +454,20 @@ int HKFComputeResponse (const HKFConfig *cfg,
+ #endif
+ 
+ 	case HKF_BACKEND_RAW_SECRET:
+-		/* A caller-supplied secret (typically a Shamir reconstruction); mixed like a keyfile.
+-		   The challenge (salt) is not used — the secret is fixed per enrollment. */
++		/* A caller-supplied secret (typically a Shamir reconstruction); mixed like a keyfile. */
+ 		if (cfg->rawSecretLen <= 0 || cfg->rawSecretLen > HKF_MAX_RESPONSE)
+ 			return HKF_ERR_CONFIG;
++#if defined(VC_ENABLE_HKF_SALT_BIND)
++		if (cfg->rawSecretBindSalt)
++		{
++			/* Bind the secret to this volume's salt: response = HMAC-SHA256(secret, salt). The same
++			   reconstructed secret then yields a different factor on a different volume. */
++			hkf_saltbind_hmac_sha256 (cfg->rawSecret, cfg->rawSecretLen, challenge, challenge_len, response_out);
++			*response_len_out = 32;
++			return HKF_OK;
++		}
++#endif
++		/* Otherwise the salt is not used — the secret is fixed per enrollment. */
+ 		memcpy (response_out, cfg->rawSecret, (size_t) cfg->rawSecretLen);
+ 		*response_len_out = cfg->rawSecretLen;
+ 		return HKF_OK;
+diff --git a/Common/HardwareKeyFactor.h b/Common/HardwareKeyFactor.h
+index bab93e9..678cde6 100644
+--- a/Common/HardwareKeyFactor.h
++++ b/Common/HardwareKeyFactor.h
+@@ -87,6 +87,13 @@ typedef struct HKFConfig_struct
+ 	unsigned char rawSecret[64];
+ 	int           rawSecretLen;
+ 
++	/* Salt-binding (VC_ENABLE_HKF_SALT_BIND): when non-zero, the RAW_SECRET backend returns
++	   HMAC-SHA256(rawSecret, salt) — a per-volume response bound to the volume's PBKDF2 salt — instead
++	   of the raw secret. This makes a reconstructed/threshold secret behave like the challenge-response
++	   hardware backends (the same secret yields a different factor on a different volume). Ignored when
++	   the feature is not compiled in. See docs/SALT-BINDING-SPEC.md. */
++	int           rawSecretBindSalt;
++
+ 	/* Application policy: which header(s) the factor gates. */
+ 	int           applyPolicy; /* HKF_APPLY_ALL (default) or HKF_APPLY_HIDDEN_ONLY */
+ } HKFConfig;
+diff --git a/Main/CommandLineInterface.cpp b/Main/CommandLineInterface.cpp
+index 1bb69bf..e55167a 100644
+--- a/Main/CommandLineInterface.cpp
++++ b/Main/CommandLineInterface.cpp
+@@ -138,6 +138,9 @@ namespace VeraCrypt
+ 		parser.AddOption (L"",	L"hkf-fido-pin",			_("FIDO2 device PIN (optional)"));
+ 		parser.AddOption (L"",	L"hkf-sim-secret",		_("Simulator secret (hex, testing only)"));
+ 		parser.AddOption (L"",	L"hkf-sim-mac",			_("Simulator MAC 1=HMAC-SHA1 2=HMAC-SHA256 (testing only)"));
++#if defined(VC_ENABLE_HKF_SALT_BIND)
++		parser.AddSwitch (L"",	L"hkf-bind-salt",		_("RAW_SECRET: use HMAC-SHA256(secret, volume salt) instead of the raw secret (binds a reconstructed/threshold secret to the volume)"));
++#endif
+ #endif
+ #if defined(VC_ENABLE_KEYSCRUB)
+ 		parser.AddSwitch (L"",	L"keyscrub",			_("Enable in-RAM key hygiene: scrub user-space secrets on unmount/idle/screen-lock/new-device"));
+@@ -625,6 +628,11 @@ namespace VeraCrypt
+ 			if (!BuildHKFConfig (hkfBackend, hkfYkSlot, hkfRp, hkfCredId, hkfPin, hkfSimSecret, hkfSimMac, ArgHKFConfig, hkfError))
+ 				throw_err (wxString (L"Hardware key factor: ") + wxString (hkfError.c_str(), wxConvUTF8));
+ 
++#if defined(VC_ENABLE_HKF_SALT_BIND)
++			if (parser.Found (L"hkf-bind-salt"))
++				ArgHKFConfig.rawSecretBindSalt = 1;   // RAW_SECRET -> HMAC-SHA256(secret, salt)
++#endif
++
+ 			if (ArgHKFConfig.backend != HKF_BACKEND_NONE)
+ 				HKFSetActiveConfig (&ArgHKFConfig);   // applies to this process's mount/create
+ 		}
+diff --git a/Makefile b/Makefile
+index 709b9af..22ea730 100644
+--- a/Makefile
++++ b/Makefile
+@@ -236,6 +236,13 @@ ifeq "$(origin ARGON2PARAMS)" "command line"
+ 	C_CXX_FLAGS += -DVC_ENABLE_ARGON2_PARAMS
+ endif
+ 
++# RAW_SECRET salt-binding (opt-in; an HKF sub-feature). `make HKF_SALT_BIND=1` makes the RAW_SECRET
++# backend return HMAC-SHA256(secret, volume salt) when --hkf-bind-salt is given. Only touches the
++# already-gated HardwareKeyFactor.c + the CLI; a plain `make` stays stock. See docs/SALT-BINDING-SPEC.md.
++ifeq "$(origin HKF_SALT_BIND)" "command line"
++	C_CXX_FLAGS += -DVC_ENABLE_HKF_SALT_BIND
++endif
++
+ #------ Linux configuration ------
+ 
+ ifeq "$(shell uname -s)" "Linux"

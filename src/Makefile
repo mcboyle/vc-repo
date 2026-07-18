@@ -236,6 +236,13 @@ ifeq "$(origin ARGON2PARAMS)" "command line"
 	C_CXX_FLAGS += -DVC_ENABLE_ARGON2_PARAMS
 endif
 
+# RAW_SECRET salt-binding (opt-in; an HKF sub-feature). `make HKF_SALT_BIND=1` makes the RAW_SECRET
+# backend return HMAC-SHA256(secret, volume salt) when --hkf-bind-salt is given. Only touches the
+# already-gated HardwareKeyFactor.c + the CLI; a plain `make` stays stock. See docs/SALT-BINDING-SPEC.md.
+ifeq "$(origin HKF_SALT_BIND)" "command line"
+	C_CXX_FLAGS += -DVC_ENABLE_HKF_SALT_BIND
+endif
+
 #------ Linux configuration ------
 
 ifeq "$(shell uname -s)" "Linux"

@@ -42,6 +42,8 @@ src/Common/HardwareKeyFactor.{c,h}   the factor module: backends + mixing + gati
    HKFApplyIfConfigured() -> compute+mix in one call (used at the derivation sites)
    HKFShouldApply(cfg, isHidden) -> factor-gating decision (HKF_APPLY_ALL / HKF_APPLY_HIDDEN_ONLY)
    g_hkfActiveConfig / HKFSetActiveConfig() -> process-wide active config (set by CLI before op)
+   rawSecretBindSalt (gated -DVC_ENABLE_HKF_SALT_BIND) -> RAW_SECRET returns HMAC-SHA256(secret,salt);
+     CLI --hkf-bind-salt; binds a reconstructed/threshold secret to the volume (docs/SALT-BINDING-SPEC.md)
 src/Common/Shamir.{c,h}              Shamir M-of-N over GF(2^8); shamir_split/shamir_combine
 src/Volume/HardwareKeyFactorMix.h    C++ glue: HKFMixPassword(VolumePassword, salt) for Volume/Core
 src/Main/HardwareKeyFactorCli.h      wx-free option-string -> HKFConfig parser (BuildHKFConfig)

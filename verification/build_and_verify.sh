@@ -212,3 +212,29 @@ if "$AP_CC" -O2 $AP_WNO $AP_GC -DARGON2_NO_THREADS $AP_INC -c "$AP_ARG/argon2.c"
 else
 	echo "    SKIP: no compiler accepted the stock Argon2/Pkcs5 sources (see /tmp/ap_cc.log)"
 fi
+
+echo ""
+echo "[12] RAW_SECRET salt-binding: real HKFComputeResponse == HMAC-SHA256(secret,salt) vs python"
+# Drives the REAL Common/HardwareKeyFactor.c with a RAW_SECRET config whose rawSecretBindSalt is set;
+# the response must be HMAC-SHA256(secret, salt) over the real in-tree Sha2.c. Independent ref: python hmac.
+SB_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then SB_CC="$c"; break; fi; done
+SB_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+SB_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+SB_GC="-ffunction-sections -fdata-sections"
+SB_INC="$INC -I$SRCROOT/Crypto"
+if "$SB_CC" -O2 $SB_WNO $SB_NOASM $SB_GC -DVC_ENABLE_HKF -DVC_ENABLE_HKF_SALT_BIND $SB_INC -c "$SRCROOT/Common/HardwareKeyFactor.c" -o /tmp/sb_hkf.o 2>/tmp/sb_cc.log \
+   && "$SB_CC" -O2 $SB_WNO $SB_NOASM $SB_GC $SB_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/sb_sha2.o 2>>/tmp/sb_cc.log \
+   && "$SB_CC" -O2 $SB_WNO $SB_NOASM -DVC_ENABLE_HKF -DVC_ENABLE_HKF_SALT_BIND $SB_INC "$HERE/saltbind_test.c" /tmp/sb_hkf.o /tmp/sb_sha2.o -Wl,--gc-sections -o /tmp/saltbind_test 2>>/tmp/sb_cc.log; then
+	/tmp/saltbind_test > /tmp/sb_c.txt; cat /tmp/sb_c.txt
+	python3 "$HERE/saltbind_reference.py" > /tmp/sb_py.txt
+	grep '^REF' /tmp/sb_c.txt > /tmp/sb_c_ref.txt
+	if diff -q /tmp/sb_c_ref.txt /tmp/sb_py.txt >/dev/null; then
+		echo "    MATCH: RAW_SECRET salt-binding (real HKF + Sha2) == independent python HMAC-SHA256"
+	else
+		echo "    MISMATCH"; diff /tmp/sb_c_ref.txt /tmp/sb_py.txt; exit 1
+	fi
+	if grep -Eq ': NO$' /tmp/sb_c.txt; then echo "    SALTBIND TEST FAILED"; exit 1; fi
+else
+	echo "    SKIP: no compiler accepted the stock sources (see /tmp/sb_cc.log)"
+fi

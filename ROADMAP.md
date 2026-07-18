@@ -71,6 +71,14 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
    parallelism (p=1 == stock, p=4 differs); the resolver matches an independent Python reimpl; and the
    stock `Pkcs5.o` is byte-for-byte identical without the flag (`verification/argon2_params_test.c`,
    step `[11]`). `docs/ARGON2-PARAMS-SPEC.md`, `patches/argon2-params.patch`.
+12. **Salt-binding for RAW_SECRET** (`Common/HardwareKeyFactor.c`, gated `-DVC_ENABLE_HKF_SALT_BIND`,
+   `make HKF_SALT_BIND=1`) — the `RAW_SECRET` factor optionally returns `HMAC-SHA256(secret, volume
+   salt)` instead of the raw secret, binding a reconstructed/threshold secret to the specific volume
+   (the same shares yield a different factor per volume, like the challenge-response hardware backends).
+   No header change; CLI `--hkf-bind-salt`. Verified two ways — the real `HKFComputeResponse` over the
+   in-tree `Sha2.c` vs. independent Python HMAC-SHA256, byte-for-byte (anchor `4619ed18…`), plus
+   unbound-unchanged and salt-dependence checks (`verification/saltbind_test.c`, step `[12]`).
+   `docs/SALT-BINDING-SPEC.md`, `patches/salt-binding.patch`.
 
 ---
 
@@ -101,8 +109,6 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
 - **Decoy content generator** (Phase 2 of the decoy) — prepare believable staged content with
   consistent metadata (filesystem vs in-file timestamps, coherent persona). Content helper only.
   `docs/DECOY-VOLUME-SPEC.md §4`.
-- **Salt-binding for RAW_SECRET** — optionally return `HMAC(secret, salt)` instead of the raw secret,
-  binding a reconstructed/threshold secret to the specific volume salt.
 
 ---
 

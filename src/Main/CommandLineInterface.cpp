@@ -138,6 +138,9 @@ namespace VeraCrypt
 		parser.AddOption (L"",	L"hkf-fido-pin",			_("FIDO2 device PIN (optional)"));
 		parser.AddOption (L"",	L"hkf-sim-secret",		_("Simulator secret (hex, testing only)"));
 		parser.AddOption (L"",	L"hkf-sim-mac",			_("Simulator MAC 1=HMAC-SHA1 2=HMAC-SHA256 (testing only)"));
+#if defined(VC_ENABLE_HKF_SALT_BIND)
+		parser.AddSwitch (L"",	L"hkf-bind-salt",		_("RAW_SECRET: use HMAC-SHA256(secret, volume salt) instead of the raw secret (binds a reconstructed/threshold secret to the volume)"));
+#endif
 #endif
 #if defined(VC_ENABLE_KEYSCRUB)
 		parser.AddSwitch (L"",	L"keyscrub",			_("Enable in-RAM key hygiene: scrub user-space secrets on unmount/idle/screen-lock/new-device"));
@@ -624,6 +627,11 @@ namespace VeraCrypt
 			string hkfError;
 			if (!BuildHKFConfig (hkfBackend, hkfYkSlot, hkfRp, hkfCredId, hkfPin, hkfSimSecret, hkfSimMac, ArgHKFConfig, hkfError))
 				throw_err (wxString (L"Hardware key factor: ") + wxString (hkfError.c_str(), wxConvUTF8));
+
+#if defined(VC_ENABLE_HKF_SALT_BIND)
+			if (parser.Found (L"hkf-bind-salt"))
+				ArgHKFConfig.rawSecretBindSalt = 1;   // RAW_SECRET -> HMAC-SHA256(secret, salt)
+#endif
 
 			if (ArgHKFConfig.backend != HKF_BACKEND_NONE)
 				HKFSetActiveConfig (&ArgHKFConfig);   // applies to this process's mount/create
