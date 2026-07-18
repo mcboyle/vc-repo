@@ -123,10 +123,10 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
 
 ## BACKLOG — good ideas from the research, not started
 
-The five research-grade tracks below are surveyed with honest verifiability/effort/scope assessments in
-**`docs/RESEARCH-NOTES.md`** (read that before starting one). In brief:
+The research-grade tracks below are surveyed with honest verifiability/effort/scope assessments in
+**`docs/RESEARCH-NOTES.md`** (read that before starting one). (Write-only **ORAM** has moved to DESIGN
+above — its core property is now proven.) In brief:
 
-- **ORAM access-pattern hiding** (write-only ORAM) — **core property now proven; moved to DESIGN above.**
 - **Decoy-fragments-by-default** (upstream issue #1072). Write hidden-volume/creation artifacts on
   *every* volume so their presence on an SSD proves nothing. Partly verifiable; keep it to
   indistinguishable-random artifacts (not fabricated activity records — see the DESCOPED line).
