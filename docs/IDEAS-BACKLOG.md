@@ -62,7 +62,11 @@ bits and produce controlled plaintext garbage without detection. Every item here
   key/nonce discipline and the tag-storage format `[FORMAT]`.
 - **Merkle tree over the volume with the root held off-disk** `[L] [FORMAT]` — root stored in the
   header, on the hardware token, or in TPM NV. Detects *any* offline modification, which is the data
-  half of evil-maid that the bootloader fingerprint does not cover.
+  half of evil-maid that the bootloader fingerprint does not cover. *Tree core proven* (step `[19]`,
+  `docs/MERKLE-SPEC.md`): RFC 6962 domain separation, index-bound leaves, O(log N) authentication
+  paths, single-bit tamper changes the root and rejects the stale proof — vs the real in-tree SHA-256.
+  Open work is where the root lives (TPM/token/MAC'd header), the on-disk tree layout `[FORMAT]`, and
+  crash-consistent path updates.
 - **Rollback / replay protection via a monotonic counter** `[M] [HW]` — TPM NV counter or a
   token-backed counter, so restoring an older snapshot of the volume is detectable. Directly counters
   the snapshot-*replay* variant of the multi-snapshot problem.

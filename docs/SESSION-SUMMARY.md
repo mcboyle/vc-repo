@@ -3,7 +3,7 @@
 Work on branch `claude/project-structure-review-5p44w9`. Every crypto-relevant change is proven **two
 ways** (independent Python **and** real compiled VeraCrypt objects); every default build stays
 byte-for-byte stock; not-sandbox-testable integration is scoped in docs, not written blind.
-`verification/build_and_verify.sh` runs **18 green steps**.
+`verification/build_and_verify.sh` runs **19 green steps**.
 
 ## Built + verified (product code, gated)
 
@@ -36,6 +36,7 @@ byte-for-byte stock; not-sandbox-testable integration is scoped in docs, not wri
 | Balloon memory-hard KDF | `635ebeac…` [16] | `docs/BALLOON-SPEC.md` |
 | OPRF password hardening (offline-guess resistance) | `ca5691bd…` [17] | `docs/OPRF-SPEC.md` |
 | Poly1305 one-time authenticator (integrity-tier primitive) | RFC 8439 `a8061dc1…` [18] | `docs/POLY1305-SPEC.md` |
+| Merkle tree over the volume (off-disk root, offline-tamper detection) | root `6dbdb1c1…` [19] | `docs/MERKLE-SPEC.md` |
 
 ## Remaining — real build / real hardware only
 

@@ -392,3 +392,30 @@ if "$PL_CC" -O2 -Wall "$HERE/poly1305_poc.c" -o /tmp/poly1305_poc 2>/tmp/pl_log;
 else
 	echo "    SKIP: no compiler available (see /tmp/pl_log)"
 fi
+
+echo "[19] Merkle tree over the volume, root held off-disk (tamper detection) vs independent python"
+# Binary hash tree over sectors; a trusted off-disk root detects any offline modification XTS cannot.
+# RFC 6962 domain separation (leaf 0x00||i||data, node 0x01||l||r); O(log N) authentication paths.
+# Links the REAL in-tree Sha2.c; merkle_reference.py is independent (hashlib). See docs/MERKLE-SPEC.md.
+MK_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then MK_CC="$c"; break; fi; done
+MK_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+MK_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+MK_GC="-ffunction-sections -fdata-sections"
+MK_INC="$INC -I$SRCROOT/Crypto"
+if "$MK_CC" -O2 $MK_WNO $MK_NOASM $MK_GC $MK_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/mk_sha2.o 2>/tmp/mk_log \
+   && "$MK_CC" -O2 $MK_WNO $MK_NOASM $MK_INC "$HERE/merkle_poc.c" /tmp/mk_sha2.o -Wl,--gc-sections -o /tmp/merkle_poc 2>>/tmp/mk_log; then
+	/tmp/merkle_poc > /tmp/mk_c.txt; grep -E '^REF (root|tamper)' /tmp/mk_c.txt
+	python3 "$HERE/merkle_reference.py" > /tmp/mk_py.txt
+	grep '^REF' /tmp/mk_c.txt > /tmp/mk_c_ref.txt; grep '^REF' /tmp/mk_py.txt > /tmp/mk_py_ref.txt
+	if diff -q /tmp/mk_c_ref.txt /tmp/mk_py_ref.txt >/dev/null; then
+		echo "    MATCH: Merkle (real Sha2 object) == independent python over $(wc -l < /tmp/mk_c_ref.txt) vectors (root + auth paths + tamper)"
+	else
+		echo "    MISMATCH"; diff /tmp/mk_c_ref.txt /tmp/mk_py_ref.txt; exit 1
+	fi
+	grep -q '^REF tamper_detected YES$'      /tmp/mk_c.txt || { echo "    TAMPER NOT DETECTED"; exit 1; }
+	grep -q '^REF tamper_path_rejected YES$' /tmp/mk_c.txt || { echo "    STALE PROOF ACCEPTED"; exit 1; }
+	echo "    single-bit sector flip changes the root and its authentication path is rejected"
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/mk_log)"
+fi
