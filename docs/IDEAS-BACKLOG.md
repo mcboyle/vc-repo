@@ -60,9 +60,12 @@ bits and produce controlled plaintext garbage without detection. Every item here
 
 - **Per-sector authentication (dm-integrity style)** `[L] [FORMAT] [RESEARCH]` — a MAC per sector in a
   separate area/journal. Costs space and write amplification; the payoff is that silent data tampering
-  becomes impossible. The honest tradeoff to document is crash-consistency. *The MAC primitive
-  (Poly1305) is proven* (step `[18]`, `docs/POLY1305-SPEC.md`); the open work is the per-sector
-  key/nonce discipline and the tag-storage format `[FORMAT]`.
+  becomes impossible. The honest tradeoff to document is crash-consistency. *Construction + integrity
+  properties proven* (step `[21]`, `docs/PERSECTOR-AUTH-SPEC.md`): index-bound one-time MAC
+  (`nonce = sector_index`, `otk = ChaCha20(smk, nonce)[0..32]`, `tag = Poly1305(otk, ciphertext)`) on
+  the real in-tree ChaCha20 + step-`[18]` Poly1305 — per-sector independence, relocation resistance,
+  and wrong-key detection all hold. Open work is only the tag-area layout `[FORMAT]` and crash-consistent
+  tag/data updates (could share a journal with the Merkle-path work).
 - **Merkle tree over the volume with the root held off-disk** `[L] [FORMAT]` — root stored in the
   header, on the hardware token, or in TPM NV. Detects *any* offline modification, which is the data
   half of evil-maid that the bootloader fingerprint does not cover. *Tree core proven* (step `[19]`,
