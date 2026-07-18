@@ -15,6 +15,12 @@ overselling deniability gets high-risk people hurt.
   - *Threshold / split-key* — with M-of-N shares held separately, **no single person can open the
     volume alone**, so coercing one person in isolation yields nothing. Withholding a share makes the
     data **inaccessible, not destroyed** (safe dead-man; recoverable if the share returns).
+  - *Safe duress-dismount* (`docs/DURESS-DISMOUNT-SPEC.md`, `-DVC_ENABLE_DURESS`) — an explicit panic
+    switch or a **duress passphrase** (recognised in user space via a stored salted HMAC tag, no
+    header change) that **dismounts everything and scrubs RAM keys, mounting nothing**. Non-destructive:
+    it destroys no data and leaves no "I triggered something" artifact, so — unlike a destructive
+    duress-wipe — it forfeits no deniability and is fully recoverable. Its one tell is that the stored
+    (salt, tag) reveals a duress scheme exists; keep it where that is itself deniable.
 
 ## What it does NOT protect against (state these to users)
 

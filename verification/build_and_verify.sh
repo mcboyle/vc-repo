@@ -76,3 +76,30 @@ if "$KS_CC" -O2 $KS_WNO $KS_NOASM -DVC_ENABLE_KEYSCRUB $INC -c "$SRCROOT/Common/
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/ks_cc.log)"
 fi
+
+echo ""
+echo "[7] Duress token: HMAC-SHA256(salt,passphrase) vs independent python reference + constant-time match"
+# DuressToken links the REAL in-tree Sha2.c (SHA-256); duress_reference.py is an independent
+# HMAC-SHA256 (ipad/opad over hashlib). --gc-sections drops the unused KDFs sharing Sha2's TU.
+DT_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then DT_CC="$c"; break; fi; done
+DT_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+DT_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+DT_GC="-ffunction-sections -fdata-sections"
+DT_INC="$INC -I$SRCROOT/Crypto"
+if "$DT_CC" -O2 $DT_WNO $DT_NOASM $DT_GC -DVC_ENABLE_DURESS $DT_INC -c "$SRCROOT/Common/DuressToken.c" -o /tmp/dt.o 2>/tmp/dt_cc.log \
+   && "$DT_CC" -O2 $DT_WNO $DT_NOASM $DT_GC $DT_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/dt_sha2.o 2>>/tmp/dt_cc.log \
+   && "$DT_CC" -O2 $DT_WNO $DT_NOASM -DVC_ENABLE_DURESS $DT_INC "$HERE/duress_selftest.c" \
+        /tmp/dt.o /tmp/dt_sha2.o -Wl,--gc-sections -o /tmp/duress_selftest 2>>/tmp/dt_cc.log; then
+	/tmp/duress_selftest > /tmp/d_c.txt; cat /tmp/d_c.txt
+	python3 "$HERE/duress_reference.py" > /tmp/d_py.txt
+	grep '^REF' /tmp/d_c.txt > /tmp/d_c_ref.txt
+	if diff -q /tmp/d_c_ref.txt /tmp/d_py.txt >/dev/null; then
+		echo "    MATCH: DuressToken (real Sha2 object) == independent python HMAC-SHA256"
+	else
+		echo "    MISMATCH"; diff /tmp/d_c_ref.txt /tmp/d_py.txt; exit 1
+	fi
+	if grep -Eq ': NO$' /tmp/d_c.txt; then echo "    DURESS SELFTEST FAILED"; exit 1; fi
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/dt_cc.log)"
+fi

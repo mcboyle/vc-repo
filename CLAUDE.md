@@ -51,6 +51,9 @@ src/Common/KeyScrub.{c,h}            cross-platform RAM key hygiene (gated -DVC_
    VcKsRamTransform()/VcKsRamProtect() -> ChaCha-at-rest for secrets (mirrors Common/Crypto.c VcProtectMemory)
    HKFScrubActiveConfig() (in HardwareKeyFactor.c) -> wipe+detach the active factor secret
 src/Core/KeyScrubEvents.{h,cpp}      C++ event manager: scrub on unmount/idle/screen-lock/new-device
+src/Common/DuressToken.{c,h}         duress-passphrase recognition (gated -DVC_ENABLE_DURESS)
+   DuressTokenDerive() -> HMAC-SHA256(salt,passphrase) over in-tree Sha2; DuressTokenMatch() const-time
+   used by UserInterface::DuressDismount (Main) = dismount all + KeyScrub ScrubNow(), mount nothing
 ```
 
 Config: `HKFConfig` (in `HardwareKeyFactor.h`) carries the backend, YubiKey slot, FIDO2 rp/credid/pin,
@@ -102,10 +105,13 @@ Shamir 3-of-5 header key `a8b0cbb7…`; wrong secret / below-threshold flips 64/
 ## Good next tasks (see ROADMAP.md)
 
 1. **Network-bound share source** (Tang/Clevis-style) for the split-key factor.
-2. **Safe duress-dismount** (mount nothing + scrub keys) — now easy: it just calls the KeyScrub
-   `ScrubNow()` path plus a no-op mount. And **multiple keyslots** (header format work; unlocks
-   rotation/revocation/duress slots).
+2. **Multiple keyslots** (header/keyslot-table format work) — unlocks per-person keys, rotation,
+   revocation, and a real duress *keyslot* (a stronger home for the duress passphrase than the current
+   local salt+tag).
 3. **Validate the KeyScrub OS triggers on real hardware** (logind screen-lock, udev device-connect)
    and, separately, the kernel-side dm-crypt master-key scrub the user-space scrub can't reach.
+4. **End-to-end duress-dismount test on a real build** (mounted volumes → `--duress-dismount` and the
+   duress passphrase → everything dismounts + scrubs); the crypto core is proven, the wx orchestration
+   is not sandbox-testable.
 ```
 ```

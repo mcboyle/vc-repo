@@ -42,6 +42,12 @@ namespace VeraCrypt
 		virtual void DismountAllVolumes (bool ignoreOpenFiles = false, bool interactive = true) const;
 		virtual void DismountVolume (shared_ptr <VolumeInfo> volume, bool ignoreOpenFiles = false, bool interactive = true) const;
 		virtual void DismountVolumes (VolumeInfoList volumes, bool ignoreOpenFiles = false, bool interactive = true, bool emergencyCleanup = false) const;
+#if defined(VC_ENABLE_DURESS)
+		// Safe, non-destructive duress action: dismount every mounted volume and scrub user-space
+		// secrets from RAM, mounting nothing. Destroys nothing on disk (unlike a crypto-erase, which
+		// leaves a "destruction" tell and forfeits deniability). See docs/DURESS-DISMOUNT-SPEC.md.
+		virtual void DuressDismount () const;
+#endif
 		virtual void DisplayVolumeProperties (const VolumeInfoList &volumes) const;
 		virtual void DoShowError (const wxString &message) const = 0;
 		virtual void DoShowInfo (const wxString &message) const = 0;

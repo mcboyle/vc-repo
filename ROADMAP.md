@@ -55,6 +55,14 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
    kernel device-mapper, not this process, so it is out of user-space reach; and the screen-lock /
    new-device triggers are OS glue that must be validated on a real desktop session.
    `docs/MEMORY-SCRUB.md`, `patches/keyscrub.patch`.
+10. **Safe duress-dismount** (`src/Common/DuressToken.{c,h}`, `UserInterface::DuressDismount`) — a
+   non-destructive coercion response: dismount every volume and scrub user-space RAM secrets (the
+   KeyScrub `ScrubNow()` path), mounting nothing. Triggered by an explicit `--duress-dismount` switch
+   or a **duress passphrase** recognised in user space via `HMAC-SHA256(salt, passphrase)` with a
+   constant-time compare — no plaintext stored, no header change. Verified two ways (independent
+   Python HMAC vs. real compiled Sha2; anchor `3d874ea9…`). Gated `-DVC_ENABLE_DURESS`
+   (`make DURESS=1`). Destroys nothing on disk, leaves no "destruction" tell.
+   `docs/DURESS-DISMOUNT-SPEC.md`, `patches/duress-dismount.patch`.
 
 ---
 
@@ -77,9 +85,6 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
 - **Network-bound unlock** (Tang/Clevis-style, McCallum–Relyea). Bind a share/key to a network
   server's presence; a stolen or off-network machine stays locked; the server never sees the key.
   Composes cleanly as a **Shamir share source** (fits the split-key factor already built).
-- **Safe duress-dismount.** A password/slot that mounts *nothing*, scrubs keys from RAM, and
-  unmounts — the non-destructive duress action. Strictly better than a destructive wipe (which
-  destroys deniability and can escalate). Pairs with the memory-scrub item.
 - **Argon2id multi-parameter UI.** Argon2id shipped upstream (1.26.29) but its memory/time/
   parallelism are shoehorned into the single PIM value. Expose them as explicit inputs with sane
   high-risk defaults. In the same KDF seam this project already works in.

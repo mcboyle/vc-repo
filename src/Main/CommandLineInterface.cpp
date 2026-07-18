@@ -17,6 +17,9 @@
 #if defined(VC_ENABLE_KEYSCRUB)
 #include "Core/KeyScrubEvents.h"
 #endif
+#if defined(VC_ENABLE_DURESS)
+#include "Common/DuressToken.h"
+#endif
 #include "Application.h"
 #include "CommandLineInterface.h"
 #include "LanguageStrings.h"
@@ -25,6 +28,32 @@
 
 namespace VeraCrypt
 {
+#if defined(VC_ENABLE_DURESS)
+	// Parse exactly 'outLen' bytes from a hex string (case-insensitive, no separators). Returns false
+	// on any non-hex character or a length mismatch.
+	static bool ParseHexBytes (const wxString &hex, unsigned char *out, int outLen)
+	{
+		if ((int) hex.Length() != outLen * 2)
+			return false;
+		for (int i = 0; i < outLen; i++)
+		{
+			int hi = -1, lo = -1;
+			wxChar ch = hex[2 * i];
+			wxChar cl = hex[2 * i + 1];
+			if (ch >= L'0' && ch <= L'9') hi = ch - L'0';
+			else if (ch >= L'a' && ch <= L'f') hi = ch - L'a' + 10;
+			else if (ch >= L'A' && ch <= L'F') hi = ch - L'A' + 10;
+			if (cl >= L'0' && cl <= L'9') lo = cl - L'0';
+			else if (cl >= L'a' && cl <= L'f') lo = cl - L'a' + 10;
+			else if (cl >= L'A' && cl <= L'F') lo = cl - L'A' + 10;
+			if (hi < 0 || lo < 0)
+				return false;
+			out[i] = (unsigned char) ((hi << 4) | lo);
+		}
+		return true;
+	}
+#endif
+
 	static shared_ptr <Pkcs5Kdf> FindKdfAlgorithm (const wxString &name)
 	{
 		foreach (shared_ptr <Pkcs5Kdf> kdf, Pkcs5Kdf::GetAvailableAlgorithms())
@@ -110,6 +139,11 @@ namespace VeraCrypt
 #if defined(VC_ENABLE_KEYSCRUB)
 		parser.AddSwitch (L"",	L"keyscrub",			_("Enable in-RAM key hygiene: scrub user-space secrets on unmount/idle/screen-lock/new-device"));
 		parser.AddOption (L"",	L"keyscrub-idle",		_("Idle-timeout seconds after which in-RAM secrets are scrubbed (0 = off)"));
+#endif
+#if defined(VC_ENABLE_DURESS)
+		parser.AddSwitch (L"",	L"duress-dismount",		_("Safe duress action: dismount all volumes + scrub RAM keys, mount nothing (non-destructive)"));
+		parser.AddOption (L"",	L"duress-hash",			_("Duress passphrase tag (hex, 32 bytes): if the mount password matches, run the safe duress action instead of mounting"));
+		parser.AddOption (L"",	L"duress-salt",			_("Duress passphrase salt (hex, 16 bytes), paired with --duress-hash"));
 #endif
 		parser.AddSwitch (L"h", L"help",				_("Display detailed command line help"), wxCMD_LINE_OPTION_HELP);
 		parser.AddSwitch (L"",	L"import-token-keyfiles", _("Import keyfiles to security token"));
@@ -808,6 +842,34 @@ namespace VeraCrypt
 #ifdef TC_LINUX
 		if (ArgEmergencyUnmount && ArgCommand != CommandId::DismountVolumes)
 			throw_err (L"--emergency-unmount is supported only with an unmount command");
+#endif
+
+#if defined(VC_ENABLE_DURESS)
+		{
+			// Explicit panic switch.
+			if (parser.Found (L"duress-dismount"))
+				ArgCommand = CommandId::DuressDismount;
+
+			// Duress-passphrase recognition: a pre-registered (salt, tag) turns a *mount* whose
+			// password is the duress passphrase into the safe duress action instead — so entering the
+			// duress passphrase locks everything down. The passphrase itself is never stored; only the
+			// salt and HMAC-SHA256(salt, passphrase) tag are, and the compare is constant-time. No
+			// volume header is read or changed. See docs/DURESS-DISMOUNT-SPEC.md.
+			wxString dhash, dsalt;
+			if (ArgCommand == CommandId::MountVolume && ArgPassword
+				&& parser.Found (L"duress-hash", &dhash) && parser.Found (L"duress-salt", &dsalt))
+			{
+				unsigned char tag[DURESS_TAG_SIZE], salt[DURESS_SALT_SIZE];
+				if (!ParseHexBytes (dsalt, salt, DURESS_SALT_SIZE))
+					throw_err (L"--duress-salt must be exactly 16 hex-encoded bytes");
+				if (!ParseHexBytes (dhash, tag, DURESS_TAG_SIZE))
+					throw_err (L"--duress-hash must be exactly 32 hex-encoded bytes");
+				if (DuressTokenCheck (salt, DURESS_SALT_SIZE, ArgPassword->DataPtr(), (int) ArgPassword->Size(), tag))
+					ArgCommand = CommandId::DuressDismount;
+				{ volatile unsigned char *p = tag;  size_t n = sizeof (tag);  while (n--) *p++ = 0; }
+				{ volatile unsigned char *p = salt; size_t n = sizeof (salt); while (n--) *p++ = 0; }
+			}
+		}
 #endif
 
 		if (ArgCommand == CommandId::None && Application::GetUserInterfaceType() == UserInterfaceType::Text)

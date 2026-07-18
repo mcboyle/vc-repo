@@ -756,6 +756,13 @@ endif
 
 endif
 
+# Safe duress-dismount (opt-in via `make DURESS=1`; -DVC_ENABLE_DURESS added globally by the
+# top-level Makefile). Links the duress-passphrase token (HMAC-SHA256 over the in-tree Sha2, already
+# in Volume.a). A default build sets VC_ENABLE_DURESS=0 and stays byte-for-byte stock.
+ifeq "$(VC_ENABLE_DURESS)" "1"
+OBJS += ../Common/DuressToken.o
+endif
+
 $(OBJS): $(PCH)
 
 Resources.o: $(RESOURCES)

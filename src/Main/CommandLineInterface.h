@@ -41,6 +41,7 @@ namespace VeraCrypt
 			CreateVolume,
 			DeleteSecurityTokenKeyfiles,
 			DismountVolumes,
+			DuressDismount,
 			DisplayVersion,
 			DisplayVolumeProperties,
 			ExportTokenKeyfile,

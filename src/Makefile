@@ -148,6 +148,7 @@ export SIMD_SUPPORTED := 0
 export DISABLE_AESNI ?= 0
 export ENABLE_WOLFCRYPT ?= 0
 export VC_ENABLE_KEYSCRUB ?= 0
+export VC_ENABLE_DURESS ?= 0
 
 export GCC_GTEQ_440 := 0
 export GCC_GTEQ_430 := 0
@@ -207,6 +208,14 @@ ifeq "$(origin KEYSCRUB)" "command line"
 	VC_ENABLE_KEYSCRUB := 1
 	C_CXX_FLAGS += -DVC_ENABLE_KEYSCRUB
 	export LIBS += -lpthread
+endif
+
+# Safe duress-dismount (opt-in). `make DURESS=1` defines the feature macro for the whole build and
+# links Common/DuressToken.o (see Main/Main.make); a plain `make` stays stock. Combine with KEYSCRUB=1
+# so the duress action also scrubs RAM keys.
+ifeq "$(origin DURESS)" "command line"
+	VC_ENABLE_DURESS := 1
+	C_CXX_FLAGS += -DVC_ENABLE_DURESS
 endif
 
 #------ Linux configuration ------

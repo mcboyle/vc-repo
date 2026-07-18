@@ -32,6 +32,9 @@
 #include "Application.h"
 #include "FavoriteVolume.h"
 #include "UserInterface.h"
+#if defined(VC_ENABLE_KEYSCRUB)
+#include "Core/KeyScrubEvents.h"
+#endif
 
 namespace VeraCrypt
 {
@@ -159,6 +162,32 @@ namespace VeraCrypt
 
 		DismountVolumes (volumes, ignoreOpenFiles, interactive);
 	}
+
+#if defined(VC_ENABLE_DURESS)
+	void UserInterface::DuressDismount () const
+	{
+		// Force-dismount everything that is mounted, ignoring open files (the point is to lock down
+		// under coercion, not to tidy up), and swallow per-volume errors so one stuck mount cannot
+		// stop the rest. Nothing is mounted, nothing on disk is altered.
+		try
+		{
+			VolumeInfoList mountedVolumes = Core->GetMountedVolumes();
+			foreach (shared_ptr <VolumeInfo> volume, mountedVolumes)
+			{
+				try { Core->DismountVolume (volume, true /* ignoreOpenFiles */); }
+				catch (...) { }
+			}
+		}
+		catch (...) { }
+
+#if defined(VC_ENABLE_KEYSCRUB)
+		// Erase any user-space secrets left in RAM (reconstructed Shamir secret, HardwareKeyFactor
+		// material) and tear down the in-RAM key-obfuscation area. The mounted master keys lived in
+		// the kernel device-mapper and are released by the dismounts above; see docs/MEMORY-SCRUB.md.
+		KeyScrubManager::Instance().ScrubNow ("duress");
+#endif
+	}
+#endif
 
 	void UserInterface::DismountVolumes (VolumeInfoList volumes, bool ignoreOpenFiles, bool interactive, bool emergencyCleanupRequested) const
 	{
@@ -1249,6 +1278,12 @@ const FileManager fileManagers[] = {
 #endif
 				);
 			return true;
+
+#if defined(VC_ENABLE_DURESS)
+		case CommandId::DuressDismount:
+			DuressDismount();
+			return true;
+#endif
 
 		case CommandId::DisplayVersion:
 			ShowString (Application::GetName() + L" " + StringConverter::ToWide (Version::String()) + L"\n");
