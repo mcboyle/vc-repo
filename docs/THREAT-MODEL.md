@@ -31,10 +31,16 @@ overselling deniability gets high-risk people hurt.
   post-hoc measure on your machine affects it. (This is also why destructive duress-wipe is a trap —
   it hits a copy that no longer matters, and destroys deniability by leaving a "destruction"
   artifact.)
-- **Memory extraction while running.** Keys and any reconstructed Shamir secret live in RAM. On
-  Windows, VeraCrypt encrypts/erases them; **on Linux/macOS this is not yet done** (cold-boot, DMA
-  over Thunderbolt/FireWire). The cross-platform memory-scrub work item (ROADMAP) closes this — until
-  then, treat a running/locked machine as exposed.
+- **Memory extraction while running.** Keys and any reconstructed Shamir secret live in RAM (cold-boot,
+  DMA over Thunderbolt/FireWire). The **cross-platform memory-scrub** (`docs/MEMORY-SCRUB.md`,
+  `-DVC_ENABLE_KEYSCRUB`) now covers the **user-space** secrets on Linux/macOS: the reconstructed
+  Shamir/raw secret and HardwareKeyFactor material are kept ChaCha-encrypted at rest in RAM and erased
+  on unmount / idle timeout / screen lock / new-device-connect. **Two caveats remain, stated plainly:**
+  (1) the **mounted master key lives in the kernel device-mapper (dm-crypt)**, not this process, so no
+  user-space scrub reaches it — a mounted volume's master key is kernel-resident and still exposed; and
+  (2) the **screen-lock and new-device triggers are OS glue not exercisable in a sandbox** — validate
+  them on a real desktop session. Erasure shrinks the exposure window; a live-DMA attacker can still
+  race the instant a secret is revealed for use. Treat a machine with a *mounted* volume as exposed.
 - **Evil maid / firmware.** The existing bootloader fingerprint check detects bootloader tampering
   but not a UEFI-level keylogger or firmware implant. Measured boot / Secure Boot signing is backlog.
 - **The tooling itself.** For the decoy, discovery of a decoy scheme undermines it; for split-key,

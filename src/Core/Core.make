@@ -28,4 +28,16 @@ ifeq "$(PLATFORM)" "MacOSX"
 OBJS += Unix/FreeBSD/CoreFreeBSD.o
 endif
 
+# Cross-platform memory-key scrub (opt-in via `make KEYSCRUB=1`; the -DVC_ENABLE_KEYSCRUB define is
+# added globally by the top-level Makefile). A default build sets VC_ENABLE_KEYSCRUB=0, so none of
+# these objects are compiled and the build stays byte-for-byte stock. This pulls in the scrub module,
+# its C++ event manager, and the in-tree ChaCha/t1ha primitives the RAM-encryption transform reuses.
+ifeq "$(VC_ENABLE_KEYSCRUB)" "1"
+OBJS += KeyScrubEvents.o
+OBJS += ../Common/KeyScrub.o
+OBJS += ../Crypto/t1ha2.o
+OBJS += ../Crypto/chacha256.o
+OBJS += ../Crypto/chachaRng.o
+endif
+
 include $(BUILD_INC)/Makefile.inc

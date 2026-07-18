@@ -1,0 +1,896 @@
+# keyscrub.patch — cross-platform memory-key scrub (VC_ENABLE_KEYSCRUB)
+#
+# Paths are relative to src/ (apply with -p1 from src/). New files (Common/KeyScrub.{c,h},
+# Core/KeyScrubEvents.{h,cpp}) apply onto stock VeraCrypt 1.26.29 as-is. The hunks in
+# CommandLineInterface.cpp and HardwareKeyFactor.{c,h} build on this fork's existing
+# HardwareKeyFactor series (as every incremental patch here does); apply that series first, or use
+# patches/ALL-changes-vs-1.26.29.patch for the cumulative onto-stock diff. Verified to apply cleanly
+# onto the fork baseline. See docs/MEMORY-SCRUB.md.
+#
+diff --git a/Common/HardwareKeyFactor.c b/Common/HardwareKeyFactor.c
+index 8018559..405c5c5 100644
+--- a/Common/HardwareKeyFactor.c
++++ b/Common/HardwareKeyFactor.c
+@@ -436,6 +436,22 @@ void HKFSetActiveConfig (const HKFConfig *cfg)
+ 	g_hkfActiveConfig = cfg;
+ }
+ 
++#if defined(VC_ENABLE_KEYSCRUB)
++void HKFScrubActiveConfig (void)
++{
++	HKFConfig *cfg = (HKFConfig *) g_hkfActiveConfig;   /* wipe the caller-owned secret storage */
++	if (cfg)
++	{
++		{ volatile unsigned char *p = cfg->rawSecret;  size_t n = sizeof (cfg->rawSecret);  while (n--) *p++ = 0; }
++		{ volatile unsigned char *p = cfg->simSecret;  size_t n = sizeof (cfg->simSecret);  while (n--) *p++ = 0; }
++		{ volatile unsigned char *p = (volatile unsigned char *) cfg->fidoPin; size_t n = sizeof (cfg->fidoPin); while (n--) *p++ = 0; }
++		cfg->rawSecretLen = 0;
++		cfg->simSecretLen = 0;
++	}
++	g_hkfActiveConfig = 0;
++}
++#endif
++
+ int HKFApplyIfConfigured (unsigned char *userKey, int *keyLength,
+                           const unsigned char *salt, int salt_len)
+ {
+diff --git a/Common/HardwareKeyFactor.h b/Common/HardwareKeyFactor.h
+index 3c85da9..bab93e9 100644
+--- a/Common/HardwareKeyFactor.h
++++ b/Common/HardwareKeyFactor.h
+@@ -119,6 +119,17 @@ void HKFMixResponseIntoPassword (unsigned char *password, int *password_len,
+ extern const HKFConfig *g_hkfActiveConfig;
+ void HKFSetActiveConfig (const HKFConfig *cfg);
+ 
++#if defined(VC_ENABLE_KEYSCRUB)
++/*
++ * Securely wipe the secret material in the active configuration — the reconstructed Shamir/raw
++ * secret, the simulator secret, and the FIDO2 PIN — and detach it, so nothing sensitive lingers in
++ * process RAM after the mount/create operation that needed it. Called by the KeyScrub event manager
++ * on unmount / idle / screen-lock / new-device-connect, and safe to call when no factor is active.
++ * The wipe is on the caller-owned config storage the active pointer refers to.
++ */
++void HKFScrubActiveConfig (void);
++#endif
++
+ /*
+  * Convenience for the derivation call-sites: if a factor is configured, compute the response over
+  * 'salt' (the volume's PBKDF2 salt) and mix it into (userKey, *keyLength) in place, exactly as a
+diff --git a/Common/KeyScrub.c b/Common/KeyScrub.c
+new file mode 100644
+index 0000000..d6471cf
+--- /dev/null
++++ b/Common/KeyScrub.c
+@@ -0,0 +1,274 @@
++/*
++ * KeyScrub — see KeyScrub.h for the design and boundary.
++ *
++ * The RAM-encryption transform deliberately reuses VeraCrypt's own in-tree primitives — the real
++ * t1ha2_atonce128 (Crypto/t1ha2.c) and ChaCha12 (Crypto/chacha256.c) — and reproduces the exact
++ * construction of Common/Crypto.c::VcProtectMemory, so it is the same scheme the Windows driver
++ * uses, only instantiated for the Linux/macOS application and parameterised for verification.
++ */
++
++#include "KeyScrub.h"
++
++#if defined(VC_ENABLE_KEYSCRUB)
++
++#include <string.h>
++#include <stdlib.h>
++#include <stdint.h>
++#include "Crypto/t1ha.h"
++#include "Crypto/chacha256.h"
++#include "Crypto/chachaRng.h"
++
++#if !defined(_WIN32)
++#	include <pthread.h>
++static pthread_mutex_t g_ksLock = PTHREAD_MUTEX_INITIALIZER;
++#	define KS_LOCK()   pthread_mutex_lock (&g_ksLock)
++#	define KS_UNLOCK() pthread_mutex_unlock (&g_ksLock)
++#else
++#	include <windows.h>
++static CRITICAL_SECTION g_ksLock;
++static LONG g_ksLockInit = 0;
++static void ks_lock_ensure (void)
++{
++	if (InterlockedCompareExchange (&g_ksLockInit, 1, 0) == 0)
++		InitializeCriticalSection (&g_ksLock);
++}
++#	define KS_LOCK()   (ks_lock_ensure(), EnterCriticalSection (&g_ksLock))
++#	define KS_UNLOCK() LeaveCriticalSection (&g_ksLock)
++#endif
++
++/* ================================================================================================
++ *  Secure wipe
++ * ============================================================================================== */
++
++void VcSecureWipe (volatile void *pbData, size_t cbData)
++{
++	volatile unsigned char *p = (volatile unsigned char *) pbData;
++	if (!p)
++		return;
++	while (cbData--)
++		*p++ = 0;
++#if defined(__GNUC__) || defined(__clang__)
++	/* deny the optimiser any freedom to treat the writes above as dead */
++	__asm__ __volatile__ ("" ::: "memory");
++#endif
++}
++
++/* ================================================================================================
++ *  Scrub registry
++ * ============================================================================================== */
++
++typedef struct
++{
++	void  *ptr;
++	size_t len;
++} KsRegion;
++
++static KsRegion g_ksRegions[VC_SCRUB_MAX_REGIONS];
++static int      g_ksRegionCount = 0;
++
++int VcScrubRegister (void *pbData, size_t cbData)
++{
++	int i, rc = -1;
++	if (!pbData || !cbData)
++		return 0;
++	KS_LOCK ();
++	/* update in place if already present */
++	for (i = 0; i < g_ksRegionCount; i++)
++	{
++		if (g_ksRegions[i].ptr == pbData)
++		{
++			g_ksRegions[i].len = cbData;
++			rc = 0;
++			goto done;
++		}
++	}
++	if (g_ksRegionCount < VC_SCRUB_MAX_REGIONS)
++	{
++		g_ksRegions[g_ksRegionCount].ptr = pbData;
++		g_ksRegions[g_ksRegionCount].len = cbData;
++		g_ksRegionCount++;
++		rc = 0;
++	}
++done:
++	KS_UNLOCK ();
++	return rc;
++}
++
++void VcScrubUnregister (void *pbData)
++{
++	int i;
++	if (!pbData)
++		return;
++	KS_LOCK ();
++	for (i = 0; i < g_ksRegionCount; i++)
++	{
++		if (g_ksRegions[i].ptr == pbData)
++		{
++			/* compact: move the last entry into this slot */
++			g_ksRegions[i] = g_ksRegions[g_ksRegionCount - 1];
++			g_ksRegions[g_ksRegionCount - 1].ptr = 0;
++			g_ksRegions[g_ksRegionCount - 1].len = 0;
++			g_ksRegionCount--;
++			break;
++		}
++	}
++	KS_UNLOCK ();
++}
++
++int VcScrubAll (void)
++{
++	int i, n;
++	KS_LOCK ();
++	n = g_ksRegionCount;
++	for (i = 0; i < n; i++)
++		VcSecureWipe (g_ksRegions[i].ptr, g_ksRegions[i].len);
++	KS_UNLOCK ();
++	return n;
++}
++
++int VcScrubRegionCount (void)
++{
++	int n;
++	KS_LOCK ();
++	n = g_ksRegionCount;
++	KS_UNLOCK ();
++	return n;
++}
++
++/* ================================================================================================
++ *  RAM encryption at rest
++ * ============================================================================================== */
++
++void VcKsRamTransform (const unsigned char *area, size_t areaLen,
++                       uint64 hashSeedMask, uint64 cipherIVMask,
++                       uint64 areaBase, uint64 encID,
++                       unsigned char *buf, size_t bufLen)
++{
++	uint64        hashSeed, hashHigh = 0, hashLow, cipherIV;
++	uint64        pbKey[4];
++	ChaCha256Ctx  ctx;
++
++	if (!area || !areaLen || !buf || !bufLen)
++		return;
++
++	/* derive a 128-bit hash of the whole key-derivation area, seeded by (area address + encID) */
++	hashSeed = (areaBase + encID) ^ hashSeedMask;
++	hashLow  = t1ha2_atonce128 (&hashHigh, area, areaLen, hashSeed);
++
++	/* expand the 128-bit hash into a 256-bit ChaCha key, then whiten it with ChaCha12 */
++	pbKey[0] = hashLow;
++	pbKey[1] = hashHigh;
++	pbKey[2] = hashLow ^ hashHigh;
++	pbKey[3] = hashLow + hashHigh;
++
++	ChaCha256Init    (&ctx, (unsigned char *) pbKey, (unsigned char *) &hashSeed, 12);
++	ChaCha256Encrypt (&ctx, (unsigned char *) pbKey, sizeof (pbKey), (unsigned char *) pbKey);
++
++	/* encrypt the secret in place with the whitened key and an address-bound IV */
++	cipherIV = (areaBase + encID) ^ cipherIVMask;
++	ChaCha256Init    (&ctx, (unsigned char *) pbKey, (unsigned char *) &cipherIV, 12);
++	ChaCha256Encrypt (&ctx, buf, bufLen, buf);
++
++	VcSecureWipe (pbKey, sizeof (pbKey));
++	VcSecureWipe (&ctx, sizeof (ctx));
++	VcSecureWipe (&hashSeed, sizeof (hashSeed));
++	VcSecureWipe (&hashLow, sizeof (hashLow));
++	VcSecureWipe (&hashHigh, sizeof (hashHigh));
++	VcSecureWipe (&cipherIV, sizeof (cipherIV));
++}
++
++/* process-wide key-derivation area (mirrors Common/Crypto.c static state, but app-owned) */
++static unsigned char *g_ksArea      = 0;
++static size_t         g_ksAreaLen   = 0;
++static uint64         g_ksHashMask  = 0;
++static uint64         g_ksIVMask    = 0;
++static uint64         g_ksAreaBase  = 0;   /* value fed into the address-bound terms */
++
++#define VC_KS_AREA_SIZE (1024 * 1024)
++
++static int ks_area_from_rng (ChaCha20RngCtx *ctx, size_t areaLen, uint64 areaBase)
++{
++	VcKsRamProtectShutdown ();
++
++	g_ksArea = (unsigned char *) malloc (areaLen);
++	if (!g_ksArea)
++		return 0;
++	g_ksAreaLen  = areaLen;
++	g_ksAreaBase = areaBase;
++
++	ChaCha20RngGetBytes (ctx, g_ksArea, areaLen);
++	ChaCha20RngGetBytes (ctx, (unsigned char *) &g_ksHashMask, sizeof (g_ksHashMask));
++	ChaCha20RngGetBytes (ctx, (unsigned char *) &g_ksIVMask,   sizeof (g_ksIVMask));
++	return 1;
++}
++
++int VcKsRamProtectInit (GetRandSeedFn rngCallback)
++{
++	ChaCha20RngCtx ctx;
++	unsigned char  seed[CHACHA20RNG_KEYSZ + CHACHA20RNG_IVSZ];
++	int            ok;
++
++	if (!rngCallback)
++		return 0;
++	rngCallback (seed, sizeof (seed));
++	ChaCha20RngInit (&ctx, seed, rngCallback, 0);
++
++	/* bind the address-derived term to the real heap address, as upstream does */
++	ok = ks_area_from_rng (&ctx, VC_KS_AREA_SIZE, 0);
++	if (ok)
++		g_ksAreaBase = (uint64) (uintptr_t) g_ksArea;
++
++	VcSecureWipe (seed, sizeof (seed));
++	VcSecureWipe (&ctx, sizeof (ctx));
++	return ok;
++}
++
++int VcKsRamProtectInitFixed (const unsigned char seed40[40])
++{
++	ChaCha20RngCtx ctx;
++	int            ok;
++
++	if (!seed40)
++		return 0;
++	/* NULL callback: the RNG runs as a pure PRG of the fixed seed (no reseed), so the area and
++	   masks are fully determined — a reproducible vector. areaBase is pinned to a constant. */
++	ChaCha20RngInit (&ctx, seed40, 0, 0);
++	ok = ks_area_from_rng (&ctx, 4096, UINT64_C(0x1122334455667788));
++	VcSecureWipe (&ctx, sizeof (ctx));
++	return ok;
++}
++
++int VcKsRamProtectReady (void)
++{
++	return g_ksArea != 0;
++}
++
++void VcKsRamProtect (unsigned char *buf, size_t bufLen)
++{
++	if (!g_ksArea || !buf || !bufLen)
++		return;
++	VcKsRamTransform (g_ksArea, g_ksAreaLen, g_ksHashMask, g_ksIVMask,
++	                  g_ksAreaBase, (uint64) (uintptr_t) buf, buf, bufLen);
++}
++
++void VcKsRamUnprotect (unsigned char *buf, size_t bufLen)
++{
++	/* stream cipher: decryption is the same operation */
++	VcKsRamProtect (buf, bufLen);
++}
++
++void VcKsRamProtectShutdown (void)
++{
++	if (g_ksArea)
++	{
++		VcSecureWipe (g_ksArea, g_ksAreaLen);
++		free (g_ksArea);
++		g_ksArea = 0;
++	}
++	g_ksAreaLen  = 0;
++	g_ksAreaBase = 0;
++	VcSecureWipe (&g_ksHashMask, sizeof (g_ksHashMask));
++	VcSecureWipe (&g_ksIVMask,   sizeof (g_ksIVMask));
++}
++
++#endif /* VC_ENABLE_KEYSCRUB */
+diff --git a/Common/KeyScrub.h b/Common/KeyScrub.h
+new file mode 100644
+index 0000000..2f61ff6
+--- /dev/null
++++ b/Common/KeyScrub.h
+@@ -0,0 +1,111 @@
++/*
++ * KeyScrub — cross-platform in-RAM key hygiene for the Linux/macOS application.
++ *
++ * VeraCrypt's own RAM-key-encryption and key-erase-on-shutdown (Common/Crypto.c VcProtectKeys /
++ * ClearSecurityParameters) are wired up only inside the Windows kernel driver. On Linux and macOS
++ * the application never initialises them, so any secret this fork holds in user space — most
++ * importantly the reconstructed Shamir secret and other HardwareKeyFactor material — sits in the
++ * clear in RAM for the whole process lifetime, exposed to cold-boot and DMA (Thunderbolt/FireWire)
++ * capture. This module closes that gap for user-space secrets. It does NOT (and cannot) reach the
++ * mounted master key, which lives in the kernel device-mapper once a volume is mounted; see
++ * docs/MEMORY-SCRUB.md for that boundary.
++ *
++ * Two things live here:
++ *   1. A secure-wipe primitive and a small registry of live secret regions, so a single call
++ *      (VcScrubAll) erases every registered secret on an event (unmount / idle / screen-lock /
++ *      new-device-connect). The wipe resists dead-store elimination.
++ *   2. A RAM-encryption-at-rest transform that mirrors the Windows VcProtectMemory scheme: a large
++ *      random "key-derivation area" is hashed with t1ha2 to derive a per-region ChaCha12 key that
++ *      encrypts the secret in place, so the plaintext secret is not resident between uses. The core
++ *      transform (VcKsRamTransform) is a pure function of explicit parameters so it can be proven
++ *      byte-for-byte against an independent reimplementation.
++ *
++ * Everything is compiled only when -DVC_ENABLE_KEYSCRUB is set; a build without it is byte-for-byte
++ * stock. EXPERIMENTAL — a mitigation, not a guarantee; a determined attacker with live DMA can still
++ * race the window in which a secret is revealed for use.
++ */
++
++#ifndef TC_HEADER_Common_KeyScrub
++#define TC_HEADER_Common_KeyScrub
++
++#include "Tcdefs.h"
++
++#if defined(VC_ENABLE_KEYSCRUB)
++
++#include "Crypto/chachaRng.h"   /* GetRandSeedFn */
++
++#if defined(__cplusplus)
++extern "C" {
++#endif
++
++/* ---- secure wipe ------------------------------------------------------------------------- */
++
++/* Zero cbData bytes at pbData in a way the compiler may not elide. Safe on NULL/0. */
++void VcSecureWipe (volatile void *pbData, size_t cbData);
++
++/* ---- scrub registry ---------------------------------------------------------------------- */
++
++/* Maximum number of secret regions tracked at once. Small and fixed: no allocation on the scrub
++   path, so VcScrubAll stays usable from constrained contexts. */
++#define VC_SCRUB_MAX_REGIONS 64
++
++/* Register / unregister a live secret region. Registering the same pointer again updates its
++   length. Unregistering a pointer that is not present is a no-op. Both are thread-safe. */
++int  VcScrubRegister   (void *pbData, size_t cbData);   /* returns 0 on success, -1 if table full */
++void VcScrubUnregister (void *pbData);
++
++/* Wipe every currently-registered region (does not unregister them — a re-revealed secret stays
++   tracked). Returns the number of regions wiped. Thread-safe. */
++int  VcScrubAll (void);
++
++/* Number of regions currently registered (diagnostics/tests). */
++int  VcScrubRegionCount (void);
++
++/* ---- RAM encryption at rest (mirrors Common/Crypto.c VcProtectMemory) --------------------- */
++
++/*
++ * Pure core transform, exposed for verification. Reproduces the VcProtectMemory construction with
++ * every input passed explicitly instead of read from process-global state:
++ *
++ *   hashSeed = (areaBase + encID) ^ hashSeedMask
++ *   (hashLow,hashHigh) = t1ha2_atonce128(area, areaLen, hashSeed)
++ *   key = ChaCha12_key_whiten([hashLow, hashHigh, hashLow^hashHigh, hashLow+hashHigh])
++ *   cipherIV = (areaBase + encID) ^ cipherIVMask
++ *   buf ^= ChaCha12_keystream(key, cipherIV)
++ *
++ * It is its own inverse (stream cipher): calling it twice with identical parameters restores the
++ * plaintext. All multi-byte values are serialised little-endian, matching the x86_64/ARM64 targets
++ * and t1ha2's fetch64_le. areaBase lets a test pin the address-derived term to a constant for a
++ * reproducible vector; the live store passes the real area address (anti-forensic address binding,
++ * as upstream does).
++ */
++void VcKsRamTransform (const unsigned char *area, size_t areaLen,
++                       uint64 hashSeedMask, uint64 cipherIVMask,
++                       uint64 areaBase, uint64 encID,
++                       unsigned char *buf, size_t bufLen);
++
++/* Initialise the process-wide key-derivation area from a seed callback (production: a CSPRNG).
++   Returns TRUE on success. Idempotent-safe: a second call rebuilds the area. */
++int  VcKsRamProtectInit (GetRandSeedFn rngCallback);
++
++/* Deterministic init for tests/regression vectors: the 40-byte seed fully determines the area and
++   masks, and areaBase is pinned to a fixed constant, so the protected output is reproducible. */
++int  VcKsRamProtectInitFixed (const unsigned char seed40[40]);
++
++int  VcKsRamProtectReady (void);
++
++/* Encrypt / decrypt a region in place against the active area (no-op if the area is not initialised
++   — the caller still gets scrub coverage via the registry). Decrypt == Encrypt. */
++void VcKsRamProtect   (unsigned char *buf, size_t bufLen);
++void VcKsRamUnprotect (unsigned char *buf, size_t bufLen);
++
++/* Wipe and free the key-derivation area and masks. */
++void VcKsRamProtectShutdown (void);
++
++#if defined(__cplusplus)
++}
++#endif
++
++#endif /* VC_ENABLE_KEYSCRUB */
++
++#endif /* TC_HEADER_Common_KeyScrub */
+diff --git a/Core/Core.make b/Core/Core.make
+index def349d..8451366 100644
+--- a/Core/Core.make
++++ b/Core/Core.make
+@@ -28,4 +28,16 @@ ifeq "$(PLATFORM)" "MacOSX"
+ OBJS += Unix/FreeBSD/CoreFreeBSD.o
+ endif
+ 
++# Cross-platform memory-key scrub (opt-in via `make KEYSCRUB=1`; the -DVC_ENABLE_KEYSCRUB define is
++# added globally by the top-level Makefile). A default build sets VC_ENABLE_KEYSCRUB=0, so none of
++# these objects are compiled and the build stays byte-for-byte stock. This pulls in the scrub module,
++# its C++ event manager, and the in-tree ChaCha/t1ha primitives the RAM-encryption transform reuses.
++ifeq "$(VC_ENABLE_KEYSCRUB)" "1"
++OBJS += KeyScrubEvents.o
++OBJS += ../Common/KeyScrub.o
++OBJS += ../Crypto/t1ha2.o
++OBJS += ../Crypto/chacha256.o
++OBJS += ../Crypto/chachaRng.o
++endif
++
+ include $(BUILD_INC)/Makefile.inc
+diff --git a/Core/KeyScrubEvents.cpp b/Core/KeyScrubEvents.cpp
+new file mode 100644
+index 0000000..752442a
+--- /dev/null
++++ b/Core/KeyScrubEvents.cpp
+@@ -0,0 +1,214 @@
++/*
++ * KeyScrubEvents — see KeyScrubEvents.h for the design and the verification boundary.
++ */
++
++#include "KeyScrubEvents.h"
++
++#if defined(VC_ENABLE_KEYSCRUB)
++
++#include <time.h>
++#include <string.h>
++#include <stdio.h>
++
++extern "C" {
++#include "Common/KeyScrub.h"
++#include "Common/HardwareKeyFactor.h"
++}
++
++namespace VeraCrypt
++{
++	KeyScrubManager &KeyScrubManager::Instance ()
++	{
++		static KeyScrubManager instance;
++		return instance;
++	}
++
++	KeyScrubManager::KeyScrubManager ()
++		: Enabled (false), IdleTimeoutSeconds (0), LastActivity (0),
++		  StopThreads (false), IdleThreadStarted (false)
++	{
++		pthread_mutex_init (&Lock, 0);
++	}
++
++	KeyScrubManager::~KeyScrubManager ()
++	{
++		Shutdown ();
++		pthread_mutex_destroy (&Lock);
++	}
++
++	double KeyScrubManager::MonotonicNow () const
++	{
++		struct timespec ts;
++#if defined(CLOCK_MONOTONIC)
++		if (clock_gettime (CLOCK_MONOTONIC, &ts) == 0)
++			return (double) ts.tv_sec + (double) ts.tv_nsec / 1e9;
++#endif
++		return (double) time (0);
++	}
++
++	/*
++	 * CSPRNG seed for the RAM-encryption key-derivation area. The kernel getrandom()/urandom is used
++	 * directly here so the scrub module has no dependency on VeraCrypt's RandomNumberGenerator (which
++	 * is not yet started at the point Enable() runs). This only seeds the *obfuscation* key for keys
++	 * at rest in RAM; it is not used to derive any on-disk key, so it never affects volume material.
++	 */
++	void KeyScrubManager::RandSeed (unsigned char *out, size_t len)
++	{
++		FILE *f = fopen ("/dev/urandom", "rb");
++		if (f)
++		{
++			size_t got = fread (out, 1, len, f);
++			fclose (f);
++			if (got == len)
++				return;
++		}
++		/* last-resort fallback: never for on-disk keys, only to vary the in-RAM obfuscation key */
++		double t = 0;
++		struct timespec ts;
++#if defined(CLOCK_MONOTONIC)
++		clock_gettime (CLOCK_MONOTONIC, &ts);
++		t = (double) ts.tv_sec + (double) ts.tv_nsec;
++#endif
++		for (size_t i = 0; i < len; i++)
++			out[i] = (unsigned char) ((((unsigned long) t) >> (i & 7)) ^ (i * 131u));
++	}
++
++	void KeyScrubManager::Enable (int idleTimeoutSeconds)
++	{
++		pthread_mutex_lock (&Lock);
++		if (!Enabled)
++		{
++			VcKsRamProtectInit (&KeyScrubManager::RandSeed);
++			Enabled = true;
++			IdleTimeoutSeconds = idleTimeoutSeconds;
++			LastActivity = MonotonicNow ();
++		}
++		pthread_mutex_unlock (&Lock);
++
++		if (idleTimeoutSeconds > 0)
++			StartIdleMonitor ();
++		StartScreenLockMonitor ();
++		StartDeviceMonitor ();
++	}
++
++	void KeyScrubManager::ScrubNow (const char *reason)
++	{
++		(void) reason;
++		VcScrubAll ();
++		HKFScrubActiveConfig ();
++	}
++
++	void KeyScrubManager::NotifyActivity ()
++	{
++		pthread_mutex_lock (&Lock);
++		LastActivity = MonotonicNow ();
++		pthread_mutex_unlock (&Lock);
++	}
++
++	void KeyScrubManager::OnVolumeDismounted ()   { ScrubNow ("unmount"); }
++	void KeyScrubManager::OnScreenLocked ()       { ScrubNow ("screen-lock"); }
++	void KeyScrubManager::OnNewDeviceConnected () { ScrubNow ("new-device-connect"); }
++
++	// -------------------------------------------------------------------- idle timeout (portable)
++
++	void *KeyScrubManager::IdleThreadEntry (void *selfPtr)
++	{
++		KeyScrubManager *self = (KeyScrubManager *) selfPtr;
++		while (!self->StopThreads)
++		{
++			struct timespec req; req.tv_sec = 1; req.tv_nsec = 0;
++			nanosleep (&req, 0);
++			if (self->StopThreads)
++				break;
++
++			pthread_mutex_lock (&self->Lock);
++			double idle = self->MonotonicNow () - self->LastActivity;
++			int timeout = self->IdleTimeoutSeconds;
++			pthread_mutex_unlock (&self->Lock);
++
++			if (timeout > 0 && idle >= (double) timeout)
++			{
++				self->ScrubNow ("idle-timeout");
++				self->NotifyActivity ();   // scrub once per idle period, not every second
++			}
++		}
++		return 0;
++	}
++
++	void KeyScrubManager::StartIdleMonitor ()
++	{
++		pthread_mutex_lock (&Lock);
++		bool start = !IdleThreadStarted;
++		IdleThreadStarted = true;
++		pthread_mutex_unlock (&Lock);
++		if (start)
++			pthread_create (&IdleThread, 0, &KeyScrubManager::IdleThreadEntry, this);
++	}
++
++	// ----------------------------------------------------------- screen lock (platform glue)
++	//
++	// Real implementation subscribes to the desktop's lock signal and calls OnScreenLocked().
++	// Compiled behind VC_KEYSCRUB_LOGIND (Linux, sd-bus) / __APPLE__ (macOS). Cannot be exercised in
++	// a sandbox — VALIDATE ON A REAL SESSION. See docs/MEMORY-SCRUB.md.
++
++	void KeyScrubManager::StartScreenLockMonitor ()
++	{
++#if defined(VC_KEYSCRUB_LOGIND)
++		// Sketch (requires -lsystemd): open a user-bus match on
++		//   type='signal',interface='org.freedesktop.login1.Session',member='Lock'
++		// and on PrepareForSleep(true); dispatch on a helper thread; call OnScreenLocked().
++		// Left to the packager to wire to their event loop; intentionally not linked by default.
++		StartLogindScreenLockMonitor ();
++#elif defined(__APPLE__) && defined(VC_KEYSCRUB_MACOS_LOCK)
++		// Sketch: CFNotificationCenterAddObserver for "com.apple.screenIsLocked" -> OnScreenLocked().
++		StartMacScreenLockMonitor ();
++#else
++		// Not compiled in: the screen-lock trigger is inert in this build.
++		fprintf (stderr, "KeyScrub: screen-lock monitor not compiled in "
++		                 "(build with VC_KEYSCRUB_LOGIND / VC_KEYSCRUB_MACOS_LOCK; validate on a real session)\n");
++#endif
++	}
++
++	// ----------------------------------------------------- new device connect (platform glue)
++	//
++	// Real implementation monitors hotplug and calls OnNewDeviceConnected(). Compiled behind
++	// VC_KEYSCRUB_UDEV (Linux, libudev) / __APPLE__ (macOS IOKit). VALIDATE ON A REAL SESSION.
++
++	void KeyScrubManager::StartDeviceMonitor ()
++	{
++#if defined(VC_KEYSCRUB_UDEV)
++		// Sketch (requires -ludev): udev_monitor_new_from_netlink(udev, "udev");
++		// udev_monitor_filter_add_match_subsystem_devtype(mon, "usb", NULL);
++		// poll the monitor fd on a helper thread; on an "add" action call OnNewDeviceConnected().
++		StartUdevDeviceMonitor ();
++#elif defined(__APPLE__) && defined(VC_KEYSCRUB_IOKIT)
++		// Sketch: IOServiceAddMatchingNotification(kIOFirstMatchNotification, IOUSBDevice) ->
++		// OnNewDeviceConnected().
++		StartIOKitDeviceMonitor ();
++#else
++		fprintf (stderr, "KeyScrub: new-device monitor not compiled in "
++		                 "(build with VC_KEYSCRUB_UDEV / VC_KEYSCRUB_IOKIT; validate on a real session)\n");
++#endif
++	}
++
++	void KeyScrubManager::Shutdown ()
++	{
++		pthread_mutex_lock (&Lock);
++		bool joinIdle = IdleThreadStarted && !StopThreads;
++		StopThreads = true;
++		pthread_mutex_unlock (&Lock);
++
++		if (joinIdle)
++			pthread_join (IdleThread, 0);
++
++		ScrubNow ("shutdown");
++		VcKsRamProtectShutdown ();
++
++		pthread_mutex_lock (&Lock);
++		Enabled = false;
++		IdleThreadStarted = false;
++		pthread_mutex_unlock (&Lock);
++	}
++}
++
++#endif /* VC_ENABLE_KEYSCRUB */
+diff --git a/Core/KeyScrubEvents.h b/Core/KeyScrubEvents.h
+new file mode 100644
+index 0000000..d8d005f
+--- /dev/null
++++ b/Core/KeyScrubEvents.h
+@@ -0,0 +1,82 @@
++/*
++ * KeyScrubEvents — event wiring for the cross-platform memory-key scrub (Linux/macOS application).
++ *
++ * The crypto core lives in Common/KeyScrub.{c,h} (secure wipe, scrub registry, RAM-encryption at
++ * rest) and Common/HardwareKeyFactor.c (HKFScrubActiveConfig). This class is the C++ glue that
++ * decides WHEN to scrub: it routes four events to a single ScrubNow() that erases every registered
++ * secret and the active HardwareKeyFactor secret.
++ *
++ *   - unmount              — hooked in Core/Unix/CoreUnix.cpp::DismountVolume (fully in-process).
++ *   - idle timeout         — a background monotonic-clock timer (coarse: activity is registered on
++ *                            volume operations; a full build would also hook UI input).
++ *   - screen lock          — Linux: logind Lock/PrepareForSleep via sd-bus (VC_KEYSCRUB_LOGIND);
++ *                            macOS: com.apple.screenIsLocked. Platform glue, see the .cpp.
++ *   - new-device-connect   — Linux: udev "usb" add events (VC_KEYSCRUB_UDEV); macOS: IOKit.
++ *
++ * The unmount and idle triggers are exercised by the verification harness and in-process logic. The
++ * screen-lock and new-device monitors are OS integration that cannot be exercised in a sandbox — they
++ * are compiled behind their own macros and MUST be validated on a real desktop session before being
++ * relied on (see docs/MEMORY-SCRUB.md). Everything here is gated behind VC_ENABLE_KEYSCRUB; a build
++ * without it is byte-for-byte stock.
++ */
++
++#ifndef TC_HEADER_Core_KeyScrubEvents
++#define TC_HEADER_Core_KeyScrubEvents
++
++#if defined(VC_ENABLE_KEYSCRUB)
++
++#include <pthread.h>
++#include <stddef.h>
++
++namespace VeraCrypt
++{
++	class KeyScrubManager
++	{
++	public:
++		static KeyScrubManager &Instance ();
++
++		// Initialise the RAM-encryption area and start the enabled monitors. idleTimeoutSeconds <= 0
++		// disables the idle-timeout trigger. Safe to call once at application start.
++		void Enable (int idleTimeoutSeconds);
++		bool IsEnabled () const { return Enabled; }
++
++		// Erase every registered secret region and the active HardwareKeyFactor secret. Thread-safe;
++		// safe to call when nothing is registered. 'reason' is for optional diagnostics only.
++		void ScrubNow (const char *reason);
++
++		// Reset the idle timer (call on user-driven volume operations).
++		void NotifyActivity ();
++
++		// Event entry points.
++		void OnVolumeDismounted ();     // unmount trigger
++		void OnScreenLocked ();         // screen-lock trigger
++		void OnNewDeviceConnected ();   // new-device-connect trigger
++
++		void Shutdown ();
++
++	private:
++		KeyScrubManager ();
++		~KeyScrubManager ();
++		KeyScrubManager (const KeyScrubManager &);
++		KeyScrubManager &operator= (const KeyScrubManager &);
++
++		static void  RandSeed (unsigned char *out, size_t len);   // CSPRNG seed for the RAM area
++		static void *IdleThreadEntry (void *self);
++		void  StartIdleMonitor ();
++		void  StartScreenLockMonitor ();   // platform glue (see .cpp)
++		void  StartDeviceMonitor ();       // platform glue (see .cpp)
++		double MonotonicNow () const;
++
++		bool            Enabled;
++		int             IdleTimeoutSeconds;
++		double          LastActivity;
++		volatile bool   StopThreads;
++		pthread_t       IdleThread;
++		bool            IdleThreadStarted;
++		mutable pthread_mutex_t Lock;
++	};
++}
++
++#endif /* VC_ENABLE_KEYSCRUB */
++
++#endif /* TC_HEADER_Core_KeyScrubEvents */
+diff --git a/Core/Unix/CoreUnix.cpp b/Core/Unix/CoreUnix.cpp
+index 1eb3528..dd08563 100644
+--- a/Core/Unix/CoreUnix.cpp
++++ b/Core/Unix/CoreUnix.cpp
+@@ -31,6 +31,9 @@
+ #include "Platform/SystemLog.h"
+ #include "Driver/Fuse/FuseService.h"
+ #include "Volume/VolumePasswordCache.h"
++#if defined(VC_ENABLE_KEYSCRUB)
++#include "Core/KeyScrubEvents.h"
++#endif
+ 
+ namespace VeraCrypt
+ {
+@@ -289,6 +292,13 @@ namespace VeraCrypt
+ 		VolumeEventArgs eventArgs (mountedVolume);
+ 		VolumeDismountedEvent.Raise (eventArgs);
+ 
++#if defined(VC_ENABLE_KEYSCRUB)
++		// Scrub any user-space secrets (reconstructed Shamir secret, HardwareKeyFactor material) from
++		// RAM now that a volume has been dismounted. The mounted master key itself lived in the kernel
++		// device-mapper, not here; see docs/MEMORY-SCRUB.md for that boundary.
++		KeyScrubManager::Instance().OnVolumeDismounted();
++#endif
++
+ 		return mountedVolume;
+ 	}
+ 
+@@ -432,6 +442,13 @@ namespace VeraCrypt
+ 		VolumeEventArgs eventArgs (mountedVolume);
+ 		VolumeDismountedEvent.Raise (eventArgs);
+ 
++#if defined(VC_ENABLE_KEYSCRUB)
++		// Scrub any user-space secrets (reconstructed Shamir secret, HardwareKeyFactor material) from
++		// RAM now that a volume has been dismounted. The mounted master key itself lived in the kernel
++		// device-mapper, not here; see docs/MEMORY-SCRUB.md for that boundary.
++		KeyScrubManager::Instance().OnVolumeDismounted();
++#endif
++
+ 		return mountedVolume;
+ 	}
+ #endif
+diff --git a/Main/CommandLineInterface.cpp b/Main/CommandLineInterface.cpp
+index 4f0632e..7ed8a54 100644
+--- a/Main/CommandLineInterface.cpp
++++ b/Main/CommandLineInterface.cpp
+@@ -14,6 +14,9 @@
+ #include <wx/cmdline.h>
+ #include <wx/tokenzr.h>
+ #include "Core/Core.h"
++#if defined(VC_ENABLE_KEYSCRUB)
++#include "Core/KeyScrubEvents.h"
++#endif
+ #include "Application.h"
+ #include "CommandLineInterface.h"
+ #include "LanguageStrings.h"
+@@ -103,6 +106,10 @@ namespace VeraCrypt
+ 		parser.AddOption (L"",	L"hkf-fido-pin",			_("FIDO2 device PIN (optional)"));
+ 		parser.AddOption (L"",	L"hkf-sim-secret",		_("Simulator secret (hex, testing only)"));
+ 		parser.AddOption (L"",	L"hkf-sim-mac",			_("Simulator MAC 1=HMAC-SHA1 2=HMAC-SHA256 (testing only)"));
++#endif
++#if defined(VC_ENABLE_KEYSCRUB)
++		parser.AddSwitch (L"",	L"keyscrub",			_("Enable in-RAM key hygiene: scrub user-space secrets on unmount/idle/screen-lock/new-device"));
++		parser.AddOption (L"",	L"keyscrub-idle",		_("Idle-timeout seconds after which in-RAM secrets are scrubbed (0 = off)"));
+ #endif
+ 		parser.AddSwitch (L"h", L"help",				_("Display detailed command line help"), wxCMD_LINE_OPTION_HELP);
+ 		parser.AddSwitch (L"",	L"import-token-keyfiles", _("Import keyfiles to security token"));
+@@ -581,6 +588,17 @@ namespace VeraCrypt
+ 		}
+ #endif
+ 
++#if defined(VC_ENABLE_KEYSCRUB)
++		if (parser.Found (L"keyscrub"))
++		{
++			int idle = 0;
++			wxString v;
++			if (parser.Found (L"keyscrub-idle", &v))
++				idle = StringConverter::ToInt32 (wstring (v));
++			KeyScrubManager::Instance().Enable (idle);
++		}
++#endif
++
+ 		if (parser.Found (L"protect-hidden", &str))
+ 		{
+ 			if (str == L"yes")
+diff --git a/Makefile b/Makefile
+index 7c15e5a..f526a05 100644
+--- a/Makefile
++++ b/Makefile
+@@ -147,6 +147,7 @@ export CPU_ARCH ?= unknown
+ export SIMD_SUPPORTED := 0
+ export DISABLE_AESNI ?= 0
+ export ENABLE_WOLFCRYPT ?= 0
++export VC_ENABLE_KEYSCRUB ?= 0
+ 
+ export GCC_GTEQ_440 := 0
+ export GCC_GTEQ_430 := 0
+@@ -200,6 +201,14 @@ ifeq "$(origin WOLFCRYPT)" "command line"
+ 	export LD_LIBRARY_PATH=/usr/local/lib
+ endif
+ 
++# Cross-platform memory-key scrub (opt-in). `make KEYSCRUB=1` defines the feature macro for the
++# whole build and links the scrub objects listed in Core/Core.make; a plain `make` stays stock.
++ifeq "$(origin KEYSCRUB)" "command line"
++	VC_ENABLE_KEYSCRUB := 1
++	C_CXX_FLAGS += -DVC_ENABLE_KEYSCRUB
++	export LIBS += -lpthread
++endif
++
+ #------ Linux configuration ------
+ 
+ ifeq "$(shell uname -s)" "Linux"

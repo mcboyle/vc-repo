@@ -14,6 +14,9 @@
 #include <wx/cmdline.h>
 #include <wx/tokenzr.h>
 #include "Core/Core.h"
+#if defined(VC_ENABLE_KEYSCRUB)
+#include "Core/KeyScrubEvents.h"
+#endif
 #include "Application.h"
 #include "CommandLineInterface.h"
 #include "LanguageStrings.h"
@@ -103,6 +106,10 @@ namespace VeraCrypt
 		parser.AddOption (L"",	L"hkf-fido-pin",			_("FIDO2 device PIN (optional)"));
 		parser.AddOption (L"",	L"hkf-sim-secret",		_("Simulator secret (hex, testing only)"));
 		parser.AddOption (L"",	L"hkf-sim-mac",			_("Simulator MAC 1=HMAC-SHA1 2=HMAC-SHA256 (testing only)"));
+#endif
+#if defined(VC_ENABLE_KEYSCRUB)
+		parser.AddSwitch (L"",	L"keyscrub",			_("Enable in-RAM key hygiene: scrub user-space secrets on unmount/idle/screen-lock/new-device"));
+		parser.AddOption (L"",	L"keyscrub-idle",		_("Idle-timeout seconds after which in-RAM secrets are scrubbed (0 = off)"));
 #endif
 		parser.AddSwitch (L"h", L"help",				_("Display detailed command line help"), wxCMD_LINE_OPTION_HELP);
 		parser.AddSwitch (L"",	L"import-token-keyfiles", _("Import keyfiles to security token"));
@@ -578,6 +585,17 @@ namespace VeraCrypt
 
 			if (ArgHKFConfig.backend != HKF_BACKEND_NONE)
 				HKFSetActiveConfig (&ArgHKFConfig);   // applies to this process's mount/create
+		}
+#endif
+
+#if defined(VC_ENABLE_KEYSCRUB)
+		if (parser.Found (L"keyscrub"))
+		{
+			int idle = 0;
+			wxString v;
+			if (parser.Found (L"keyscrub-idle", &v))
+				idle = StringConverter::ToInt32 (wstring (v));
+			KeyScrubManager::Instance().Enable (idle);
 		}
 #endif
 

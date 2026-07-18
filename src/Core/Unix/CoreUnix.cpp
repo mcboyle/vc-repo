@@ -31,6 +31,9 @@
 #include "Platform/SystemLog.h"
 #include "Driver/Fuse/FuseService.h"
 #include "Volume/VolumePasswordCache.h"
+#if defined(VC_ENABLE_KEYSCRUB)
+#include "Core/KeyScrubEvents.h"
+#endif
 
 namespace VeraCrypt
 {
@@ -289,6 +292,13 @@ namespace VeraCrypt
 		VolumeEventArgs eventArgs (mountedVolume);
 		VolumeDismountedEvent.Raise (eventArgs);
 
+#if defined(VC_ENABLE_KEYSCRUB)
+		// Scrub any user-space secrets (reconstructed Shamir secret, HardwareKeyFactor material) from
+		// RAM now that a volume has been dismounted. The mounted master key itself lived in the kernel
+		// device-mapper, not here; see docs/MEMORY-SCRUB.md for that boundary.
+		KeyScrubManager::Instance().OnVolumeDismounted();
+#endif
+
 		return mountedVolume;
 	}
 
@@ -431,6 +441,13 @@ namespace VeraCrypt
 
 		VolumeEventArgs eventArgs (mountedVolume);
 		VolumeDismountedEvent.Raise (eventArgs);
+
+#if defined(VC_ENABLE_KEYSCRUB)
+		// Scrub any user-space secrets (reconstructed Shamir secret, HardwareKeyFactor material) from
+		// RAM now that a volume has been dismounted. The mounted master key itself lived in the kernel
+		// device-mapper, not here; see docs/MEMORY-SCRUB.md for that boundary.
+		KeyScrubManager::Instance().OnVolumeDismounted();
+#endif
 
 		return mountedVolume;
 	}

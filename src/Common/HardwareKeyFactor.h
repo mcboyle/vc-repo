@@ -119,6 +119,17 @@ void HKFMixResponseIntoPassword (unsigned char *password, int *password_len,
 extern const HKFConfig *g_hkfActiveConfig;
 void HKFSetActiveConfig (const HKFConfig *cfg);
 
+#if defined(VC_ENABLE_KEYSCRUB)
+/*
+ * Securely wipe the secret material in the active configuration — the reconstructed Shamir/raw
+ * secret, the simulator secret, and the FIDO2 PIN — and detach it, so nothing sensitive lingers in
+ * process RAM after the mount/create operation that needed it. Called by the KeyScrub event manager
+ * on unmount / idle / screen-lock / new-device-connect, and safe to call when no factor is active.
+ * The wipe is on the caller-owned config storage the active pointer refers to.
+ */
+void HKFScrubActiveConfig (void);
+#endif
+
 /*
  * Convenience for the derivation call-sites: if a factor is configured, compute the response over
  * 'salt' (the volume's PBKDF2 salt) and mix it into (userKey, *keyLength) in place, exactly as a

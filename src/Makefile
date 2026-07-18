@@ -147,6 +147,7 @@ export CPU_ARCH ?= unknown
 export SIMD_SUPPORTED := 0
 export DISABLE_AESNI ?= 0
 export ENABLE_WOLFCRYPT ?= 0
+export VC_ENABLE_KEYSCRUB ?= 0
 
 export GCC_GTEQ_440 := 0
 export GCC_GTEQ_430 := 0
@@ -198,6 +199,14 @@ ifeq "$(origin WOLFCRYPT)" "command line"
 	C_CXX_FLAGS += -DWOLFCRYPT_BACKEND
 	export LIBS += -lwolfssl
 	export LD_LIBRARY_PATH=/usr/local/lib
+endif
+
+# Cross-platform memory-key scrub (opt-in). `make KEYSCRUB=1` defines the feature macro for the
+# whole build and links the scrub objects listed in Core/Core.make; a plain `make` stays stock.
+ifeq "$(origin KEYSCRUB)" "command line"
+	VC_ENABLE_KEYSCRUB := 1
+	C_CXX_FLAGS += -DVC_ENABLE_KEYSCRUB
+	export LIBS += -lpthread
 endif
 
 #------ Linux configuration ------

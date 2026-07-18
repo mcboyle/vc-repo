@@ -44,16 +44,22 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
    reconstructed from any *M-of-N* shares (Shamir over GF(2⁸)) and mixed into the password. Gives
    split trust, a safe (non-destructive) dead-man, and redundancy. A share can be a keyfile,
    passphrase value, YubiKey/FIDO2 response, or network fetch. `docs/SPLIT-KEY-SPEC.md`.
+9. **Cross-platform memory-key scrub** (`src/Common/KeyScrub.{c,h}`, `src/Core/KeyScrubEvents.{h,cpp}`)
+   — closes the Linux/macOS RAM-exposure gap the Windows driver handled alone. User-space secrets (the
+   reconstructed Shamir secret, HardwareKeyFactor material) are kept **ChaCha-encrypted at rest in RAM**
+   (the Windows `VcProtectMemory` scheme — t1ha2 over a 1 MiB decoy area → ChaCha12 — reusing the
+   in-tree primitives) and **erased on unmount / idle timeout / screen-lock / new-device-connect** via
+   a barrier-hardened secure-wipe + scrub registry. The crypto core is proven two ways (independent
+   Python reimpl of t1ha2+ChaCha12 vs. real compiled objects; anchor `d28b461b…`). Gated behind
+   `-DVC_ENABLE_KEYSCRUB` (`make KEYSCRUB=1`). **Honest limits:** the mounted master key lives in the
+   kernel device-mapper, not this process, so it is out of user-space reach; and the screen-lock /
+   new-device triggers are OS glue that must be validated on a real desktop session.
+   `docs/MEMORY-SCRUB.md`, `patches/keyscrub.patch`.
 
 ---
 
 ## DESIGN — specced, not yet built
 
-- **Cross-platform memory-key scrub** *(top priority; several DONE items lean on it).* VeraCrypt's
-  RAM-key-encryption and key-erase-on-shutdown are **Windows-driver-only**; on Linux/macOS keys sit
-  in RAM exposed to cold-boot and DMA (Thunderbolt/FireWire). Build: scrub derived keys and any
-  reconstructed Shamir secret on unmount / idle timeout / screen-lock / new-device-connect, with a
-  decoy key-derivation region like the Windows ChaCha scheme.
 - **Decoy content generator** (Phase 2 of the decoy) — prepare believable staged content with
   consistent metadata (filesystem vs in-file timestamps, coherent persona). Content helper only.
   `docs/DECOY-VOLUME-SPEC.md §4`.

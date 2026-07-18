@@ -44,3 +44,35 @@ for ln in open(sys.argv[1]):
 print("    python shares == C shares:", "YES" if all(sh[k]==c.get(k) for k in sh) else "MISMATCH")
 PYEOF
 echo "    (shamir_chain.c full-derive check requires compiled VeraCrypt objects; see SPLIT-KEY-SPEC.md)"
+
+echo ""
+echo "[6] KeyScrub: secure-wipe + registry + RAM-encryption transform vs independent python reference"
+# The stock Crypto sources use the 'static VC_INLINE' idiom and an SSSE3 asm path. Pick a compiler
+# that accepts the idiom (clang warns where gcc 13+ errors) and build the portable C crypto path
+# (CRYPTOPP_DISABLE_*); the pure-C keystream is byte-identical to the asm path. t1ha2/chacha256 here
+# are the REAL in-tree VeraCrypt objects (layer 2); keyscrub_reference.py is the independent
+# reimplementation (layer 1).
+KS_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then KS_CC="$c"; break; fi; done
+KS_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+KS_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+if "$KS_CC" -O2 $KS_WNO $KS_NOASM -DVC_ENABLE_KEYSCRUB $INC -c "$SRCROOT/Common/KeyScrub.c" -o /tmp/ks_keyscrub.o 2>/tmp/ks_cc.log \
+   && "$KS_CC" -O2 $KS_WNO $KS_NOASM -DVC_ENABLE_KEYSCRUB $INC -c "$SRCROOT/Common/HardwareKeyFactor.c" -o /tmp/ks_hkf.o 2>>/tmp/ks_cc.log \
+   && "$KS_CC" -O2 $KS_WNO $KS_NOASM $INC -c "$SRCROOT/Crypto/t1ha2.c"     -o /tmp/ks_t1ha2.o     2>>/tmp/ks_cc.log \
+   && "$KS_CC" -O2 $KS_WNO $KS_NOASM $INC -c "$SRCROOT/Crypto/chacha256.c" -o /tmp/ks_chacha256.o 2>>/tmp/ks_cc.log \
+   && "$KS_CC" -O2 $KS_WNO $KS_NOASM $INC -c "$SRCROOT/Crypto/chachaRng.c" -o /tmp/ks_chachaRng.o 2>>/tmp/ks_cc.log \
+   && "$KS_CC" -O2 $KS_WNO -DVC_ENABLE_KEYSCRUB $INC "$HERE/keyscrub_selftest.c" \
+        /tmp/ks_keyscrub.o /tmp/ks_hkf.o /tmp/ks_t1ha2.o /tmp/ks_chacha256.o /tmp/ks_chachaRng.o -lpthread -o /tmp/keyscrub_selftest 2>>/tmp/ks_cc.log; then
+	/tmp/keyscrub_selftest > /tmp/ks_c.txt; cat /tmp/ks_c.txt
+	python3 "$HERE/keyscrub_reference.py" > /tmp/ks_py.txt
+	grep '^REF' /tmp/ks_c.txt > /tmp/ks_c_ref.txt
+	if diff -q /tmp/ks_c_ref.txt /tmp/ks_py.txt >/dev/null; then
+		echo "    MATCH: KeyScrub transform (real t1ha2/chacha objects) == independent python reference"
+	else
+		echo "    MISMATCH"; diff /tmp/ks_c_ref.txt /tmp/ks_py.txt; exit 1
+	fi
+	# all boolean self-checks must report YES
+	if grep -Eq ': NO$' /tmp/ks_c.txt; then echo "    KEYSCRUB SELFTEST FAILED"; exit 1; fi
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/ks_cc.log)"
+fi

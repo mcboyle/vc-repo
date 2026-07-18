@@ -46,6 +46,11 @@ src/Common/Shamir.{c,h}              Shamir M-of-N over GF(2^8); shamir_split/sh
 src/Volume/HardwareKeyFactorMix.h    C++ glue: HKFMixPassword(VolumePassword, salt) for Volume/Core
 src/Main/HardwareKeyFactorCli.h      wx-free option-string -> HKFConfig parser (BuildHKFConfig)
 src/Crypto/Sha3.{c,h}                from-scratch FIPS-202 (for the SHA3-512 PRF)
+src/Common/KeyScrub.{c,h}            cross-platform RAM key hygiene (gated -DVC_ENABLE_KEYSCRUB)
+   VcSecureWipe() -> barrier-hardened zeroize; scrub registry -> VcScrubAll() erases all live secrets
+   VcKsRamTransform()/VcKsRamProtect() -> ChaCha-at-rest for secrets (mirrors Common/Crypto.c VcProtectMemory)
+   HKFScrubActiveConfig() (in HardwareKeyFactor.c) -> wipe+detach the active factor secret
+src/Core/KeyScrubEvents.{h,cpp}      C++ event manager: scrub on unmount/idle/screen-lock/new-device
 ```
 
 Config: `HKFConfig` (in `HardwareKeyFactor.h`) carries the backend, YubiKey slot, FIDO2 rp/credid/pin,
@@ -96,10 +101,11 @@ Shamir 3-of-5 header key `a8b0cbb7…`; wrong secret / below-threshold flips 64/
 
 ## Good next tasks (see ROADMAP.md)
 
-1. **Cross-platform memory-key scrub** (Linux/macOS) — highest value; the decoy and split-key both
-   lean on it.
-2. **Network-bound share source** (Tang/Clevis-style) for the split-key factor.
-3. **Safe duress-dismount** (mount nothing + scrub keys), and **multiple keyslots** (header format
-   work; unlocks rotation/revocation/duress slots).
+1. **Network-bound share source** (Tang/Clevis-style) for the split-key factor.
+2. **Safe duress-dismount** (mount nothing + scrub keys) — now easy: it just calls the KeyScrub
+   `ScrubNow()` path plus a no-op mount. And **multiple keyslots** (header format work; unlocks
+   rotation/revocation/duress slots).
+3. **Validate the KeyScrub OS triggers on real hardware** (logind screen-lock, udev device-connect)
+   and, separately, the kernel-side dm-crypt master-key scrub the user-space scrub can't reach.
 ```
 ```

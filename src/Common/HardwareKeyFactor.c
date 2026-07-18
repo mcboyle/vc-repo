@@ -436,6 +436,22 @@ void HKFSetActiveConfig (const HKFConfig *cfg)
 	g_hkfActiveConfig = cfg;
 }
 
+#if defined(VC_ENABLE_KEYSCRUB)
+void HKFScrubActiveConfig (void)
+{
+	HKFConfig *cfg = (HKFConfig *) g_hkfActiveConfig;   /* wipe the caller-owned secret storage */
+	if (cfg)
+	{
+		{ volatile unsigned char *p = cfg->rawSecret;  size_t n = sizeof (cfg->rawSecret);  while (n--) *p++ = 0; }
+		{ volatile unsigned char *p = cfg->simSecret;  size_t n = sizeof (cfg->simSecret);  while (n--) *p++ = 0; }
+		{ volatile unsigned char *p = (volatile unsigned char *) cfg->fidoPin; size_t n = sizeof (cfg->fidoPin); while (n--) *p++ = 0; }
+		cfg->rawSecretLen = 0;
+		cfg->simSecretLen = 0;
+	}
+	g_hkfActiveConfig = 0;
+}
+#endif
+
 int HKFApplyIfConfigured (unsigned char *userKey, int *keyLength,
                           const unsigned char *salt, int salt_len)
 {
