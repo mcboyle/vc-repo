@@ -54,7 +54,15 @@ src/Core/KeyScrubEvents.{h,cpp}      C++ event manager: scrub on unmount/idle/sc
 src/Common/DuressToken.{c,h}         duress-passphrase recognition (gated -DVC_ENABLE_DURESS)
    DuressTokenDerive() -> HMAC-SHA256(salt,passphrase) over in-tree Sha2; DuressTokenMatch() const-time
    used by UserInterface::DuressDismount (Main) = dismount all + KeyScrub ScrubNow(), mount nothing
+src/Common/Keyslot.{c,h}             per-slot VMK wrap/unwrap (gated -DVC_ENABLE_KEYSLOTS; fork-only)
+   KeyslotWrapWithDK/UnwrapWithDK -> KDF(pluggable)->ChaCha20 wrap + HMAC-SHA256 selector; proven [8]
+src/Common/KeyslotStore.{c,h}        3 backends over a KeyslotArea (KSB_HEADER/SIDECAR labeled table,
+   KSB_DENIABLE bare records at a passphrase-derived slot); KeyslotAdd/Open/Revoke/Count; lifecycle [9]
+src/Common/KeyslotKdf.c              shipping KeyslotKdfSha512 = in-tree derive_key_sha512 (PBKDF2-512)
 ```
+Keyslots model: one master key (VMK), many independent wrappings. Slot 0 = untouched native header;
+slots 1..N wrap the same VMK, so add/rotate/revoke never re-encrypts the body. Payload = flags[1]||vmk
+(duress bit encrypted). CLI + mount-time slot search remain (docs/KEYSLOTS-SPEC.md §9).
 
 Config: `HKFConfig` (in `HardwareKeyFactor.h`) carries the backend, YubiKey slot, FIDO2 rp/credid/pin,
 simulator secret, `rawSecret` (Shamir reconstruction), and `applyPolicy`.
@@ -104,10 +112,10 @@ Shamir 3-of-5 header key `a8b0cbb7…`; wrong secret / below-threshold flips 64/
 
 ## Good next tasks (see ROADMAP.md)
 
-1. **Multiple keyslots — build the specced design** (`docs/KEYSLOTS-SPEC.md`; the per-slot wrapping
-   crypto is already proven, `verification/keyslot_poc.c`). Build the `KeyslotStore` seam + three
-   backends (in-header table / deniable free-space / sidecar), enroll/open/rotate/revoke CLI, mount-time
-   slot search, and the duress-slot hook. Swap the PoC's PBKDF2-SHA256 for the in-tree `derive_key_sha512`.
+1. **Multiple keyslots — finish the integration** (`docs/KEYSLOTS-SPEC.md §9`). The core is built &
+   verified (`Common/Keyslot*.{c,h}`, `KeyslotKdf.c`; steps `[8]`/`[9]`). Remaining, real-build only:
+   the `KeyslotArea` volume-I/O bindings per backend, the mount-time slot search + duress-slot hook,
+   the enroll/open/rotate/revoke/list CLI, and multi-snapshot validation of the deniable backend.
 2. **Network-bound share source** (Tang/Clevis-style) for the split-key factor.
 3. **Validate the KeyScrub OS triggers on real hardware** (logind screen-lock, udev device-connect)
    and, separately, the kernel-side dm-crypt master-key scrub the user-space scrub can't reach.

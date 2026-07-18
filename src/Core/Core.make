@@ -40,4 +40,17 @@ OBJS += ../Crypto/chacha256.o
 OBJS += ../Crypto/chachaRng.o
 endif
 
+# Multiple keyslots (opt-in via `make KEYSLOTS=1`; -DVC_ENABLE_KEYSLOTS added globally by the
+# top-level Makefile). The record crypto + store backends + the derive_key_sha512 KDF binding. Sha2.o
+# and Pkcs5.o are already in the build; chacha256.o is shared with KeyScrub, so add it only if that
+# feature did not already. A default build sets VC_ENABLE_KEYSLOTS=0 and stays byte-for-byte stock.
+ifeq "$(VC_ENABLE_KEYSLOTS)" "1"
+OBJS += ../Common/Keyslot.o
+OBJS += ../Common/KeyslotStore.o
+OBJS += ../Common/KeyslotKdf.o
+ifneq "$(VC_ENABLE_KEYSCRUB)" "1"
+OBJS += ../Crypto/chacha256.o
+endif
+endif
+
 include $(BUILD_INC)/Makefile.inc

@@ -1,10 +1,17 @@
-# Multiple keyslots — design spec
+# Multiple keyslots — design spec & status
 
-**Status: DESIGN — specced; per-slot wrapping crypto proven, storage backends + integration not yet
-built.** This is the one item in the project that deliberately introduces a **fork-only on-disk
-format** (every other feature mixes into the password pool and leaves the header untouched). It is the
-enabling primitive for per-person keys, key **rotation**, **revocation**, and a real duress
-**keyslot** — none of which are possible with VeraCrypt's single password/keyfile set.
+**Status: core built and verified; CLI + on-volume mount integration is the remaining (real-build)
+step.** The keyslot record crypto (`src/Common/Keyslot.{c,h}`), the three-backend store
+(`src/Common/KeyslotStore.{c,h}`), and the shipping KDF binding (`src/Common/KeyslotKdf.c`) are built,
+gated behind `-DVC_ENABLE_KEYSLOTS` (`make KEYSLOTS=1`), and verified — the wrapping two ways
+(build_and_verify.sh `[8]`) and the full add/open/rotate/revoke lifecycle across the labeled and
+deniable backends end-to-end against the real modules (`[9]`). What remains is the CLI surface and the
+mount-time slot search wired to real volume I/O (§9), which cannot be exercised in a sandbox.
+
+This is the one item in the project that deliberately introduces a **fork-only on-disk format** (every
+other feature mixes into the password pool and leaves the header untouched). It is the enabling
+primitive for per-person keys, key **rotation**, **revocation**, and a real duress **keyslot** — none
+of which are possible with VeraCrypt's single password/keyfile set.
 
 Two decisions frame this spec (chosen up front):
 - **Fork-only.** A keyslotted volume need not open in stock VeraCrypt 1.26.29. (Same stance already
@@ -155,15 +162,46 @@ initialises the chosen backend (writing an empty table / preparing the sidecar).
 re-encryption, ever. Slot 0 remains the native header, so the volume still opens with the primary
 password on this fork exactly as before; only slots 1..N require the fork.
 
-## 8. What is proven vs. what remains
+## 8. Modules & what is proven
 
-- **Proven now (two ways, real objects + independent Python):** the per-slot wrap/unwrap — KDF →
-  ChaCha wrap → HMAC auth, round-trip recovery of the VMK, and wrong-passphrase rejection
-  (`verification/keyslot_poc.c`, step `[8]`; anchor `56434b53…`).
-- **To build:** the `KeyslotStore` seam + three backends (`Common/Keyslot*.{c,h}`), the enroll/open/
-  rotate/revoke CLI, the mount-time slot search, and the duress-slot hook. Swap the PoC's
-  PBKDF2-SHA256 for the in-tree `derive_key_sha512` at `kdf_id=1`. The deniable backend needs a
-  careful offset-derivation + hidden-volume-region guard and must be validated against multi-snapshot
-  assumptions before it is trusted.
-- **Not sandbox-testable:** the on-disk read/write against real volumes and the mount integration —
-  validate on a real build, as with the other integration layers in this fork.
+Built (gated `-DVC_ENABLE_KEYSLOTS`):
+- `src/Common/Keyslot.{c,h}` — the record wrap/unwrap: `KeyslotWrapWithDK/UnwrapWithDK` (pure, the
+  crypto proven in `[8]`) and passphrase-based `KeyslotWrap/Unwrap` over a pluggable `KeyslotKdfFn`.
+- `src/Common/KeyslotStore.{c,h}` — the `KeyslotArea` medium abstraction and all three backends
+  (`KSB_HEADER` / `KSB_SIDECAR` labeled table; `KSB_DENIABLE` bare records at a passphrase-derived
+  slot), with `KeyslotAdd/Open/Revoke/Count`. The wrapped payload is `flags[1] || vmk`, so the duress
+  bit and every other flag are encrypted, never marked in the clear.
+- `src/Common/KeyslotKdf.c` — the shipping `KeyslotKdfSha512` binding to the in-tree
+  `derive_key_sha512` (PBKDF2-HMAC-SHA512), kept in its own TU so only it pulls `Pkcs5`.
+
+Proven:
+- **Wrapping crypto, two ways** — real compiled `Sha2.c`/`chacha256.c` vs. an independent Python
+  reference, byte-for-byte; round-trip + wrong-passphrase rejection (`verification/keyslot_poc.c`,
+  step `[8]`, anchor `56434b53…`).
+- **Store lifecycle, end-to-end against the real modules** — add / open / rotate / revoke on the
+  labeled backend, the encrypted duress flag round-tripping, and the deniable backend's
+  passphrase-derived placement + non-enumerability (`verification/keyslot_store_test.c`, step `[9]`).
+
+## 9. Integration seam — the remaining (real-build) work
+
+The core above is volume-I/O-agnostic; wiring it to VeraCrypt is the next step and is **not
+sandbox-testable** (it needs real volumes and the wx app), so it is scoped here rather than written
+blind:
+
+- **`KeyslotArea` bindings** — one adapter per backend: `KSB_HEADER` reads/writes the header's reserved
+  slack (offset `TC_VOLUME_HEADER_EFFECTIVE_SIZE`..`TC_VOLUME_HEADER_SIZE` within the primary header
+  region), `KSB_SIDECAR` a `FileStream`, `KSB_DENIABLE` the volume's free-space extent (guarding the
+  hidden-volume reserved region). Bind the store's `kdf` to `KeyslotKdfSha512` and `randBytes` to
+  `RandomNumberGenerator`.
+- **Mount-time search** — in the C++ mount path (`Volume/VolumeHeader.cpp` / `Core`), after the native
+  header (slot 0) fails, call `KeyslotOpen` to recover the VMK from a slot; a slot whose `flags` has
+  `KEYSLOT_FLAG_DURESS` invokes `UserInterface::DuressDismount()` instead of mounting.
+- **CLI** — `--keyslot-add` / `--keyslot-open` / `--keyslot-rotate` / `--keyslot-kill N` /
+  `--keyslot-list`, each opening the volume via any existing slot to recover the VMK, then calling the
+  matching store op. `--keyslot-backend header|deniable|sidecar` selects placement.
+- **Deniable-backend hardening** — the passphrase-derived placement is implemented and tested, but its
+  robustness against **multi-snapshot** and its free-space/hidden-volume-region interaction must be
+  validated on real media before it is trusted (same class of caveat as hidden volumes in
+  `docs/THREAT-MODEL.md`).
+
+Validate all of the above on a real build, as with the other integration layers in this fork.

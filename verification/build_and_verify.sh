@@ -130,3 +130,24 @@ if "$KP_CC" -O2 $KP_WNO $KP_NOASM $KP_GC $KP_INC -c "$SRCROOT/Crypto/Sha2.c"    
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/kp_cc.log)"
 fi
+
+echo ""
+echo "[9] Keyslots lifecycle: real Keyslot.c + KeyslotStore.c over in-memory areas (add/open/rotate/revoke)"
+# Behavioural end-to-end test of the shipping modules (the wrapping crypto itself is proven in [8]).
+KL_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then KL_CC="$c"; break; fi; done
+KL_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+KL_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+KL_GC="-ffunction-sections -fdata-sections"
+KL_INC="$INC -I$SRCROOT/Crypto"
+if "$KL_CC" -O2 $KL_WNO $KL_NOASM $KL_GC -DVC_ENABLE_KEYSLOTS $KL_INC -c "$SRCROOT/Common/Keyslot.c"      -o /tmp/kl_keyslot.o 2>/tmp/kl_cc.log \
+   && "$KL_CC" -O2 $KL_WNO $KL_NOASM $KL_GC -DVC_ENABLE_KEYSLOTS $KL_INC -c "$SRCROOT/Common/KeyslotStore.c" -o /tmp/kl_store.o 2>>/tmp/kl_cc.log \
+   && "$KL_CC" -O2 $KL_WNO $KL_NOASM $KL_GC $KL_INC -c "$SRCROOT/Crypto/Sha2.c"     -o /tmp/kl_sha2.o   2>>/tmp/kl_cc.log \
+   && "$KL_CC" -O2 $KL_WNO $KL_NOASM $KL_GC $KL_INC -c "$SRCROOT/Crypto/chacha256.c" -o /tmp/kl_chacha.o 2>>/tmp/kl_cc.log \
+   && "$KL_CC" -O2 $KL_WNO $KL_NOASM -DVC_ENABLE_KEYSLOTS $KL_INC "$HERE/keyslot_store_test.c" \
+        /tmp/kl_keyslot.o /tmp/kl_store.o /tmp/kl_sha2.o /tmp/kl_chacha.o -Wl,--gc-sections -o /tmp/keyslot_store_test 2>>/tmp/kl_cc.log; then
+	if /tmp/keyslot_store_test > /tmp/kl_out.txt; then cat /tmp/kl_out.txt
+	else cat /tmp/kl_out.txt; echo "    KEYSLOT LIFECYCLE FAILED"; exit 1; fi
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/kl_cc.log)"
+fi

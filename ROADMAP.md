@@ -68,16 +68,19 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
 
 ## DESIGN — specced, not yet built
 
-- **Multiple independent keyslots** (like LUKS2's 8+). *(The enabling primitive for per-person keys,
-  rotation, revocation, and a real duress keyslot — the one deliberately fork-only on-disk format.)*
-  One master key, many independent wrappings: slot 0 is the untouched native header, slots 1..N wrap
-  the same VMK under their own passphrase/factor, so add/rotate/revoke never re-encrypts the body.
-  **All three storage backends** behind one seam: in-header table (visible, in the 63.5 KiB header
-  slack), deniable free-space slots (presence deniable; inherits hidden-volume limits), and a sidecar
-  file (volume untouched; sidecar is a tell). The **per-slot wrapping crypto is proven** two ways
-  (PBKDF2→ChaCha20 wrap + HMAC auth; round-trip + wrong-passphrase rejection; real Sha2/chacha objects
-  vs. independent Python; anchor `56434b53…`, `verification/keyslot_poc.c` step `[8]`). Storage
-  backends + mount/CLI integration remain to build. `docs/KEYSLOTS-SPEC.md`.
+- **Multiple independent keyslots** (like LUKS2's 8+) — **core built & verified; CLI/mount integration
+  remains.** *(The enabling primitive for per-person keys, rotation, revocation, and a real duress
+  keyslot — the one deliberately fork-only on-disk format.)* One master key, many independent
+  wrappings: slot 0 is the untouched native header, slots 1..N wrap the same VMK, so add/rotate/revoke
+  never re-encrypts the body. Built (`-DVC_ENABLE_KEYSLOTS`, `make KEYSLOTS=1`):
+  `Common/Keyslot.{c,h}` (record wrap/unwrap), `Common/KeyslotStore.{c,h}` (**all three backends** —
+  in-header table, deniable bare-record placement, sidecar), `Common/KeyslotKdf.c` (in-tree
+  `derive_key_sha512` binding). Verified: wrapping two ways (`verification/keyslot_poc.c`, step `[8]`,
+  anchor `56434b53…`) and the full add/open/rotate/revoke + deniable + duress-flag lifecycle against
+  the real modules (`verification/keyslot_store_test.c`, step `[9]`). **Remaining (real-build):** the
+  `KeyslotArea` volume-I/O bindings, mount-time slot search + duress-slot hook, and the enroll/rotate/
+  revoke CLI (`docs/KEYSLOTS-SPEC.md §9`); the deniable backend needs multi-snapshot validation on real
+  media. `docs/KEYSLOTS-SPEC.md`.
 - **Decoy content generator** (Phase 2 of the decoy) — prepare believable staged content with
   consistent metadata (filesystem vs in-file timestamps, coherent persona). Content helper only.
   `docs/DECOY-VOLUME-SPEC.md §4`.

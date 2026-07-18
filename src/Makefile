@@ -149,6 +149,7 @@ export DISABLE_AESNI ?= 0
 export ENABLE_WOLFCRYPT ?= 0
 export VC_ENABLE_KEYSCRUB ?= 0
 export VC_ENABLE_DURESS ?= 0
+export VC_ENABLE_KEYSLOTS ?= 0
 
 export GCC_GTEQ_440 := 0
 export GCC_GTEQ_430 := 0
@@ -216,6 +217,14 @@ endif
 ifeq "$(origin DURESS)" "command line"
 	VC_ENABLE_DURESS := 1
 	C_CXX_FLAGS += -DVC_ENABLE_DURESS
+endif
+
+# Multiple keyslots (opt-in). `make KEYSLOTS=1` defines the feature macro for the whole build and links
+# the keyslot record/store/KDF objects (see Core/Core.make); a plain `make` stays stock. This is the
+# one deliberately fork-only on-disk format (docs/KEYSLOTS-SPEC.md).
+ifeq "$(origin KEYSLOTS)" "command line"
+	VC_ENABLE_KEYSLOTS := 1
+	C_CXX_FLAGS += -DVC_ENABLE_KEYSLOTS
 endif
 
 #------ Linux configuration ------
