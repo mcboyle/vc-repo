@@ -177,6 +177,13 @@ brief:
   salt/space/time-dependent, real `Sha2.c` vs. independent Python, byte-for-byte (anchor `635ebeac…`,
   `verification/balloon_poc.c` step `[16]`). Remaining: wire as a mountable PRF and benchmark vs
   Argon2id. `docs/BALLOON-SPEC.md`.
+- **OPRF password hardening** (2HashDH / CFRG DH-OPRF, `IDEAS-BACKLOG.md` §C) — **protocol proven;
+  server + threshold integration real-build.** The derived key depends on the password AND a
+  rate-limited server's secret; the server never sees the password or output, so a **seized disk cannot
+  be brute-forced offline**. Proven two ways — deterministic + blind-independent, server-oblivious,
+  wrong-key/wrong-password change the output; real `Sha2.c` vs. independent Python, byte-for-byte
+  (anchor `ca5691bd…`, `verification/oprf_poc.c` step `[17]`). Remaining: a real CFRG group, the server,
+  and the **threshold OPRF/PPSS** split of `k` (composes with the Shamir factor). `docs/OPRF-SPEC.md`.
 
 ---
 

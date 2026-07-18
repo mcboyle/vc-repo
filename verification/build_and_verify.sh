@@ -343,3 +343,28 @@ if "$BL_CC" -O2 $BL_WNO $BL_NOASM $BL_GC $BL_INC -c "$SRCROOT/Crypto/Sha2.c" -o 
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/bl_log)"
 fi
+
+echo ""
+echo "[17] OPRF password hardening (offline-guessing resistant, server never sees pw) vs independent python"
+# 2HashDH / CFRG DH-OPRF: derived key depends on the password AND a server secret; the server sees only
+# a blinded value. Links the REAL in-tree Sha2.c; oprf_reference.py is independent (python bigint).
+OP_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then OP_CC="$c"; break; fi; done
+OP_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+OP_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+OP_GC="-ffunction-sections -fdata-sections"
+OP_INC="$INC -I$SRCROOT/Crypto"
+if "$OP_CC" -O2 $OP_WNO $OP_NOASM $OP_GC $OP_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/op_sha2.o 2>/tmp/op_log \
+   && "$OP_CC" -O2 $OP_WNO $OP_NOASM $OP_INC "$HERE/oprf_poc.c" /tmp/op_sha2.o -Wl,--gc-sections -o /tmp/oprf_poc 2>>/tmp/op_log; then
+	/tmp/oprf_poc > /tmp/op_c.txt; cat /tmp/op_c.txt
+	python3 "$HERE/oprf_reference.py" > /tmp/op_py.txt
+	grep '^REF' /tmp/op_c.txt > /tmp/op_c_ref.txt; grep '^REF' /tmp/op_py.txt > /tmp/op_py_ref.txt
+	if diff -q /tmp/op_c_ref.txt /tmp/op_py_ref.txt >/dev/null; then
+		echo "    MATCH: OPRF (real Sha2 object) == independent python reference"
+	else
+		echo "    MISMATCH"; diff /tmp/op_c_ref.txt /tmp/op_py_ref.txt; exit 1
+	fi
+	if grep -Eq ': NO$' /tmp/op_c.txt; then echo "    OPRF POC FAILED"; exit 1; fi
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/op_log)"
+fi

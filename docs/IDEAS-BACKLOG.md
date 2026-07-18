@@ -94,12 +94,13 @@ bits and produce controlled plaintext garbage without detection. Every item here
   (`cryptsetup --iter-time` model). You exposed the parameters; most users will pick badly.
 - **Two-stage derivation** `[S]` — cheap check on the token/slot factor first so a missing token fails
   fast instead of after a full expensive KDF; must not leak *which* factor failed on a real volume.
-- **Oblivious PRF (OPRF) password hardening** `[L] [RESEARCH]` — the password is blinded and evaluated
-  against a remote key (CFRG prime-order-group OPRF), so offline guessing is impossible without
-  querying a rate-limited server, which never learns the password. Extend to a **threshold OPRF /
-  password-protected secret sharing (PPSS)** across several servers so no single server is trusted.
-  This composes directly with the Shamir factor already built and is the most powerful realistic
-  anti-brute-force primitive available.
+- **Oblivious PRF (OPRF) password hardening** `[L] [RESEARCH]` — **protocol PROVEN** (step `[17]`,
+  `docs/OPRF-SPEC.md`): 2HashDH/CFRG DH-OPRF, output = `SHA256(pw || H2(pw)^k)` with the server holding
+  `k`; deterministic + blind-independent, server sees only a blinded element, wrong `k` → different
+  output, real `Sha2.c` vs. independent Python byte-for-byte (anchor `ca5691bd…`). Remaining: a real
+  CFRG group (ristretto255/P-256), the rate-limited server, and the **threshold OPRF / PPSS** split of
+  `k` across servers (composes with the Shamir factor). The most powerful realistic anti-brute-force
+  primitive available — offline guessing on a seized disk is impossible without the server.
 - **Time-lock / VDF unlock delay** `[L] [RESEARCH]` — a volume that provably cannot be opened faster
   than N hours of sequential computation (RSW time-lock puzzles, Sloth, Wesolowski/Pietrzak VDFs).
   Slow *is* the feature: a coercive encounter with a hard time limit (border stop, short detention)
