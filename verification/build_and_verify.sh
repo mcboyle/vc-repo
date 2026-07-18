@@ -506,3 +506,32 @@ if "$MC_CC" -O2 $MC_WNO $MC_NOASM $MC_GC $MC_INC -c "$SRCROOT/Crypto/chacha256.c
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/mc_log)"
 fi
+
+echo "[23] Header-version + anti-downgrade parameter binding — reject silent parameter downgrade vs independent python"
+# Bind a canonical fixed-width serialization of every KDF/cipher parameter (version, prf/cipher/mode ids,
+# Argon2 mem/iters/parallelism) into an HMAC keyed from the password. Any header edit that weakens a
+# parameter changes the tag -> fail closed, not silent-weak-derive. Links the REAL in-tree Sha2.c;
+# downgrade_reference.py is independent (hashlib). See docs/ANTI-DOWNGRADE-SPEC.md.
+DG_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then DG_CC="$c"; break; fi; done
+DG_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+DG_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+DG_GC="-ffunction-sections -fdata-sections"
+DG_INC="$INC -I$SRCROOT/Crypto"
+if "$DG_CC" -O2 $DG_WNO $DG_NOASM $DG_GC $DG_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/dg_sha2.o 2>/tmp/dg_log \
+   && "$DG_CC" -O2 $DG_WNO $DG_NOASM $DG_INC "$HERE/downgrade_poc.c" /tmp/dg_sha2.o -Wl,--gc-sections -o /tmp/dg_poc 2>>/tmp/dg_log; then
+	/tmp/dg_poc > /tmp/dg_c.txt; grep -E '^REF (accept|all_downgrades|wrongpw|canon_un)' /tmp/dg_c.txt
+	python3 "$HERE/downgrade_reference.py" > /tmp/dg_py.txt
+	grep '^REF' /tmp/dg_c.txt > /tmp/dg_c_ref.txt; grep '^REF' /tmp/dg_py.txt > /tmp/dg_py_ref.txt
+	if diff -q /tmp/dg_c_ref.txt /tmp/dg_py_ref.txt >/dev/null; then
+		echo "    MATCH: parameter binding (real Sha2 object) == independent python over $(wc -l < /tmp/dg_c_ref.txt) vectors"
+	else
+		echo "    MISMATCH"; diff /tmp/dg_c_ref.txt /tmp/dg_py_ref.txt; exit 1
+	fi
+	for k in accept_base all_downgrades_detected wrongpw_detected canon_unambiguous; do
+		grep -q "^REF $k YES$" /tmp/dg_c.txt || { echo "    PROPERTY $k FAILED"; exit 1; }
+	done
+	echo "    every Argon2/PRF/cipher/version downgrade rejected; canonical encoding unambiguous"
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/dg_log)"
+fi

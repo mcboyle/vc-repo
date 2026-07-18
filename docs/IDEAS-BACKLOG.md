@@ -82,7 +82,12 @@ bits and produce controlled plaintext garbage without detection. Every item here
   all rejected; the modeled NV counter is increment-only. Open work is the `[HW]` counter source
   (TPM2_NV_Increment / token), commit granularity, and the bricking-recovery path.
 - **Header version + anti-downgrade binding** `[S]` — bind the KDF/parameters into the MAC so an
-  attacker cannot silently downgrade a volume to weaker parameters.
+  attacker cannot silently downgrade a volume to weaker parameters. *Binding construction + downgrade
+  detection proven* (step `[23]`, `docs/ANTI-DOWNGRADE-SPEC.md`): fixed-width canonical serialization of
+  version/prf/cipher/mode/Argon2-mem/iters/parallelism into `HMAC-SHA256(header_key, canon(params))` on
+  the real in-tree SHA-256 — every single-parameter downgrade rejected, wrong password rejected,
+  encoding proven unambiguous. Open work is only folding `canon(params)` into the keyslot-area MAC's
+  covered region (`docs/KEYSLOT-MAC-SPEC.md`) — mostly serialization + coverage, not a new authenticator.
 
 ## B. Cipher modes (slow is acceptable — correctness first)
 
