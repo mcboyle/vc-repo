@@ -3,7 +3,7 @@
 Work on branch `claude/project-structure-review-5p44w9`. Every crypto-relevant change is proven **two
 ways** (independent Python **and** real compiled VeraCrypt objects); every default build stays
 byte-for-byte stock; not-sandbox-testable integration is scoped in docs, not written blind.
-`verification/build_and_verify.sh` runs **23 green steps**.
+`verification/build_and_verify.sh` runs **25 green steps**.
 
 ## Built + verified (product code, gated)
 
@@ -41,6 +41,8 @@ byte-for-byte stock; not-sandbox-testable integration is scoped in docs, not wri
 | Per-sector authentication (index-bound MAC; per-sector independence + relocation resistance) | tag `74e883b1…` [21] | `docs/PERSECTOR-AUTH-SPEC.md` |
 | Rollback/replay protection (monotonic counter bound into the commit authenticator) | tag `e8bbc4f0…` [22] | `docs/ROLLBACK-COUNTER-SPEC.md` |
 | Header-version + anti-downgrade parameter binding (fail closed on weakened params) | tag `0692cc06…` [23] | `docs/ANTI-DOWNGRADE-SPEC.md` |
+| Adiantum wide-block mode (sector-atomic; kills XTS 16-byte malleability) | 18 official KATs, ct₀ `820ae444…` [24] | `docs/ADIANTUM-SPEC.md` |
+| ML-KEM-768 + PQ hybrid combiner (harvest-now-decrypt-later hedge, either-break-safe) | NIST ACVP, tag `5f44c605…` [25] | `docs/PQ-HYBRID-SPEC.md` |
 
 ## Remaining — real build / real hardware only
 

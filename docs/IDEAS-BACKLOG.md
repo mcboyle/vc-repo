@@ -96,9 +96,11 @@ bits and produce controlled plaintext garbage without detection. Every item here
   POLYVAL) is already used in the Linux kernel for filename encryption and is the most practical
   starting point. This is the single strongest *cryptographic* upgrade available to a disk encryptor.
 - **Adiantum** `[M]` — XChaCha12 + NH + Poly1305, length-preserving; designed for devices without AES
-  acceleration. Relevant if mobile or low-end hardware ever enters scope. *Two of its three primitives
-  are now in hand:* ChaCha is in-tree and Poly1305 is **built + proven** (step `[18]`,
-  `docs/POLY1305-SPEC.md`); NH and the length-preserving wrapper remain.
+  acceleration. Relevant if mobile or low-end hardware ever enters scope. *Full construction proven*
+  (step `[24]`, `docs/ADIANTUM-SPEC.md`): all 18 official google/adiantum vectors (16–4096 B × 0/17/32 B
+  tweaks) reproduced by the C PoC on the real in-tree ChaCha/AES objects AND an independent python;
+  single-bit flips randomize the whole sector both directions. Remaining is the `EncryptionMode` wiring
+  (mode id rides the step-`[23]` anti-downgrade binding), new-volume-only.
 - **Large-block ciphers: Threefish-1024, Rijndael-256 (256-bit block)** `[M]` — larger blocks push out
   birthday-bound concerns at very large data volumes. Rijndael-256 is not AES; document the interop
   consequences.
@@ -209,8 +211,13 @@ this project is now doing:
 
 - **Hybrid KEM for any public-key recovery/escrow slot** `[M]` — X25519 + **ML-KEM-768** (FIPS 203). A
   recovery slot encrypted to an offline public key *is* harvest-now-decrypt-later exposed.
+  *KEM + combiner proven* (step `[25]`, `docs/PQ-HYBRID-SPEC.md`): full ML-KEM-768 (keyGen/encaps/
+  decaps incl. the implicit-rejection tamper path) reproduces the NIST ACVP FIPS-203 vectors in both C
+  (Keccak anchored to the in-tree `Sha3.c`, combiner on the in-tree `Sha2.c`) and independent python;
+  the transcript-bound HMAC combiner needs BOTH secrets. Remaining is the transport wiring.
 - **Hybrid for the network-bound share exchange** `[M]` — the McCallum–Relyea exchange is
-  Diffie–Hellman based; a stored transcript is quantum-exposed. Hybridize it.
+  Diffie–Hellman based; a stored transcript is quantum-exposed. Hybridize it. *The same step-`[25]`
+  KEM/combiner is the building block; feed the MR/OPRF output in as the classical secret.*
 - **Hash-based signatures for boot/header signing** `[M]` — **SLH-DSA** (FIPS 205) if signature
   verification enters the trust path; conservative and quantum-safe.
 - Skip PQ entirely for the password→volume path. Adding Kyber there is theater.

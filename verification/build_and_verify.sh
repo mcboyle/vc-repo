@@ -535,3 +535,75 @@ if "$DG_CC" -O2 $DG_WNO $DG_NOASM $DG_GC $DG_INC -c "$SRCROOT/Crypto/Sha2.c" -o 
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/dg_log)"
 fi
+
+echo "[24] Adiantum wide-block mode (XChaCha12/AES-256/NH/Poly1305) — official google/adiantum KATs vs independent python"
+# The single strongest cryptographic upgrade for a disk encryptor (IDEAS-BACKLOG B): a length-preserving
+# tweakable super-pseudorandom permutation over the whole sector, killing XTS's 16-byte malleability --
+# flipping any ciphertext bit randomizes the entire sector. Links the REAL in-tree chacha256.c (all
+# ChaCha keystream) + Aescrypt/Aeskey/Aestab.c (AES-256) + the step-18 Poly1305; adiantum_reference.py
+# is independent (pure python, incl. its own AES). Arbiter: 18 official vectors (adiantum_kats.{h,py})
+# covering message lengths 16..4096 x tweak lengths 0/17/32. See docs/ADIANTUM-SPEC.md.
+AD_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then AD_CC="$c"; break; fi; done
+AD_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+AD_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+AD_INC="$INC -I$SRCROOT/Crypto"
+if "$AD_CC" -O2 $AD_WNO $AD_NOASM $AD_INC -c "$SRCROOT/Crypto/chacha256.c" -o /tmp/ad_chacha.o 2>/tmp/ad_log \
+   && "$AD_CC" -O2 $AD_WNO $AD_NOASM $AD_INC -c "$SRCROOT/Crypto/Aescrypt.c" -o /tmp/ad_aescrypt.o 2>>/tmp/ad_log \
+   && "$AD_CC" -O2 $AD_WNO $AD_NOASM $AD_INC -c "$SRCROOT/Crypto/Aeskey.c" -o /tmp/ad_aeskey.o 2>>/tmp/ad_log \
+   && "$AD_CC" -O2 $AD_WNO $AD_NOASM $AD_INC -c "$SRCROOT/Crypto/Aestab.c" -o /tmp/ad_aestab.o 2>>/tmp/ad_log \
+   && "$AD_CC" -O2 $AD_WNO $AD_NOASM $AD_INC "$HERE/adiantum_poc.c" /tmp/ad_chacha.o /tmp/ad_aescrypt.o /tmp/ad_aeskey.o /tmp/ad_aestab.o -o /tmp/adiantum_poc 2>>/tmp/ad_log; then
+	/tmp/adiantum_poc > /tmp/ad_c.txt || { echo "    ADIANTUM POC FAILED"; grep -vE '^REF kat_[0-9]' /tmp/ad_c.txt; exit 1; }
+	grep -vE '^REF kat_[0-9]' /tmp/ad_c.txt
+	( cd "$HERE" && python3 adiantum_reference.py ) > /tmp/ad_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+	grep '^REF' /tmp/ad_c.txt > /tmp/ad_c_ref.txt; grep '^REF' /tmp/ad_py.txt > /tmp/ad_py_ref.txt
+	if diff -q /tmp/ad_c_ref.txt /tmp/ad_py_ref.txt >/dev/null; then
+		echo "    MATCH: Adiantum (real chacha256+AES objects) == independent python over $(wc -l < /tmp/ad_c_ref.txt) REF lines"
+	else
+		echo "    MISMATCH"; diff /tmp/ad_c_ref.txt /tmp/ad_py_ref.txt | head -6; exit 1
+	fi
+	for k in kat_all_match roundtrip_all enc_diffusion dec_diffusion wrongkey wrongtweak; do
+		grep -q "^REF $k YES$" /tmp/ad_c.txt || { echo "    PROPERTY $k FAILED"; exit 1; }
+	done
+	grep -q '^REF aes256_fips197 8ea2b7ca516745bfeafc49904b496089$' /tmp/ad_c.txt || { echo "    AES FIPS-197 KAT FAILED"; exit 1; }
+	echo "    all 18 official vectors reproduced; single-bit flip randomizes the whole sector"
+	rm -rf "$HERE/__pycache__"
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/ad_log)"
+fi
+
+echo "[25] ML-KEM-768 (FIPS 203) + PQ hybrid combiner — NIST ACVP vectors vs independent python"
+# Post-quantum hybrid for the asymmetric exchanges (IDEAS-BACKLOG H): the network-share / OPRF DH is
+# harvest-now-decrypt-later quantum-breakable; ML-KEM-768 + the classical secret feed one HMAC combiner
+# so a break of EITHER component alone does not reveal the key. C PoC implements FIPS 203 with a local
+# Keccak ANCHORED to the real in-tree Sha3.c (CHK line) and uses the real Sha2.c for the combiner;
+# mlkem_reference.py is independent (hashlib). Arbiter: NIST ACVP vectors (mlkem_kats.{h,py}) incl. 5
+# modified-ciphertext implicit-rejection decaps cases. See docs/PQ-HYBRID-SPEC.md.
+MK2_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then MK2_CC="$c"; break; fi; done
+MK2_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+MK2_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+MK2_GC="-ffunction-sections -fdata-sections"
+MK2_INC="$INC -I$SRCROOT/Crypto"
+if "$MK2_CC" -O2 $MK2_WNO $MK2_NOASM $MK2_GC $MK2_INC -c "$SRCROOT/Crypto/Sha3.c" -o /tmp/mk_sha3.o 2>/tmp/mk2_log \
+   && "$MK2_CC" -O2 $MK2_WNO $MK2_NOASM $MK2_GC $MK2_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/mk_sha2.o 2>>/tmp/mk2_log \
+   && "$MK2_CC" -O2 $MK2_WNO $MK2_NOASM $MK2_INC "$HERE/mlkem_poc.c" /tmp/mk_sha3.o /tmp/mk_sha2.o -Wl,--gc-sections -o /tmp/mlkem_poc 2>>/tmp/mk2_log; then
+	/tmp/mlkem_poc > /tmp/mk2_c.txt || { echo "    MLKEM POC FAILED"; grep -E '^CHK|match|hybrid' /tmp/mk2_c.txt; exit 1; }
+	grep -E '^CHK|all_match|implicit|hybrid' /tmp/mk2_c.txt
+	( cd "$HERE" && python3 mlkem_reference.py ) > /tmp/mk2_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+	grep '^REF' /tmp/mk2_c.txt > /tmp/mk2_c_ref.txt; grep '^REF' /tmp/mk2_py.txt > /tmp/mk2_py_ref.txt
+	if diff -q /tmp/mk2_c_ref.txt /tmp/mk2_py_ref.txt >/dev/null; then
+		echo "    MATCH: ML-KEM-768 (in-tree-anchored Keccak + real Sha2) == independent python over $(wc -l < /tmp/mk2_c_ref.txt) REF lines"
+	else
+		echo "    MISMATCH"; diff /tmp/mk2_c_ref.txt /tmp/mk2_py_ref.txt | head -6; exit 1
+	fi
+	for k in keygen_all_match encaps_all_match decaps_all_match hybrid_needs_both; do
+		grep -q "^REF $k YES$" /tmp/mk2_c.txt || { echo "    PROPERTY $k FAILED"; exit 1; }
+	done
+	grep -q '^REF implicit_rejection_cases 5$' /tmp/mk2_c.txt || { echo "    IMPLICIT-REJECTION COUNT WRONG"; exit 1; }
+	grep -q '^CHK sha3_512_intree_match YES$' /tmp/mk2_c.txt || { echo "    IN-TREE SHA3 ANCHOR FAILED"; exit 1; }
+	echo "    NIST ACVP vectors reproduced incl. implicit rejection; hybrid needs both secrets"
+	rm -rf "$HERE/__pycache__"
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/mk2_log)"
+fi
