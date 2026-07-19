@@ -714,3 +714,29 @@ if "$TF_CC" -O2 -Wall -I"$HERE" "$HERE/threefish_poc.c" -o /tmp/threefish_poc 2>
 else
 	echo "    SKIP: no compiler (see /tmp/tf_log)"
 fi
+
+echo "[30] Sloth verifiable delay function (coercion cooling-off) — C bignum vs independent python"
+# Delay functions row (IDEAS-BACKLOG): Sloth (Lenstra-Wesolowski) -- T sequential modular-sqrt steps to
+# compute (each a modexp), T cheap squarings to verify. Unparallelizable delay + instant check = a
+# coercion cooling-off factor. No standard KAT; proof = byte-identical C(256-bit bignum) vs python +
+# the defining invertibility (verify recovers seed) + tamper detection. See docs/DELAY-SPEC.md.
+SL_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then SL_CC="$c"; break; fi; done
+if "$SL_CC" -O2 -Wall -I"$HERE" "$HERE/sloth_poc.c" -o /tmp/sloth_poc 2>/tmp/sl_log; then
+	/tmp/sloth_poc > /tmp/sl_c.txt || { echo "    SLOTH POC FAILED"; cat /tmp/sl_c.txt; exit 1; }
+	cat /tmp/sl_c.txt
+	( cd "$HERE" && python3 sloth_reference.py ) > /tmp/sl_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+	grep '^REF' /tmp/sl_c.txt > /tmp/sl_c_ref.txt; grep '^REF' /tmp/sl_py.txt > /tmp/sl_py_ref.txt
+	if diff -q /tmp/sl_c_ref.txt /tmp/sl_py_ref.txt >/dev/null; then
+		echo "    MATCH: Sloth C (256-bit bignum) == independent python over $(wc -l < /tmp/sl_c_ref.txt) REF lines"
+	else
+		echo "    MISMATCH"; diff /tmp/sl_c_ref.txt /tmp/sl_py_ref.txt | head -4; exit 1
+	fi
+	for k in verify_recovers_seed deterministic steps_matter tamper_detected; do
+		grep -q "^REF $k YES$" /tmp/sl_c.txt || { echo "    PROPERTY $k FAILED"; exit 1; }
+	done
+	echo "    delay chain verifies (fast squarings recover the seed); tamper detected"
+	rm -rf "$HERE/__pycache__"
+else
+	echo "    SKIP: no compiler (see /tmp/sl_log)"
+fi
