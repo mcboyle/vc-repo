@@ -642,3 +642,26 @@ if "$H2_CC" -O2 $H2_WNO $H2_NOASM $H2_INC -c "$SRCROOT/Crypto/Aescrypt.c" -o /tm
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/h2_log)"
 fi
+
+echo "[27] BLAKE3 tree hash — official published vectors vs independent python"
+# Fast tree/parallel hash (IDEAS-BACKLOG "Hashes" row): 7-round BLAKE2s-style compression, 1024-byte
+# chunks, po2-left binary tree, keyed + derive-key modes, XOF. Candidate fast keyfile/pool hash and
+# Merkle tree hash. NOT in the VeraCrypt tree (like Poly1305): proof = the official BLAKE3-team vectors
+# (blake3_kats.{h,py}, all 35 cases x 3 modes x 131-byte XOF) + byte-identical C/python REF output.
+B3_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then B3_CC="$c"; break; fi; done
+if "$B3_CC" -O2 -Wall -I"$HERE" "$HERE/blake3_poc.c" -o /tmp/blake3_poc 2>/tmp/b3_log; then
+	/tmp/blake3_poc > /tmp/b3_c.txt || { echo "    BLAKE3 POC FAILED"; tail -2 /tmp/b3_c.txt; exit 1; }
+	( cd "$HERE" && python3 blake3_reference.py ) > /tmp/b3_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+	grep '^REF' /tmp/b3_c.txt > /tmp/b3_c_ref.txt; grep '^REF' /tmp/b3_py.txt > /tmp/b3_py_ref.txt
+	if diff -q /tmp/b3_c_ref.txt /tmp/b3_py_ref.txt >/dev/null; then
+		echo "    MATCH: BLAKE3 C == independent python over $(wc -l < /tmp/b3_c_ref.txt) REF lines"
+	else
+		echo "    MISMATCH"; diff /tmp/b3_c_ref.txt /tmp/b3_py_ref.txt | head -4; exit 1
+	fi
+	grep -q '^REF all_match YES$' /tmp/b3_c.txt || { echo "    OFFICIAL VECTORS FAILED"; exit 1; }
+	echo "    all 35 official cases (hash/keyed/derive_key, 0..102400 B, 131-B XOF) reproduced"
+	rm -rf "$HERE/__pycache__"
+else
+	echo "    SKIP: no compiler (see /tmp/b3_log)"
+fi
