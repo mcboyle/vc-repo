@@ -665,3 +665,25 @@ if "$B3_CC" -O2 -Wall -I"$HERE" "$HERE/blake3_poc.c" -o /tmp/blake3_poc 2>/tmp/b
 else
 	echo "    SKIP: no compiler (see /tmp/b3_log)"
 fi
+
+echo "[28] Ascon-Hash256 (NIST SP 800-232) — official NIST ACVP vectors vs independent python"
+# The NIST Lightweight Cryptography winner (IDEAS-BACKLOG "Hashes" row): 320-bit state, 12-round
+# permutation, rate 8; compact hash for constrained targets. NOT in the VeraCrypt tree: proof = the
+# official NIST ACVP SP 800-232 vectors (ascon_kats.{h,py}) + byte-identical C/python REF output.
+AS_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then AS_CC="$c"; break; fi; done
+if "$AS_CC" -O2 -Wall -I"$HERE" "$HERE/ascon_poc.c" -o /tmp/ascon_poc 2>/tmp/as_log; then
+	/tmp/ascon_poc > /tmp/as_c.txt || { echo "    ASCON POC FAILED"; tail -2 /tmp/as_c.txt; exit 1; }
+	( cd "$HERE" && python3 ascon_reference.py ) > /tmp/as_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+	grep '^REF' /tmp/as_c.txt > /tmp/as_c_ref.txt; grep '^REF' /tmp/as_py.txt > /tmp/as_py_ref.txt
+	if diff -q /tmp/as_c_ref.txt /tmp/as_py_ref.txt >/dev/null; then
+		echo "    MATCH: Ascon-Hash256 C == independent python over $(wc -l < /tmp/as_c_ref.txt) REF lines"
+	else
+		echo "    MISMATCH"; diff /tmp/as_c_ref.txt /tmp/as_py_ref.txt | head -4; exit 1
+	fi
+	grep -q '^REF all_match YES$' /tmp/as_c.txt || { echo "    OFFICIAL VECTORS FAILED"; exit 1; }
+	echo "    all official NIST ACVP Ascon-Hash256 vectors reproduced"
+	rm -rf "$HERE/__pycache__"
+else
+	echo "    SKIP: no compiler (see /tmp/as_log)"
+fi
