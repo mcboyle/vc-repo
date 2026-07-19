@@ -607,3 +607,38 @@ if "$MK2_CC" -O2 $MK2_WNO $MK2_NOASM $MK2_GC $MK2_INC -c "$SRCROOT/Crypto/Sha3.c
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/mk2_log)"
 fi
+
+echo "[26] HCTR2 wide-block mode (XCTR + POLYVAL) — official google/hctr2 KATs vs independent python"
+# The AES-NI-era sibling of Adiantum (IDEAS-BACKLOG B; shipped in the Linux kernel for fscrypt):
+# tweakable SPRP over the whole sector from AES-256 XCTR + POLYVAL (RFC 8452). Links the REAL in-tree
+# Aescrypt/Aeskey/Aestab.c (FIPS-197 KAT asserted); POLYVAL is PoC-local, anchored to the RFC 8452
+# published example (no POLYVAL in the VeraCrypt tree). Arbiter: 35 official vectors (hctr2_kats.{h,py})
+# covering message lengths 16..512 x tweak lengths 0/1/16/32/47. See docs/HCTR2-SPEC.md.
+H2_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then H2_CC="$c"; break; fi; done
+H2_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+H2_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+H2_INC="$INC -I$SRCROOT/Crypto"
+if "$H2_CC" -O2 $H2_WNO $H2_NOASM $H2_INC -c "$SRCROOT/Crypto/Aescrypt.c" -o /tmp/h2_aescrypt.o 2>/tmp/h2_log \
+   && "$H2_CC" -O2 $H2_WNO $H2_NOASM $H2_INC -c "$SRCROOT/Crypto/Aeskey.c" -o /tmp/h2_aeskey.o 2>>/tmp/h2_log \
+   && "$H2_CC" -O2 $H2_WNO $H2_NOASM $H2_INC -c "$SRCROOT/Crypto/Aestab.c" -o /tmp/h2_aestab.o 2>>/tmp/h2_log \
+   && "$H2_CC" -O2 $H2_WNO $H2_NOASM $H2_INC "$HERE/hctr2_poc.c" /tmp/h2_aescrypt.o /tmp/h2_aeskey.o /tmp/h2_aestab.o -o /tmp/hctr2_poc 2>>/tmp/h2_log; then
+	/tmp/hctr2_poc > /tmp/h2_c.txt || { echo "    HCTR2 POC FAILED"; grep -vE '^REF kat_[0-9]' /tmp/h2_c.txt; exit 1; }
+	grep -vE '^REF kat_[0-9]' /tmp/h2_c.txt
+	( cd "$HERE" && python3 hctr2_reference.py ) > /tmp/h2_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+	grep '^REF' /tmp/h2_c.txt > /tmp/h2_c_ref.txt; grep '^REF' /tmp/h2_py.txt > /tmp/h2_py_ref.txt
+	if diff -q /tmp/h2_c_ref.txt /tmp/h2_py_ref.txt >/dev/null; then
+		echo "    MATCH: HCTR2 (real AES objects) == independent python over $(wc -l < /tmp/h2_c_ref.txt) REF lines"
+	else
+		echo "    MISMATCH"; diff /tmp/h2_c_ref.txt /tmp/h2_py_ref.txt | head -6; exit 1
+	fi
+	for k in kat_all_match roundtrip_all enc_diffusion dec_diffusion wrongkey wrongtweak; do
+		grep -q "^REF $k YES$" /tmp/h2_c.txt || { echo "    PROPERTY $k FAILED"; exit 1; }
+	done
+	grep -q '^REF aes256_fips197 8ea2b7ca516745bfeafc49904b496089$' /tmp/h2_c.txt || { echo "    AES FIPS-197 KAT FAILED"; exit 1; }
+	grep -q '^REF polyval_rfc8452 f7a3b47b846119fae5b7866cf5e5b77e$' /tmp/h2_c.txt || { echo "    POLYVAL RFC-8452 KAT FAILED"; exit 1; }
+	echo "    all 35 official vectors reproduced; single-bit flip randomizes the whole sector"
+	rm -rf "$HERE/__pycache__"
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/h2_log)"
+fi

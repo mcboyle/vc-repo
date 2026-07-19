@@ -3,7 +3,7 @@
 Work on branch `claude/project-structure-review-5p44w9`. Every crypto-relevant change is proven **two
 ways** (independent Python **and** real compiled VeraCrypt objects); every default build stays
 byte-for-byte stock; not-sandbox-testable integration is scoped in docs, not written blind.
-`verification/build_and_verify.sh` runs **25 green steps**.
+`verification/build_and_verify.sh` runs **26 green steps**.
 
 ## Built + verified (product code, gated)
 
@@ -43,6 +43,7 @@ byte-for-byte stock; not-sandbox-testable integration is scoped in docs, not wri
 | Header-version + anti-downgrade parameter binding (fail closed on weakened params) | tag `0692cc06…` [23] | `docs/ANTI-DOWNGRADE-SPEC.md` |
 | Adiantum wide-block mode (sector-atomic; kills XTS 16-byte malleability) | 18 official KATs, ct₀ `820ae444…` [24] | `docs/ADIANTUM-SPEC.md` |
 | ML-KEM-768 + PQ hybrid combiner (harvest-now-decrypt-later hedge, either-break-safe) | NIST ACVP, tag `5f44c605…` [25] | `docs/PQ-HYBRID-SPEC.md` |
+| HCTR2 wide-block mode (AES-NI-class sibling of Adiantum; kernel-deployed design) | 35 official KATs + RFC-8452 POLYVAL `f7a3b47b…` [26] | `docs/HCTR2-SPEC.md` |
 
 ## Remaining — real build / real hardware only
 

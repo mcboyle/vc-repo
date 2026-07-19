@@ -95,6 +95,10 @@ bits and produce controlled plaintext garbage without detection. Every item here
   flipping a single ciphertext bit randomizes the entire sector rather than 16 bytes. HCTR2 (XCTR +
   POLYVAL) is already used in the Linux kernel for filename encryption and is the most practical
   starting point. This is the single strongest *cryptographic* upgrade available to a disk encryptor.
+  *HCTR2 core proven* (step `[26]`, `docs/HCTR2-SPEC.md`): all 35 official google/hctr2 vectors
+  (16–512 B × 0/1/16/32/47 B tweaks) reproduced on the real in-tree AES + an RFC-8452-anchored POLYVAL,
+  and by an independent python — whole-sector diffusion both directions. With Adiantum (step `[24]`)
+  the fork now has both wide-block cores; remaining is the shared `EncryptionMode` seam + benchmarks.
 - **Adiantum** `[M]` — XChaCha12 + NH + Poly1305, length-preserving; designed for devices without AES
   acceleration. Relevant if mobile or low-end hardware ever enters scope. *Full construction proven*
   (step `[24]`, `docs/ADIANTUM-SPEC.md`): all 18 official google/adiantum vectors (16–4096 B × 0/17/32 B
