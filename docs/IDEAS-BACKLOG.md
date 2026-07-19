@@ -237,13 +237,13 @@ Every row now has at least one member built + proven two ways (✅ = proven PoC 
 | Class | Candidates | Why | Proven |
 |---|---|---|---|
 | Wide-block modes | HCTR2, AEZ, EME2, Adiantum | sector-atomic; kills XTS malleability | ✅ Adiantum [24], HCTR2 [26] |
-| Memory-hard KDF | Balloon, yescrypt, Lyra2, Catena, scrypt, Argon2d | diversity + ROM-hardness | ✅ Balloon [16] (+ Argon2 params [11]) |
+| Memory-hard KDF | Balloon, yescrypt, Lyra2, Catena, scrypt, Argon2d | diversity + ROM-hardness | ✅ Balloon [16], scrypt [34] (+ Argon2 [11]) |
 | Large-block ciphers | Threefish-1024, Rijndael-256 | birthday-bound headroom | ✅ Threefish-512/1024 [29] |
 | Hashes | BLAKE3, KangarooTwelve, Ascon-Hash | fast tree/parallel; Ascon = NIST LWC winner | ✅ BLAKE3 [27], Ascon-Hash256 [28] |
 | PQ (asymmetric parts only) | ML-KEM-768, SLH-DSA, Classic McEliece | hybrid recovery/network slots | ✅ ML-KEM-768 + hybrid [25] |
-| Password protocols | OPRF, threshold OPRF/PPSS, OPAQUE (aPAKE) | rate-limited guessing, headless unlock | ✅ OPRF [17] |
-| Delay functions | RSW time-lock, Sloth, Wesolowski/Pietrzak VDF | coercion cooling-off | ✅ Sloth VDF [30] |
-| Sharing | Feldman/Pedersen VSS, SLIP-39 encoding | verifiable, transcribable shares | ✅ Shamir [5] + Feldman VSS [31] |
+| Password protocols | OPRF, threshold OPRF/PPSS, OPAQUE (aPAKE) | rate-limited guessing, headless unlock | ✅ OPRF [17], threshold OPRF [35] |
+| Delay functions | RSW time-lock, Sloth, Wesolowski/Pietrzak VDF | coercion cooling-off | ✅ Sloth [30], RSW time-lock [33] |
+| Sharing | Feldman/Pedersen VSS, SLIP-39 encoding | verifiable, transcribable shares | ✅ Shamir [5], Feldman [31], Pedersen [32] |
 
 Remaining candidates in each row (AEZ/EME2, yescrypt/Lyra2, Rijndael-256, K12, SLH-DSA/McEliece,
 threshold-OPRF/OPAQUE, RSW/Wesolowski VDF, Pedersen/SLIP-39) are documented alternatives, not gaps —

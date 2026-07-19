@@ -3,7 +3,7 @@
 Work on branch `claude/project-structure-review-5p44w9`. Every crypto-relevant change is proven **two
 ways** (independent Python **and** real compiled VeraCrypt objects); every default build stays
 byte-for-byte stock; not-sandbox-testable integration is scoped in docs, not written blind.
-`verification/build_and_verify.sh` runs **31 green steps**.
+`verification/build_and_verify.sh` runs **35 green steps**.
 
 ## Built + verified (product code, gated)
 
@@ -49,6 +49,10 @@ byte-for-byte stock; not-sandbox-testable integration is scoped in docs, not wri
 | Threefish 512/1024 large-block cipher (birthday headroom) | official Botan-512 vectors + 1024 round-trip | `docs/LARGE-BLOCK-SPEC.md` |
 | Sloth verifiable delay function (coercion cooling-off) | `1f884ff5…`, verify-recovers-seed | `docs/DELAY-SPEC.md` |
 | Feldman verifiable secret sharing (catch a cheating dealer) | tamper-share rejected, t-reconstruct | `docs/VSS-SPEC.md` |
+| Pedersen VSS (perfectly-hiding verifiable sharing) | tampered f/b rejected, t-reconstruct | `docs/VSS-SPEC.md` |
+| RSW time-lock puzzle (create-fast delay; owner trapdoor) | trapdoor == sequential | `docs/DELAY-SPEC.md` |
+| scrypt KDF (second memory-hard KDF) | RFC 7914 KATs + hashlib | `docs/BALLOON-SPEC.md` |
+| Threshold OPRF (t-of-n password hardening) | t-subset == single-key output | `docs/OPRF-SPEC.md` |
 
 ## Remaining — real build / real hardware only
 

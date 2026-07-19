@@ -766,3 +766,96 @@ if "$FV_CC" -O2 -Wall -I"$HERE" "$HERE/feldman_poc.c" -o /tmp/feldman_poc 2>/tmp
 else
 	echo "    SKIP: no compiler (see /tmp/fv_log)"
 fi
+
+echo "[32] Pedersen verifiable secret sharing (perfectly hiding) — C bignum vs independent python"
+# Sharing row (IDEAS-BACKLOG): Pedersen VSS blinds Feldman's commitments (step [31]) with a second
+# generator h so they are PERFECTLY hiding, not just computationally. C_j = g^{a_j} h^{b_j}; each holder
+# checks g^{f(i)} h^{b(i)} == prod C_j^{i^j}. No standard KAT; proof = byte-identical C(256-bit bignum)
+# vs python + verifiability (honest verify, tampered f OR b rejected, t reconstruct). docs/VSS-SPEC.md
+PD_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then PD_CC="$c"; break; fi; done
+if "$PD_CC" -O2 -Wall -I"$HERE" "$HERE/pedersen_poc.c" -o /tmp/pedersen_poc 2>/tmp/pd_log; then
+	/tmp/pedersen_poc > /tmp/pd_c.txt || { echo "    PEDERSEN POC FAILED"; grep -vE '^REF (commit|share)_' /tmp/pd_c.txt; exit 1; }
+	grep -vE '^REF (commit|share)_[0-9]' /tmp/pd_c.txt
+	( cd "$HERE" && python3 pedersen_reference.py ) > /tmp/pd_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+	grep '^REF' /tmp/pd_c.txt > /tmp/pd_c_ref.txt; grep '^REF' /tmp/pd_py.txt > /tmp/pd_py_ref.txt
+	if diff -q /tmp/pd_c_ref.txt /tmp/pd_py_ref.txt >/dev/null; then
+		echo "    MATCH: Pedersen VSS C == independent python over $(wc -l < /tmp/pd_c_ref.txt) REF lines"
+	else echo "    MISMATCH"; diff /tmp/pd_c_ref.txt /tmp/pd_py_ref.txt | head -4; exit 1; fi
+	for k in all_shares_verify tampered_f_rejected tampered_b_rejected reconstruct_t below_threshold_wrong; do
+		grep -q "^REF $k YES$" /tmp/pd_c.txt || { echo "    PROPERTY $k FAILED"; exit 1; }
+	done
+	echo "    perfectly-hiding commitments verify shares, reject tampered f or b; t reconstructs"
+	rm -rf "$HERE/__pycache__"
+else echo "    SKIP: no compiler (see /tmp/pd_log)"; fi
+
+echo "[33] RSW time-lock puzzle (create-fast delay, complements Sloth) — C bignum vs independent python"
+# Delay functions row (IDEAS-BACKLOG): RSW (Rivest-Shamir-Wagner 1996) -- opening is T sequential
+# squarings x^(2^T) mod N (unparallelizable); the factor-knowing owner has a trapdoor e=2^T mod phi(N)
+# (two modexps) to rewrap instantly, then discards p,q. No standard KAT; proof = byte-identical C vs
+# python + trapdoor==sequential identity + wrong-trapdoor divergence. See docs/DELAY-SPEC.md
+RW_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then RW_CC="$c"; break; fi; done
+if "$RW_CC" -O2 -Wall -I"$HERE" "$HERE/rsw_poc.c" -o /tmp/rsw_poc 2>/tmp/rw_log; then
+	/tmp/rsw_poc > /tmp/rw_c.txt || { echo "    RSW POC FAILED"; cat /tmp/rw_c.txt; exit 1; }
+	cat /tmp/rw_c.txt
+	( cd "$HERE" && python3 rsw_reference.py ) > /tmp/rw_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+	grep '^REF' /tmp/rw_c.txt > /tmp/rw_c_ref.txt; grep '^REF' /tmp/rw_py.txt > /tmp/rw_py_ref.txt
+	if diff -q /tmp/rw_c_ref.txt /tmp/rw_py_ref.txt >/dev/null; then
+		echo "    MATCH: RSW C (256-bit bignum) == independent python over $(wc -l < /tmp/rw_c_ref.txt) REF lines"
+	else echo "    MISMATCH"; diff /tmp/rw_c_ref.txt /tmp/rw_py_ref.txt | head -4; exit 1; fi
+	for k in trapdoor_matches_sequential deterministic steps_matter wrong_trapdoor_detected; do
+		grep -q "^REF $k YES$" /tmp/rw_c.txt || { echo "    PROPERTY $k FAILED"; exit 1; }
+	done
+	echo "    trapdoor equals the sequential result; wrong factorization diverges"
+	rm -rf "$HERE/__pycache__"
+else echo "    SKIP: no compiler (see /tmp/rw_log)"; fi
+
+echo "[34] scrypt KDF (RFC 7914) — official KATs + hashlib vs C over the in-tree PBKDF2/SHA-256"
+# Memory-hard KDF row (IDEAS-BACKLOG): scrypt (Percival, RFC 7914) -- Salsa20/8 -> BlockMix -> ROMix ->
+# PBKDF2 wrapper -- a second independent memory-hard KDF alongside Argon2id [11] and Balloon [16]. The
+# PBKDF2-HMAC-SHA256 wrapper runs over the REAL in-tree Sha2.c; proven against the RFC 7914 Sec 12 KATs
+# and byte-identical to scrypt_reference.py (which also cross-checks CPython hashlib.scrypt). BALLOON-SPEC.
+SC_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then SC_CC="$c"; break; fi; done
+SC_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+SC_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+SC_INC="$INC -I$SRCROOT/Crypto"
+if "$SC_CC" -O2 $SC_WNO $SC_NOASM $SC_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/sc_sha2.o 2>/tmp/sc_log \
+   && "$SC_CC" -O2 $SC_WNO $SC_NOASM $SC_INC "$HERE/scrypt_poc.c" /tmp/sc_sha2.o -o /tmp/scrypt_poc 2>>/tmp/sc_log; then
+	/tmp/scrypt_poc > /tmp/sc_c.txt || { echo "    SCRYPT POC FAILED"; cat /tmp/sc_c.txt; exit 1; }
+	grep -E '^REF (rfc_kat|hashlib)' /tmp/sc_c.txt
+	( cd "$HERE" && python3 scrypt_reference.py ) > /tmp/sc_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+	grep '^REF' /tmp/sc_c.txt > /tmp/sc_c_ref.txt; grep '^REF' /tmp/sc_py.txt > /tmp/sc_py_ref.txt
+	if diff -q /tmp/sc_c_ref.txt /tmp/sc_py_ref.txt >/dev/null; then
+		echo "    MATCH: scrypt C (in-tree PBKDF2/SHA-256) == python == RFC 7914 KATs == hashlib.scrypt"
+	else echo "    MISMATCH"; diff /tmp/sc_c_ref.txt /tmp/sc_py_ref.txt | head -4; exit 1; fi
+	grep -q '^REF rfc_kat_match YES$' /tmp/sc_c.txt || { echo "    RFC KAT FAILED"; exit 1; }
+	rm -rf "$HERE/__pycache__"
+else echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/sc_log)"; fi
+
+echo "[35] Threshold OPRF (t-of-n password hardening) — real in-tree Sha2 vs independent python"
+# Password-protocols row (IDEAS-BACKLOG): threshold OPRF splits the single-server OPRF (step [17]) key
+# across n servers via Shamir; any t partial evaluations combine by Lagrange-in-the-exponent to the same
+# output, t-1 learn nothing, no server sees the password. Links the REAL in-tree Sha2.c; toprf_reference.py
+# is independent. See docs/OPRF-SPEC.md.
+TO_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then TO_CC="$c"; break; fi; done
+TO_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+TO_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+TO_INC="$INC -I$SRCROOT/Crypto"
+if "$TO_CC" -O2 $TO_WNO $TO_NOASM $TO_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/to_sha2.o 2>/tmp/to_log \
+   && "$TO_CC" -O2 $TO_WNO $TO_NOASM $TO_INC "$HERE/toprf_poc.c" /tmp/to_sha2.o -o /tmp/toprf_poc 2>>/tmp/to_log; then
+	/tmp/toprf_poc > /tmp/to_c.txt || { echo "    TOPRF POC FAILED"; cat /tmp/to_c.txt; exit 1; }
+	grep -vE '^REF (threshold_A|single_output|threshold_output)' /tmp/to_c.txt
+	( cd "$HERE" && python3 toprf_reference.py ) > /tmp/to_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+	grep '^REF' /tmp/to_c.txt > /tmp/to_c_ref.txt; grep '^REF' /tmp/to_py.txt > /tmp/to_py_ref.txt
+	if diff -q /tmp/to_c_ref.txt /tmp/to_py_ref.txt >/dev/null; then
+		echo "    MATCH: threshold OPRF (real Sha2) == independent python over $(wc -l < /tmp/to_c_ref.txt) REF lines"
+	else echo "    MISMATCH"; diff /tmp/to_c_ref.txt /tmp/to_py_ref.txt | head -4; exit 1; fi
+	for k in threshold_matches_single any_t_subset_agrees below_threshold_differs server_sees_only_blinded; do
+		grep -q "^REF $k YES$" /tmp/to_c.txt || { echo "    PROPERTY $k FAILED"; exit 1; }
+	done
+	echo "    any t servers reconstruct the single-key output; t-1 differ; servers see only the blind"
+	rm -rf "$HERE/__pycache__"
+else echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/to_log)"; fi
