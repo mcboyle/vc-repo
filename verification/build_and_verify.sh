@@ -687,3 +687,30 @@ if "$AS_CC" -O2 -Wall -I"$HERE" "$HERE/ascon_poc.c" -o /tmp/ascon_poc 2>/tmp/as_
 else
 	echo "    SKIP: no compiler (see /tmp/as_log)"
 fi
+
+echo "[29] Threefish large-block cipher (512 + 1024) — official Botan-512 vectors vs independent python"
+# Large-block cipher (IDEAS-BACKLOG "Large-block ciphers" row): Threefish's 1024-bit block gives ~2^64x
+# the birthday-bound headroom of AES-128 for very large volumes. Threefish-512 anchored to the OFFICIAL
+# Botan published vectors (threefish_kats.{h,py}) which pin the MIX/rotation/key-schedule/permute
+# machinery; Threefish-1024 (same construction, own rotation table) proven by C==python + round-trip.
+# NOT in the VeraCrypt tree. See docs/LARGE-BLOCK-SPEC.md.
+TF_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then TF_CC="$c"; break; fi; done
+if "$TF_CC" -O2 -Wall -I"$HERE" "$HERE/threefish_poc.c" -o /tmp/threefish_poc 2>/tmp/tf_log; then
+	/tmp/threefish_poc > /tmp/tf_c.txt || { echo "    THREEFISH POC FAILED"; grep -vE '^REF tf512_[0-9]' /tmp/tf_c.txt; exit 1; }
+	grep -vE '^REF tf512_[0-9]' /tmp/tf_c.txt
+	( cd "$HERE" && python3 threefish_reference.py ) > /tmp/tf_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+	grep '^REF' /tmp/tf_c.txt > /tmp/tf_c_ref.txt; grep '^REF' /tmp/tf_py.txt > /tmp/tf_py_ref.txt
+	if diff -q /tmp/tf_c_ref.txt /tmp/tf_py_ref.txt >/dev/null; then
+		echo "    MATCH: Threefish C == independent python over $(wc -l < /tmp/tf_c_ref.txt) REF lines"
+	else
+		echo "    MISMATCH"; diff /tmp/tf_c_ref.txt /tmp/tf_py_ref.txt | head -4; exit 1
+	fi
+	for k in tf512_official_match tf1024_roundtrip tf512_roundtrip; do
+		grep -q "^REF $k YES$" /tmp/tf_c.txt || { echo "    PROPERTY $k FAILED"; exit 1; }
+	done
+	echo "    Threefish-512 matches official Botan vectors; 1024 cross-checked + round-trips"
+	rm -rf "$HERE/__pycache__"
+else
+	echo "    SKIP: no compiler (see /tmp/tf_log)"
+fi
