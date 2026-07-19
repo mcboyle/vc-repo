@@ -232,16 +232,22 @@ this project is now doing:
 
 Slow is acceptable per the brief; the constraint is that each must be verifiable two ways.
 
-| Class | Candidates | Why |
-|---|---|---|
-| Wide-block modes | HCTR2, AEZ, EME2, Adiantum | sector-atomic; kills XTS malleability |
-| Memory-hard KDF | Balloon, yescrypt, Lyra2, Catena, scrypt, Argon2d | diversity + ROM-hardness |
-| Large-block ciphers | Threefish-1024, Rijndael-256 | birthday-bound headroom |
-| Hashes | BLAKE3, KangarooTwelve, Ascon-Hash | fast tree/parallel; Ascon = NIST LWC winner |
-| PQ (asymmetric parts only) | ML-KEM-768, SLH-DSA, Classic McEliece | hybrid recovery/network slots |
-| Password protocols | OPRF, threshold OPRF/PPSS, OPAQUE (aPAKE) | rate-limited guessing, headless unlock |
-| Delay functions | RSW time-lock, Sloth, Wesolowski/Pietrzak VDF | coercion cooling-off |
-| Sharing | Feldman/Pedersen VSS, SLIP-39 encoding | verifiable, transcribable shares |
+Every row now has at least one member built + proven two ways (✅ = proven PoC + spec, step noted):
+
+| Class | Candidates | Why | Proven |
+|---|---|---|---|
+| Wide-block modes | HCTR2, AEZ, EME2, Adiantum | sector-atomic; kills XTS malleability | ✅ Adiantum [24], HCTR2 [26] |
+| Memory-hard KDF | Balloon, yescrypt, Lyra2, Catena, scrypt, Argon2d | diversity + ROM-hardness | ✅ Balloon [16] (+ Argon2 params [11]) |
+| Large-block ciphers | Threefish-1024, Rijndael-256 | birthday-bound headroom | ✅ Threefish-512/1024 [29] |
+| Hashes | BLAKE3, KangarooTwelve, Ascon-Hash | fast tree/parallel; Ascon = NIST LWC winner | ✅ BLAKE3 [27], Ascon-Hash256 [28] |
+| PQ (asymmetric parts only) | ML-KEM-768, SLH-DSA, Classic McEliece | hybrid recovery/network slots | ✅ ML-KEM-768 + hybrid [25] |
+| Password protocols | OPRF, threshold OPRF/PPSS, OPAQUE (aPAKE) | rate-limited guessing, headless unlock | ✅ OPRF [17] |
+| Delay functions | RSW time-lock, Sloth, Wesolowski/Pietrzak VDF | coercion cooling-off | ✅ Sloth VDF [30] |
+| Sharing | Feldman/Pedersen VSS, SLIP-39 encoding | verifiable, transcribable shares | ✅ Shamir [5] + Feldman VSS [31] |
+
+Remaining candidates in each row (AEZ/EME2, yescrypt/Lyra2, Rijndael-256, K12, SLH-DSA/McEliece,
+threshold-OPRF/OPAQUE, RSW/Wesolowski VDF, Pedersen/SLIP-39) are documented alternatives, not gaps —
+each row's core property is proven.
 
 ---
 

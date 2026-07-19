@@ -740,3 +740,29 @@ if "$SL_CC" -O2 -Wall -I"$HERE" "$HERE/sloth_poc.c" -o /tmp/sloth_poc 2>/tmp/sl_
 else
 	echo "    SKIP: no compiler (see /tmp/sl_log)"
 fi
+
+echo "[31] Feldman verifiable secret sharing — C bignum vs independent python"
+# Sharing row (IDEAS-BACKLOG): Feldman VSS adds dealer-verifiability to Shamir (step [5]) -- coefficient
+# commitments C_j=g^{a_j} let each holder check its share without learning the secret, catching a cheating
+# dealer at distribution. No standard KAT; proof = byte-identical C(256-bit bignum, order-q subgroup) vs
+# python + the verifiability properties (honest verify, tamper rejected, t reconstruct). docs/VSS-SPEC.md
+FV_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then FV_CC="$c"; break; fi; done
+if "$FV_CC" -O2 -Wall -I"$HERE" "$HERE/feldman_poc.c" -o /tmp/feldman_poc 2>/tmp/fv_log; then
+	/tmp/feldman_poc > /tmp/fv_c.txt || { echo "    FELDMAN POC FAILED"; grep -vE '^REF (commit|share)_' /tmp/fv_c.txt; exit 1; }
+	grep -vE '^REF (commit|share)_[0-9]' /tmp/fv_c.txt
+	( cd "$HERE" && python3 feldman_reference.py ) > /tmp/fv_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+	grep '^REF' /tmp/fv_c.txt > /tmp/fv_c_ref.txt; grep '^REF' /tmp/fv_py.txt > /tmp/fv_py_ref.txt
+	if diff -q /tmp/fv_c_ref.txt /tmp/fv_py_ref.txt >/dev/null; then
+		echo "    MATCH: Feldman VSS C (256-bit bignum) == independent python over $(wc -l < /tmp/fv_c_ref.txt) REF lines"
+	else
+		echo "    MISMATCH"; diff /tmp/fv_c_ref.txt /tmp/fv_py_ref.txt | head -4; exit 1
+	fi
+	for k in all_shares_verify tampered_share_rejected reconstruct_t below_threshold_wrong; do
+		grep -q "^REF $k YES$" /tmp/fv_c.txt || { echo "    PROPERTY $k FAILED"; exit 1; }
+	done
+	echo "    commitments verify honest shares, reject a tampered share; t-of-n reconstructs"
+	rm -rf "$HERE/__pycache__"
+else
+	echo "    SKIP: no compiler (see /tmp/fv_log)"
+fi

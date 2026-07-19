@@ -39,11 +39,13 @@ static void usub (const u256 *a, const u256 *b, u256 *r)
 static void addmod (const u256 *a, const u256 *b, u256 *r)
 { u256 t; uadd (a, b, &t); if (uge (&t, &P)) usub (&t, &P, &t); *r = t; }
 
-/* schoolbook 256x256 -> 512, then reduce mod P by long division (PoC clarity) */
+/* schoolbook 256x256 -> 512, then reduce mod P by long division (PoC clarity).
+   The remainder is kept in 5 limbs so the bit shifted out of limb 3 (values in
+   [2^255, P) when P ~ 2^255) is not lost. */
 static void mulmod (const u256 *a, const u256 *b, u256 *r)
 {
 	uint64_t prod[8]; unsigned __int128 c; int i, j, bit;
-	u256 rem;
+	uint64_t rem[5];
 	memset (prod, 0, sizeof prod);
 	for (i = 0; i < 4; i++) {
 		c = 0;
@@ -53,17 +55,19 @@ static void mulmod (const u256 *a, const u256 *b, u256 *r)
 		}
 		prod[i + 4] += (uint64_t) c;
 	}
-	/* reduce the 512-bit product mod P, MSB-first binary long division */
-	memset (&rem, 0, sizeof rem);
+	memset (rem, 0, sizeof rem);
 	for (bit = 511; bit >= 0; bit--) {
-		u256 sh; int k; uint64_t carry;
-		/* rem = rem << 1 | bit(prod) */
-		carry = (prod[bit >> 6] >> (bit & 63)) & 1;
-		for (k = 0; k < 4; k++) { uint64_t nc = rem.v[k] >> 63; sh.v[k] = (rem.v[k] << 1) | carry; carry = nc; }
-		rem = sh;
-		if (uge (&rem, &P)) usub (&rem, &P, &rem);
+		int k; uint64_t carry = (prod[bit >> 6] >> (bit & 63)) & 1, nc;
+		for (k = 0; k < 5; k++) { nc = rem[k] >> 63; rem[k] = (rem[k] << 1) | carry; carry = nc; }
+		for (;;) {
+			u256 lo = { { rem[0], rem[1], rem[2], rem[3] } };
+			unsigned __int128 br = 0;
+			if (rem[4] == 0 && !uge (&lo, &P)) break;
+			for (k = 0; k < 4; k++) { unsigned __int128 t = (unsigned __int128) rem[k] - P.v[k] - br; rem[k] = (uint64_t) t; br = (t >> 64) & 1; }
+			rem[4] -= (uint64_t) br;
+		}
 	}
-	*r = rem;
+	r->v[0] = rem[0]; r->v[1] = rem[1]; r->v[2] = rem[2]; r->v[3] = rem[3];
 }
 
 /* r = base^exp mod P */
