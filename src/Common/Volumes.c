@@ -186,6 +186,17 @@ static int MapArgon2ResultToVcError (int result)
 }
 #endif
 
+#if defined(VC_ENABLE_BALLOON_KDF)
+static int MapBalloonResultToVcError (int result)
+{
+	if (result == 0)
+		return ERR_SUCCESS;
+	if (result == -2)
+		return ERR_USER_ABORT;
+	return ERR_OUTOFMEMORY;   /* -1: allocation failure (resolved params rule out bad arguments) */
+}
+#endif
+
 
 BOOL ReadVolumeHeaderRecoveryMode = FALSE;
 
@@ -498,6 +509,23 @@ KeyReady:	;
 				derive_key_sha3_512 (keyInfo->userKey, keyInfo->keyLength, keyInfo->salt,
 					PKCS5_SALT_SIZE, keyInfo->noIterations, dk, GetMaxPkcs5OutSize(), effectiveAbortKeyDerivation);
 				break;
+
+#if defined(VC_ENABLE_BALLOON_KDF)
+			case BALLOON:
+				{
+					int balloonResult = derive_key_balloon (keyInfo->userKey, keyInfo->keyLength, keyInfo->salt,
+						PKCS5_SALT_SIZE, keyInfo->noIterations, keyInfo->memoryCost, dk, BALLOON_HEADER_KEYDATA_SIZE, effectiveAbortKeyDerivation);
+					if (balloonResult != 0)
+					{
+						if (selected_pkcs5_prf == 0)
+							continue;   /* auto-detect: an allocation failure just skips this PRF */
+
+						status = MapBalloonResultToVcError (balloonResult);
+						goto err;
+					}
+				}
+				break;
+#endif
 #endif	
                         default:
 				// Unknown/wrong ID
@@ -1224,6 +1252,21 @@ int CreateVolumeHeaderInMemory (HWND hwndDlg, BOOL bBoot, unsigned char *header,
 			derive_key_sha3_512 (keyInfo.userKey, keyInfo.keyLength, keyInfo.salt,
 				PKCS5_SALT_SIZE, keyInfo.noIterations, dk, GetMaxPkcs5OutSize(), NULL);
 			break;
+
+#if defined(VC_ENABLE_BALLOON_KDF)
+		case BALLOON:
+			{
+				int balloonResult = derive_key_balloon (keyInfo.userKey, keyInfo.keyLength, keyInfo.salt,
+					PKCS5_SALT_SIZE, keyInfo.noIterations, keyInfo.memoryCost, dk, BALLOON_HEADER_KEYDATA_SIZE, NULL);
+				if (balloonResult != 0)
+				{
+					crypto_close (cryptoInfo);
+					retVal = MapBalloonResultToVcError (balloonResult);
+					goto err;
+				}
+			}
+			break;
+#endif
         #endif
 		default:
 			// Unknown/wrong ID

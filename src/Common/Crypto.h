@@ -50,6 +50,11 @@ extern "C" {
 #define ARGON2_HEADER_KEYDATA_SIZE	192
 #endif
 
+#if defined(VC_ENABLE_BALLOON_KDF)
+// Balloon header key material size — fixed for compatibility, like ARGON2_HEADER_KEYDATA_SIZE.
+#define BALLOON_HEADER_KEYDATA_SIZE	192
+#endif
+
 // The first PRF to try when mounting
 #define FIRST_PRF_ID		1	
 
@@ -69,6 +74,11 @@ enum
 #endif
 	SHA3_512,	// SHA3-512 (FIPS 202) HMAC/PBKDF2 PRF. Independent of Argon2 (own Keccak
 			// primitive in Crypto/Sha3.c). Non-boot PRF only; excluded under wolfCrypt.
+#if defined(VC_ENABLE_BALLOON_KDF)
+	BALLOON,	// Balloon memory-hard KDF (Boneh-Corrigan-Gibbs-Schechter) over the in-tree
+			// SHA-256 — a provably memory-hard diversity option beside Argon2id (fork
+			// add-on, docs/BALLOON-SPEC.md). Non-boot PRF only.
+#endif
 	HASH_ENUM_END_ID
 };
 

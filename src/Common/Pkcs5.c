@@ -1628,11 +1628,170 @@ cancelled:
 	burn (key, sizeof(key));
 }
 
+#if !defined(TC_WINDOWS_BOOT) && defined(VC_ENABLE_BALLOON_KDF)
+
+/* ---- Balloon memory-hard KDF (docs/BALLOON-SPEC.md; fork add-on, VC_ENABLE_BALLOON_KDF) ----
+   Boneh-Corrigan-Gibbs-Schechter Balloon, single lane, delta = 3, over the in-tree SHA-256 —
+   exactly the construction proven against the independent Python reference in verification steps
+   [16] (core) and [38] (this shipping function, incl. the long-output expansion). */
+
+#define BALLOON_DIGEST 32
+#define BALLOON_DELTA  3
+
+static void balloon_le64 (uint64 x, unsigned char out[8])
+{
+	int i;
+	for (i = 0; i < 8; i++)
+		out[i] = (unsigned char) (x >> (8 * i));
+}
+
+/* one SHA-256 over up to 5 (ptr,len) parts */
+static void balloon_h (unsigned char out[BALLOON_DIGEST],
+                       const unsigned char *p0, int n0, const unsigned char *p1, int n1,
+                       const unsigned char *p2, int n2, const unsigned char *p3, int n3,
+                       const unsigned char *p4, int n4)
+{
+	sha256_ctx c;
+	sha256_begin (&c);
+	if (n0) sha256_hash (p0, (uint_32t) n0, &c);
+	if (n1) sha256_hash (p1, (uint_32t) n1, &c);
+	if (n2) sha256_hash (p2, (uint_32t) n2, &c);
+	if (n3) sha256_hash (p3, (uint_32t) n3, &c);
+	if (n4) sha256_hash (p4, (uint_32t) n4, &c);
+	sha256_end (out, &c);
+	burn (&c, sizeof (c));
+}
+
+int derive_key_balloon (const unsigned char *pwd, int pwd_len, const unsigned char *salt, int salt_len,
+                        uint32 tcost, uint32 spaceKib, unsigned char *dk, int dklen,
+                        long volatile *pAbortKeyDerivation)
+{
+	unsigned char (*buf)[BALLOON_DIGEST];
+	unsigned char K[BALLOON_DIGEST], cb[8], tb[8], mb[8], ib[8];
+	uint64 cnt = 0;
+	uint32 n, m, t;
+	int i, result = 0;
+
+	if (dklen <= 0 || tcost == 0 || spaceKib == 0 || spaceKib > (1u << 22) || pwd_len < 0 || salt_len < 0)
+		return -1;
+	n = spaceKib * (1024 / BALLOON_DIGEST);
+
+	buf = (unsigned char (*)[BALLOON_DIGEST]) TCalloc ((size_t) n * BALLOON_DIGEST);
+	if (!buf)
+		return -1;
+
+	/* Expand */
+	balloon_le64 (cnt++, cb);
+	balloon_h (buf[0], cb, 8, pwd, pwd_len, salt, salt_len, 0, 0, 0, 0);
+	for (m = 1; m < n; m++)
+	{
+		balloon_le64 (cnt++, cb);
+		balloon_h (buf[m], cb, 8, buf[m-1], BALLOON_DIGEST, 0, 0, 0, 0, 0, 0);
+	}
+
+	/* Mix */
+	for (t = 0; t < tcost; t++)
+	{
+		if (pAbortKeyDerivation && *pAbortKeyDerivation)
+		{
+			result = -2;
+			goto ret;
+		}
+		for (m = 0; m < n; m++)
+		{
+			unsigned char *prev = buf[(m + n - 1) % n];
+			balloon_le64 (cnt++, cb);
+			balloon_h (buf[m], cb, 8, prev, BALLOON_DIGEST, buf[m], BALLOON_DIGEST, 0, 0, 0, 0);
+			for (i = 0; i < BALLOON_DELTA; i++)
+			{
+				unsigned char idx[BALLOON_DIGEST];
+				uint64 other;
+				int b;
+				balloon_le64 (cnt++, cb);
+				balloon_le64 ((uint64) t, tb);
+				balloon_le64 ((uint64) m, mb);
+				balloon_le64 ((uint64) i, ib);
+				balloon_h (idx, cb, 8, tb, 8, mb, 8, ib, 8, salt, salt_len);
+				other = 0;
+				for (b = 0; b < 8; b++)
+					other |= ((uint64) idx[b]) << (8 * b);
+				other %= (uint64) n;
+				balloon_le64 (cnt++, cb);
+				balloon_h (buf[m], cb, 8, buf[m], BALLOON_DIGEST, buf[(size_t) other], BALLOON_DIGEST, 0, 0, 0, 0);
+			}
+		}
+	}
+
+	/* Extract; dklen <= 32 takes the Balloon output directly (the step-[16]-anchored core), longer
+	   outputs expand it by counter hashing block_i = SHA-256(K || BE32(i) || salt), i = 1.. */
+	memcpy (K, buf[n-1], BALLOON_DIGEST);
+	if (dklen <= BALLOON_DIGEST)
+		memcpy (dk, K, (size_t) dklen);
+	else
+	{
+		int off = 0, blk = 1;
+		unsigned char be[4], blkout[BALLOON_DIGEST];
+		while (off < dklen)
+		{
+			int nb = (dklen - off < BALLOON_DIGEST) ? dklen - off : BALLOON_DIGEST;
+			be[0] = (unsigned char) (blk >> 24); be[1] = (unsigned char) (blk >> 16);
+			be[2] = (unsigned char) (blk >> 8);  be[3] = (unsigned char) blk;
+			balloon_h (blkout, K, BALLOON_DIGEST, be, 4, salt, salt_len, 0, 0, 0, 0);
+			memcpy (dk + off, blkout, (size_t) nb);
+			off += nb;
+			blk++;
+		}
+		burn (blkout, sizeof (blkout));
+	}
+
+ret:
+	if (result != 0)
+		memset (dk, 0, (size_t) dklen);   /* fail-closed, like derive_key_argon2 */
+	burn (K, sizeof (K));
+	memset (buf, 0, (size_t) n * BALLOON_DIGEST);
+	TCfree (buf);
+	return result;
+}
+
+/* PIM -> (tcost, spaceKib), with an explicit override mirroring the Argon2 params model. Defaults:
+   1 MiB / t = 3 — Balloon over SHA-256 is hash-bound, so the space curve is deliberately shallower
+   than Argon2's (cap 64 MiB). */
+static uint32 balloonTimeOverride = 0;
+static uint32 balloonSpaceKibOverride = 0;
+
+void BalloonSetParamsOverride (uint32 tcost, uint32 spaceKib)
+{
+	balloonTimeOverride = tcost;
+	balloonSpaceKibOverride = spaceKib;
+}
+
+void BalloonGetResolvedParams (int pim, uint32 *tcost, uint32 *spaceKib)
+{
+	if (balloonTimeOverride != 0 && balloonSpaceKibOverride != 0)
+	{
+		*tcost = balloonTimeOverride;
+		*spaceKib = balloonSpaceKibOverride;
+		return;
+	}
+	if (pim <= 0)
+	{
+		*tcost = 3;
+		*spaceKib = 1024;
+		return;
+	}
+	*tcost = 3 + (uint32) ((pim - 1) / 5);
+	*spaceKib = 1024 + (uint32) (pim - 1) * 512;
+	if (*spaceKib > 65536)
+		*spaceKib = 65536;
+}
+
+#endif /* !TC_WINDOWS_BOOT && VC_ENABLE_BALLOON_KDF */
+
 wchar_t *get_kdf_name (int kdf_id)
 {
 	switch (kdf_id)
 	{
-	case SHA512:	
+	case SHA512:
 		return L"SHA512-PBKDF2";
 
 	case SHA256:	
@@ -1658,7 +1817,12 @@ wchar_t *get_kdf_name (int kdf_id)
 		return L"BLAKE2b-PBKDF2";
 #endif
 
-	default:		
+#if defined(VC_ENABLE_BALLOON_KDF)
+	case BALLOON:
+		return L"Balloon";
+#endif
+
+	default:
 		return L"(Unknown)";
 	}
 }
@@ -1728,6 +1892,19 @@ int get_pkcs5_iteration_count(int pkcs5_prf_id, int pim, BOOL bBoot, int* pMemor
 			break;
 #endif
 
+#if defined(VC_ENABLE_BALLOON_KDF)
+		case BALLOON:
+			// Non-boot memory-hard KDF: iterations = mix rounds, *pMemoryCost = space in KiB
+			// (the same plumbing Argon2 uses for its memory cost).
+			{
+				uint32 bt = 0, bs = 0;
+				BalloonGetResolvedParams (pim, &bt, &bs);
+				iteration_count = (int) bt;
+				*pMemoryCost    = (int) bs;
+			}
+			break;
+#endif
+
 		default:
 			TC_THROW_FATAL_EXCEPTION; // Unknown/wrong ID
 		}
@@ -1748,7 +1925,12 @@ int is_pkcs5_prf_supported (int pkcs5_prf_id, PRF_BOOT_TYPE bootType)
 #ifndef VC_DCS_DISABLE_ARGON2
    // we don't support Argon2 in pre-boot authentication
    if ((bootType == PRF_BOOT_MBR || bootType == PRF_BOOT_GPT) && pkcs5_prf_id == ARGON2)
-      return 0;	
+      return 0;
+#endif
+#if defined(VC_ENABLE_BALLOON_KDF)
+   // Balloon is likewise a non-boot memory-hard KDF
+   if ((bootType == PRF_BOOT_MBR || bootType == PRF_BOOT_GPT) && pkcs5_prf_id == BALLOON)
+      return 0;
 #endif
    return 1;
 

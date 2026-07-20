@@ -45,6 +45,9 @@ namespace VeraCrypt
 		virtual wstring GetName () const = 0;
 		virtual Pkcs5Kdf* Clone () const = 0;
 		virtual bool IsArgon2 () const { return false; }
+#if defined(VC_ENABLE_BALLOON_KDF)
+		virtual bool IsBalloon () const { return false; }
+#endif
 		virtual bool IsDeprecated () const { return GetHash()->IsDeprecated(); }
 
 	protected:
@@ -251,6 +254,32 @@ namespace VeraCrypt
 	private:
 		Pkcs5HmacBlake2b (const Pkcs5HmacBlake2b &);
 		Pkcs5HmacBlake2b &operator= (const Pkcs5HmacBlake2b &);
+	};
+	#endif
+
+	#if defined(VC_ENABLE_BALLOON_KDF)
+	// Balloon memory-hard KDF over SHA-256 (fork add-on, docs/BALLOON-SPEC.md). Like Argon2, the
+	// cost is (rounds, space) resolved from the PIM (or the explicit override), so only the
+	// pim-form DeriveKey is meaningful; the iterationCount form throws.
+	class Pkcs5Balloon : public Pkcs5Kdf
+	{
+	public:
+		Pkcs5Balloon () : Pkcs5Kdf() { }
+		virtual ~Pkcs5Balloon () { }
+
+		virtual int DeriveKey (const BufferPtr &key, const VolumePassword &password, int pim, const ConstBufferPtr &salt) const;
+		virtual int DeriveKey (const BufferPtr &key, const VolumePassword &password, int pim, const ConstBufferPtr &salt, long volatile *pAbortKeyDerivation) const;
+		virtual int DeriveKey (const BufferPtr &key, const VolumePassword &password, const ConstBufferPtr &salt, int iterationCount) const;
+		virtual int DeriveKey (const BufferPtr &key, const VolumePassword &password, const ConstBufferPtr &salt, int iterationCount, long volatile *pAbortKeyDerivation) const;
+		virtual shared_ptr <Hash> GetHash () const { return shared_ptr <Hash> (new Sha256); }
+		virtual int GetIterationCount (int pim) const;
+		virtual wstring GetName () const { return L"Balloon"; }
+		virtual Pkcs5Kdf* Clone () const { return new Pkcs5Balloon(); }
+		virtual bool IsBalloon () const { return true; }
+
+	private:
+		Pkcs5Balloon (const Pkcs5Balloon &);
+		Pkcs5Balloon &operator= (const Pkcs5Balloon &);
 	};
 	#endif
 	

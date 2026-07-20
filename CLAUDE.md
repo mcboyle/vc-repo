@@ -114,7 +114,10 @@ Shamir 3-of-5 header key `a8b0cbb7…`; wrong secret / below-threshold flips 64/
 Fork feature anchors: KeyScrub RAM-protect `d28b461b…` [6]; duress tag `3d874ea9…` [7]; keyslot record
 `56434b53…` [8]; MR network-share `cc288fab…` [10]; Argon2 RFC-9106 `0d640df5…` [11]; salt-bind
 `4619ed18…` [12]; write-only ORAM state `203b068d…` [13]; decoy-fragment `47067dd6…`/`a52a1326…` [14];
-AF-split keyslot record `76b60553…` [36] (`Common/AfSplit.{c,h}` + `KeyslotStore.c` `afStripes`).
+AF-split keyslot record `76b60553…` [36] (`Common/AfSplit.{c,h}` + `KeyslotStore.c` `afStripes`);
+KeyslotArea file bindings behavioural [37] (`Common/KeyslotAreaFile.{c,h}`); Balloon mountable PRF
+[38] (`-DVC_ENABLE_BALLOON_KDF`: `derive_key_balloon` in Pkcs5.c + `Pkcs5Balloon`, dk-expansion
+vectors chained to the [16] anchor).
 `verification/build_and_verify.sh` runs all.
 
 ## Conventions

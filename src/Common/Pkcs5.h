@@ -45,6 +45,16 @@ void derive_key_streebog (const unsigned char *pwd, int pwd_len, const unsigned 
 void hmac_sha3_512 (unsigned char *k, int lk, unsigned char *d, int ld);
 void derive_key_sha3_512 (const unsigned char *pwd, int pwd_len, const unsigned char *salt, int salt_len, uint32 iterations, unsigned char *dk, int dklen, long volatile *pAbortKeyDerivation);
 
+#if defined(VC_ENABLE_BALLOON_KDF)
+/* Balloon memory-hard KDF (docs/BALLOON-SPEC.md): single lane, delta = 3, over the in-tree SHA-256.
+ * tcost = mix rounds, spaceKib = buffer size in KiB (32-byte blocks). Returns 0 on success, -1 on
+ * bad parameters / allocation failure, -2 if *pAbortKeyDerivation was raised (dk is zeroed then). */
+int derive_key_balloon (const unsigned char *pwd, int pwd_len, const unsigned char *salt, int salt_len, uint32 tcost, uint32 spaceKib, unsigned char *dk, int dklen, long volatile *pAbortKeyDerivation);
+/* PIM -> (tcost, spaceKib) resolution with an explicit override, mirroring the Argon2 params model. */
+void BalloonSetParamsOverride (uint32 tcost, uint32 spaceKib);
+void BalloonGetResolvedParams (int pim, uint32 *tcost, uint32 *spaceKib);
+#endif
+
 int get_pkcs5_iteration_count (int pkcs5_prf_id, int pim, BOOL bBoot, int* pMemoryCost);
 wchar_t *get_kdf_name (int kdf_id);
 

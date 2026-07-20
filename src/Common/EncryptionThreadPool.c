@@ -292,6 +292,13 @@ static TC_THREAD_PROC EncryptionThreadProc (void *threadArg)
 					workItem->KeyDerivation.IterationCount, workItem->KeyDerivation.DerivedKey, GetMaxPkcs5OutSize(), workItem->KeyDerivation.pAbortKeyDerivation);
 				break;
 
+#if defined(VC_ENABLE_BALLOON_KDF)
+			case BALLOON:
+				derivationResult = derive_key_balloon (workItem->KeyDerivation.Password, workItem->KeyDerivation.PasswordLength, workItem->KeyDerivation.Salt, PKCS5_SALT_SIZE,
+					workItem->KeyDerivation.IterationCount, workItem->KeyDerivation.Memorycost, workItem->KeyDerivation.DerivedKey, BALLOON_HEADER_KEYDATA_SIZE, workItem->KeyDerivation.pAbortKeyDerivation);
+				break;
+#endif
+
 			default:
 				TC_THROW_FATAL_EXCEPTION;
 			}

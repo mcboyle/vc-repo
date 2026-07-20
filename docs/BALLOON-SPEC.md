@@ -1,6 +1,7 @@
 # Balloon hashing — memory-hard KDF candidate
 
-**Status: algorithm proven; selectable-PRF integration pending.** A candidate to sit alongside
+**Status: algorithm proven (`[16]`); wired as a selectable mountable PRF and proven (`[38]`);
+real-volume round-trip remains.** A candidate to sit alongside
 Argon2id in the KDF seam (`IDEAS-BACKLOG.md` §C — "memory-hard alternatives to benchmark against
 Argon2id"). Balloon (Boneh, Corrigan-Gibbs, Schechter, 2016) is a **provably memory-hard** password
 hash whose only primitive is a **standard cryptographic hash** — here VeraCrypt's in-tree SHA-256 — so
@@ -49,9 +50,21 @@ space and enough rounds to hit a target time budget.
 
 ## Integration & honest notes
 
-- **Selectable PRF.** Wiring Balloon as a mountable KDF means a PRF identifier and a `derive_key_balloon`
-  in the `Pkcs5Kdf` dispatch, plus parameter plumbing (reuse the explicit-cost model). Choosing a PRF
-  id touches how a volume records which KDF it used — schedule it with the KDF-selection work.
+- **Selectable PRF — built (step `[38]`, gated `-DVC_ENABLE_BALLOON_KDF`).** The wiring follows the
+  Argon2 precedent exactly: a `BALLOON` id in the `Crypto.h` PRF enum (non-boot; a stock build is
+  byte-identical), `derive_key_balloon (pwd, salt, tcost, spaceKib, dk, dklen, pAbort)` in
+  `Common/Pkcs5.c` (heap block buffer; abort → rc −2 with dk zeroed, fail-closed like Argon2;
+  `dklen ≤ 32` returns the Balloon output K directly — the `[16]`-anchored core — and longer
+  outputs expand K as `block_i = SHA-256(K‖BE32(i)‖salt)`), a fixed
+  `BALLOON_HEADER_KEYDATA_SIZE = 192` like Argon2's, dispatch cases in `Volumes.c` (mount + create)
+  and `EncryptionThreadPool.c`, `BalloonSetParamsOverride`/`BalloonGetResolvedParams`
+  (PIM → rounds `3+(pim−1)/5`, space `min(1024+(pim−1)·512, 65536)` KiB — deliberately shallower
+  than Argon2's curve because Balloon-SHA256 is hash-bound), and the `Pkcs5Balloon` class in
+  `Volume/Pkcs5Kdf.{h,cpp}` (pim-form derivation like `Pkcs5Argon2`; excluded from hash→KDF
+  matching so it never shadows `Pkcs5HmacSha256`). Proven two ways in step `[38]`: the **real
+  compiled `Pkcs5.c` TU** vs. an independent Python that first re-derives the `[16]` anchor
+  (`635ebeac…`), REF-diffing dk32/dk64/dk192 and the resolver/override. The mount/create round-trip
+  on a real volume (`--hash Balloon`) is the remaining real-build validation.
 - **Benchmark before shipping.** The point of the item is *comparison*: measure Balloon vs Argon2id at
   equal time budgets on target hardware before recommending either. This PoC establishes correctness,
   not a performance verdict.

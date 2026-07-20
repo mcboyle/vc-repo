@@ -920,3 +920,44 @@ if "$KB_CC" -O2 $KB_WNO $KB_NOASM $KB_GC -DVC_ENABLE_KEYSLOTS $KB_INC -c "$SRCRO
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/kb_cc.log)"
 fi
+
+echo "[38] Balloon as a mountable PRF: real Common/Pkcs5.c derive_key_balloon vs independent python"
+# docs/BALLOON-SPEC.md integration: the step-[16]-proven Balloon core becomes the shipping
+# derive_key_balloon (VC_ENABLE_BALLOON_KDF: PRF id, Volumes.c/thread-pool dispatch, Pkcs5Balloon
+# C++ class). Compiles the REAL Pkcs5.c TU (step [11]'s pattern) + real Sha2/Argon2 objects; the
+# python reference chains itself to the [16] anchor (asserts 635ebeac...) before emitting vectors.
+# REF-diffs dk32/dk64/dk192 (incl. the counter expansion) + the PIM->(t,space) resolver + override;
+# also checks abort fail-closed and benchmarks vs the real Argon2id (informational).
+BF_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then BF_CC="$c"; break; fi; done
+BF_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+BF_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+BF_GC="-ffunction-sections -fdata-sections"
+BF_INC="$INC -I$SRCROOT/Crypto -I$SRCROOT/Crypto/Argon2/include -I$SRCROOT/Crypto/Argon2/src"
+BF_ARG="$SRCROOT/Crypto/Argon2/src"
+printf 'volatile int g_hasSSE2=1,g_hasAVX2=0,g_hasSSE42=0,g_hasAVX=0,g_hasSSSE3=0,g_hasAESNI=0,g_hasSHA256=0,g_isIntel=0,g_isAMD=0,g_hasSSE41=0,g_hasRDRAND=0,g_hasRDSEED=0;\n' > /tmp/bf_stub.c
+if "$BF_CC" -O2 $BF_WNO $BF_GC -DARGON2_NO_THREADS $BF_INC -c "$BF_ARG/argon2.c" -o /tmp/bf_argon2.o 2>/tmp/bf_log \
+   && "$BF_CC" -O2 $BF_WNO $BF_GC -DARGON2_NO_THREADS $BF_INC -c "$BF_ARG/core.c"   -o /tmp/bf_core.o   2>>/tmp/bf_log \
+   && "$BF_CC" -O2 $BF_WNO $BF_GC -DARGON2_NO_THREADS $BF_INC -c "$BF_ARG/ref.c"    -o /tmp/bf_ref.o    2>>/tmp/bf_log \
+   && "$BF_CC" -O2 $BF_WNO $BF_GC -DARGON2_NO_THREADS $BF_INC -c "$BF_ARG/blake2/blake2b.c" -o /tmp/bf_b2.o 2>>/tmp/bf_log \
+   && "$BF_CC" -O2 $BF_WNO $BF_GC -DARGON2_NO_THREADS -msse2 $BF_INC -c "$BF_ARG/opt_sse2.c" -o /tmp/bf_sse2.o 2>>/tmp/bf_log \
+   && "$BF_CC" -O2 $BF_WNO $BF_GC -DARGON2_NO_THREADS -mavx2 -msse2 $BF_INC -c "$BF_ARG/opt_avx2.c" -o /tmp/bf_avx2.o 2>>/tmp/bf_log \
+   && "$BF_CC" -O2 $BF_WNO $BF_NOASM $BF_GC $BF_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/bf_sha2.o 2>>/tmp/bf_log \
+   && "$BF_CC" -O2 $BF_WNO $BF_GC -DARGON2_NO_THREADS -DVC_ENABLE_ARGON2_PARAMS -DVC_ENABLE_BALLOON_KDF $BF_INC -c "$SRCROOT/Common/Pkcs5.c" -o /tmp/bf_pkcs5.o 2>>/tmp/bf_log \
+   && "$BF_CC" -O2 $BF_WNO -DARGON2_NO_THREADS -DVC_ENABLE_ARGON2_PARAMS -DVC_ENABLE_BALLOON_KDF $BF_INC "$HERE/balloon_prf_test.c" /tmp/bf_stub.c \
+        /tmp/bf_pkcs5.o /tmp/bf_sha2.o /tmp/bf_argon2.o /tmp/bf_core.o /tmp/bf_ref.o /tmp/bf_b2.o /tmp/bf_sse2.o /tmp/bf_avx2.o \
+        -Wl,--gc-sections -o /tmp/balloon_prf_test 2>>/tmp/bf_log; then
+	/tmp/balloon_prf_test > /tmp/bf_c.txt || { echo "    BALLOON PRF TEST FAILED"; cat /tmp/bf_c.txt; exit 1; }
+	grep -vE '^REF balloon dk' /tmp/bf_c.txt
+	( cd "$HERE" && python3 balloon_prf_reference.py ) > /tmp/bf_py.txt || { echo "    PYTHON REFERENCE FAILED (incl. step-[16] anchor chain)"; exit 1; }
+	grep '^REF' /tmp/bf_c.txt > /tmp/bf_c_ref.txt
+	if diff -q /tmp/bf_c_ref.txt /tmp/bf_py.txt >/dev/null; then
+		echo "    MATCH: shipping derive_key_balloon (real Pkcs5.c object) == independent python over $(wc -l < /tmp/bf_c_ref.txt) REF lines"
+	else
+		echo "    MISMATCH"; diff /tmp/bf_c_ref.txt /tmp/bf_py.txt | head -4; exit 1
+	fi
+	if grep -Eq '= NO$' /tmp/bf_c.txt; then echo "    BALLOON PROPERTY FAILED"; exit 1; fi
+	rm -rf "$HERE/__pycache__"
+else
+	echo "    SKIP: no compiler accepted the stock Pkcs5/Argon2 sources (see /tmp/bf_log)"
+fi

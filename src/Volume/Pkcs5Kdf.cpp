@@ -67,6 +67,11 @@ namespace VeraCrypt
 			if (kdf->IsArgon2())
 				continue;
 
+#if defined(VC_ENABLE_BALLOON_KDF)
+			if (kdf->IsBalloon())
+				continue;   /* Balloon's hash is SHA-256; never shadow Pkcs5HmacSha256 here */
+#endif
+
 			if (typeid (*kdf->GetHash()) == typeid (hash))
 				return kdf;
 		}
@@ -88,6 +93,9 @@ namespace VeraCrypt
         #ifndef VC_DCS_DISABLE_ARGON2
 		l.push_back (shared_ptr <Pkcs5Kdf> (new Pkcs5Argon2 ()));
 		l.push_back (shared_ptr <Pkcs5Kdf> (new Pkcs5HmacBlake2b ()));
+        #endif
+        #if defined(VC_ENABLE_BALLOON_KDF)
+		l.push_back (shared_ptr <Pkcs5Kdf> (new Pkcs5Balloon ()));
         #endif
         #endif
 		return l;
@@ -252,6 +260,44 @@ namespace VeraCrypt
 		ValidateParameters (key, password, salt, iterationCount);
 		derive_key_blake2b (password.DataPtr(), (int) password.Size(), salt.Get(), (int) salt.Size(), iterationCount, key.Get(), (int) key.Size(), pAbortKeyDerivation);
 		return 0;
+	}
+	#endif
+
+	#if defined(VC_ENABLE_BALLOON_KDF)
+	int Pkcs5Balloon::DeriveKey (const BufferPtr &key, const VolumePassword &password, int pim, const ConstBufferPtr &salt) const
+	{
+		return DeriveKey (key, password, pim, salt, nullptr);
+	}
+
+	int Pkcs5Balloon::DeriveKey (const BufferPtr &key, const VolumePassword &password, int pim, const ConstBufferPtr &salt, long volatile *pAbortKeyDerivation) const
+	{
+		uint32 tcost = 0, spaceKib = 0;
+		BalloonGetResolvedParams (pim, &tcost, &spaceKib);
+
+		ValidateParameters (key, password, salt, (int) tcost);
+		return derive_key_balloon (password.DataPtr(), (int) password.Size(), salt.Get(), (int) salt.Size(), tcost, spaceKib, key.Get(), (int) key.Size(), pAbortKeyDerivation);
+	}
+
+	int Pkcs5Balloon::DeriveKey (const BufferPtr &key, const VolumePassword &password, const ConstBufferPtr &salt, int iterationCount) const
+	{
+		(void) key;
+		(void) password;
+		(void) salt;
+		(void) iterationCount;
+		throw ParameterIncorrect (SRC_POS);
+	}
+
+	int Pkcs5Balloon::DeriveKey (const BufferPtr &key, const VolumePassword &password, const ConstBufferPtr &salt, int iterationCount, long volatile *pAbortKeyDerivation) const
+	{
+		(void) pAbortKeyDerivation;
+		return DeriveKey (key, password, salt, iterationCount);
+	}
+
+	int Pkcs5Balloon::GetIterationCount (int pim) const
+	{
+		uint32 tcost = 0, spaceKib = 0;
+		BalloonGetResolvedParams (pim, &tcost, &spaceKib);
+		return (int) tcost;
 	}
 	#endif
 	

@@ -186,11 +186,19 @@ brief:
 ---
 
 - **Balloon memory-hard KDF** (candidate alongside Argon2id, `IDEAS-BACKLOG.md` §C) — **algorithm
-  proven; selectable-PRF integration pending.** Provably memory-hard password hash built on the in-tree
-  SHA-256 (expand/mix `delta=3`/extract, explicit space+time cost). Proven two ways — deterministic +
-  salt/space/time-dependent, real `Sha2.c` vs. independent Python, byte-for-byte (anchor `635ebeac…`,
-  `verification/balloon_poc.c` step `[16]`). Remaining: wire as a mountable PRF and benchmark vs
-  Argon2id. `docs/BALLOON-SPEC.md`.
+  proven AND wired as a selectable mountable PRF.** Provably memory-hard password hash built on the
+  in-tree SHA-256 (expand/mix `delta=3`/extract). Core proven two ways (anchor `635ebeac…`, step
+  `[16]`); now shipping gated `-DVC_ENABLE_BALLOON_KDF`: `BALLOON` PRF id, `derive_key_balloon` in
+  `Common/Pkcs5.c` (heap buffer, abort fail-closed, dk ≤ 32 = the Balloon output, longer via
+  counter expansion), PIM→(rounds, space-KiB) resolver with an explicit override mirroring the
+  Argon2 params model, `Volumes.c` + thread-pool dispatch, and the `Pkcs5Balloon` C++ class
+  (never shadowing `Pkcs5HmacSha256` in hash→KDF matching). Proven in step `[38]`: the real
+  compiled `Pkcs5.c` TU vs. independent Python (which first re-derives the `[16]` anchor),
+  REF-diffing dk32/dk64/dk192 + the resolver; benchmarked vs the real Argon2id (informational —
+  ~0.4 s at 1 MiB/t=3 vs Argon2id's ~4.5 s at its 416 MiB default; hash-bound vs memory-bound,
+  so equal-time comparisons must be done on target hardware before recommending either).
+  Remaining (real-build): mount/create round-trip with `--hash Balloon` on a real volume.
+  `docs/BALLOON-SPEC.md`.
 - **OPRF password hardening** (2HashDH / CFRG DH-OPRF, `IDEAS-BACKLOG.md` §C) — **protocol proven;
   server + threshold integration real-build.** The derived key depends on the password AND a
   rate-limited server's secret; the server never sees the password or output, so a **seized disk cannot
