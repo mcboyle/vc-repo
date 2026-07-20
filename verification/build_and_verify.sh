@@ -859,3 +859,37 @@ if "$TO_CC" -O2 $TO_WNO $TO_NOASM $TO_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/to
 	echo "    any t servers reconstruct the single-key output; t-1 differ; servers see only the blind"
 	rm -rf "$HERE/__pycache__"
 else echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/to_log)"; fi
+
+echo "[36] AF-split keyslot records ([FORMAT] integration): real AfSplit.c + KeyslotStore.c vs independent python"
+# docs/AF-SPLIT-SPEC.md integration: the wrapped payload is AF-split into s stripes before wrapping, so
+# a partial remnant of a slot yields nothing. Labeled v2 records carry s (authenticated); bare records
+# stay field-free; s is public config like cost, so the constant-time search's work stays fixed.
+# Links the REAL in-tree modules; keyslotaf_reference.py is independent (hashlib + reimplemented
+# ChaCha20 + spec-reimplemented AF diffuse incl. the trailing partial section).
+KA_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then KA_CC="$c"; break; fi; done
+KA_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+KA_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+KA_GC="-ffunction-sections -fdata-sections"
+KA_INC="$INC -I$SRCROOT/Crypto"
+if "$KA_CC" -O2 $KA_WNO $KA_NOASM $KA_GC -DVC_ENABLE_KEYSLOTS $KA_INC -c "$SRCROOT/Common/AfSplit.c"      -o /tmp/ka_afsplit.o 2>/tmp/ka_cc.log \
+   && "$KA_CC" -O2 $KA_WNO $KA_NOASM $KA_GC -DVC_ENABLE_KEYSLOTS $KA_INC -c "$SRCROOT/Common/Keyslot.c"      -o /tmp/ka_keyslot.o 2>>/tmp/ka_cc.log \
+   && "$KA_CC" -O2 $KA_WNO $KA_NOASM $KA_GC -DVC_ENABLE_KEYSLOTS $KA_INC -c "$SRCROOT/Common/KeyslotStore.c" -o /tmp/ka_store.o 2>>/tmp/ka_cc.log \
+   && "$KA_CC" -O2 $KA_WNO $KA_NOASM $KA_GC $KA_INC -c "$SRCROOT/Crypto/Sha2.c"      -o /tmp/ka_sha2.o   2>>/tmp/ka_cc.log \
+   && "$KA_CC" -O2 $KA_WNO $KA_NOASM $KA_GC $KA_INC -c "$SRCROOT/Crypto/chacha256.c" -o /tmp/ka_chacha.o 2>>/tmp/ka_cc.log \
+   && "$KA_CC" -O2 $KA_WNO $KA_NOASM -DVC_ENABLE_KEYSLOTS $KA_INC "$HERE/keyslotaf_test.c" \
+        /tmp/ka_afsplit.o /tmp/ka_keyslot.o /tmp/ka_store.o /tmp/ka_sha2.o /tmp/ka_chacha.o -Wl,--gc-sections -o /tmp/keyslotaf_test 2>>/tmp/ka_cc.log; then
+	if /tmp/keyslotaf_test > /tmp/ka_c.txt; then grep -vE '^REF af (labeled|bare) record' /tmp/ka_c.txt
+	else cat /tmp/ka_c.txt; echo "    AF KEYSLOT TEST FAILED"; exit 1; fi
+	( cd "$HERE" && python3 keyslotaf_reference.py ) > /tmp/ka_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+	grep '^REF' /tmp/ka_c.txt > /tmp/ka_c_ref.txt
+	if diff -q /tmp/ka_c_ref.txt /tmp/ka_py.txt >/dev/null; then
+		echo "    MATCH: AF keyslot records (real compiled modules) == independent python over $(wc -l < /tmp/ka_c_ref.txt) REF lines"
+	else
+		echo "    MISMATCH"; diff /tmp/ka_c_ref.txt /tmp/ka_py.txt | head -4; exit 1
+	fi
+	if grep -Eq '= NO$' /tmp/ka_c.txt; then echo "    AF PROPERTY FAILED"; exit 1; fi
+	rm -rf "$HERE/__pycache__"
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/ka_cc.log)"
+fi

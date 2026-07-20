@@ -72,6 +72,7 @@ int main (void)
 	fill_vmk();
 	/* cost kept low: this harness tests the store logic + constant-time search (KDF on every slot),
 	   not the KDF iteration count. The constant-time search runs cfg.cost per slot per open. */
+	memset(&cfg, 0, sizeof(cfg));   /* afStripes=0: legacy (non-AF) records, byte-identical layout */
 	cfg.kdf=test_kdf; cfg.cost=256; cfg.vmkLen=VMK_LEN; cfg.maxSlots=AREA_SLOTS; cfg.randBytes=det_rand;
 
 	/* ===== labeled backend (KSB_HEADER; KSB_SIDECAR shares this path) ===== */

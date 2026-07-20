@@ -1,6 +1,7 @@
 # Anti-forensic (AF) key splitting — design & status
 
-**Status: core proven; keyslot-format integration remains (real-build, `[FORMAT]`).** The concrete
+**Status: core proven (`[15]`); keyslot-format integration built & proven (`[36]`); real-flash
+validation remains.** The concrete
 answer to the **SSD-remnant** caveat that `docs/THREAT-MODEL.md` and every keyslot doc has so far only
 *documented*: on flash, wear-leveling / out-of-place writes can leave a **partial** copy of a keyslot's
 wrapped key behind after it was "overwritten". AF splitting (LUKS / Clemens Fruhwirth's TKS1) makes a
@@ -38,14 +39,30 @@ split-hash anchor `ddb23937…`):
   something `!= key`; the final stripe alone (`key XOR buf`) is also `!= key`. All s stripes are
   required.
 
-## Integration (`[FORMAT]`, real-build)
+## Integration (`[FORMAT]`) — built & proven (step `[36]`)
 
-Wire AFsplit into the keyslot record: store `s` stripes (s·vmk bytes) in place of the single wrapped
-payload, split on enroll and merge on open. `s` is a public per-slot field; a typical LUKS value is
-s = 4000 for a sector-sized stripe area, trading slot size for remnant resistance. This enlarges the
-keyslot record, so it composes with (and is gated the same way as) the keyslots feature. The record
-layout change and the write/erase discipline against a real SSD are the remaining, not-sandbox-testable
-work.
+The shipping module is `src/Common/AfSplit.{c,h}` (gated `VC_ENABLE_KEYSLOTS`, the feature it composes
+with): the PoC algorithm generalized to arbitrary payload lengths — a trailing partial diffuse section
+takes the digest prefix, as cryptsetup's `af.c` does. `KeyslotStore.c` wires it into the record:
+
+- `KeyslotStoreCfg.afStripes = s` (0/1 = off — **byte-identical legacy records**; s ≥ 2 splits).
+- Enroll: payload `flags[1]||vmk` → `AfSplit` into s stripes → the stripe blob is wrapped, so
+  `ct` grows from `plen` to `s·plen` (still ChaCha20 + HMAC-SHA256-tagged). Open: unwrap → `AfMerge`.
+- **Labeled records** become `ver=2` and carry `s` in the (tag-authenticated) `rsv` field —
+  informational, like the stored `cost`. **Bare (deniable) records stay field-free.** The operative
+  `s` always comes from the public config, so the constant-time search's per-slot work stays fixed
+  and is never sized from possibly-random record bytes.
+- `s` is bounded by the record stride: `46 + s·plen + 32 ≤ 1024` labeled (s ≤ 14 at vmk = 64);
+  an oversized `s` is rejected up front. LUKS-scale s = 4000 needs a larger per-slot area — that
+  stride growth is future work, not this format.
+
+Proven two ways in step `[36]` (`verification/keyslotaf_test.c` driving the real compiled
+`AfSplit.c + Keyslot.c + KeyslotStore.c` vs. the independent `keyslotaf_reference.py`): the full
+labeled-v2 and bare record bytes match the reference byte-for-byte (bare-record anchor `76b60553…`),
+round-trips recover VMK + flags, a zeroed stripe region defeats the open (partial-remnant answer at
+record level), cfg/record stripe-count mismatches are rejected both ways, AF and legacy records
+coexist in one table, and the AF lifecycle (add/open/revoke/duress flag) passes. The remaining
+not-sandbox-testable work is only the write/erase discipline against a real SSD.
 
 ## Honest limits
 

@@ -5,6 +5,12 @@
  *     magic[4]="VCKS" ver[1] kdf[1] rsv[2] cost[4] plen[2] salt[32] ct[plen] tag[32] <random pad>
  *   occupancy is the plaintext magic; aad (authenticated by the tag) = the 46 header+salt bytes.
  *
+ * Anti-forensic records (cfg->afStripes = s >= 2, docs/AF-SPLIT-SPEC.md): the payload is AF-split
+ * into s stripes before wrapping, so ct grows to s*plen and a partial remnant of a slot yields
+ * nothing. Labeled AF records carry ver=2 and s in the (authenticated) rsv field; like 'cost', the
+ * stored copy is informational — the operative value is the public config, so the constant-time
+ * search's per-slot work is fixed and never sized from record bytes. Bare records stay field-free.
+ *
  * Bare record (KSB_DENIABLE), within a slot located from the passphrase:
  *     salt[32] ct[plen] tag[32]   — no plaintext markers, indistinguishable from random free-space.
  *   aad = "VCKSbare" || salt. The slot index is H(passphrase) mod nSlots, so distinct passphrases
@@ -18,6 +24,7 @@
 #if defined(VC_ENABLE_KEYSLOTS)
 
 #include <string.h>
+#include "AfSplit.h"
 #include "Crypto/Sha2.h"
 
 /* labeled header field offsets */
@@ -44,6 +51,16 @@ static void put_u32 (unsigned char *p, unsigned v) { p[0]=(unsigned char)v; p[1]
 static int is_labeled (KeyslotBackend b) { return b == KSB_HEADER || b == KSB_SIDECAR; }
 
 static int plen_of (const KeyslotStoreCfg *cfg) { return cfg->vmkLen + 1; }   /* flags[1] || vmk */
+
+/* AF stripe count s (public, like cost); 0/1 = off. ct_of = the wrapped blob length s*plen. */
+static int af_of (const KeyslotStoreCfg *cfg) { return (cfg->afStripes >= 2) ? cfg->afStripes : 1; }
+static int ct_of (const KeyslotStoreCfg *cfg) { return plen_of (cfg) * af_of (cfg); }
+
+static int rec_fits (const KeyslotStoreCfg *cfg)
+{
+	int base = is_labeled (cfg->backend) ? L_CT : B_CT;
+	return base + ct_of (cfg) + KEYSLOT_TAG_SIZE <= KEYSLOT_TABLE_STRIDE;
+}
 
 static uint64 n_slots (const KeyslotStoreCfg *cfg, KeyslotArea *area)
 {
@@ -90,14 +107,15 @@ int KeyslotAdd (const KeyslotStoreCfg *cfg, KeyslotArea *area,
                 const unsigned char *pass, int passLen, int flags,
                 const unsigned char *vmk)
 {
-	int plen = plen_of (cfg);
+	int plen = plen_of (cfg), s = af_of (cfg), ct = ct_of (cfg);
 	unsigned char rec[KEYSLOT_TABLE_STRIDE];
 	unsigned char payload[KEYSLOT_VMK_MAX + 1];
+	unsigned char blob[KEYSLOT_TABLE_STRIDE];
 	unsigned char salt[KEYSLOT_SALT_SIZE];
 	int idx;
 	uint64 off;
 
-	if (cfg->vmkLen <= 0 || cfg->vmkLen > KEYSLOT_VMK_MAX)
+	if (cfg->vmkLen <= 0 || cfg->vmkLen > KEYSLOT_VMK_MAX || !rec_fits (cfg))
 		return -1;
 
 	cfg->randBytes (salt, sizeof (salt));
@@ -107,24 +125,40 @@ int KeyslotAdd (const KeyslotStoreCfg *cfg, KeyslotArea *area,
 	/* fill the whole slot with random first, so unused tail bytes are indistinguishable from fill */
 	cfg->randBytes (rec, sizeof (rec));
 
+	/* AF-split the payload into s stripes (s == 1 is the identity), then wrap the stripe blob */
+	if (AfSplit (payload, plen, s, cfg->randBytes, blob) != 0)
+	{
+		ks_wipe (payload, sizeof (payload));
+		return -1;
+	}
+
 	if (is_labeled (cfg->backend))
 	{
 		unsigned char aad[L_CT];
 		idx = labeled_first_free (cfg, area);
 		if (idx < 0)
+		{
+			ks_wipe (payload, sizeof (payload));
+			ks_wipe (blob, sizeof (blob));
 			return -1;
+		}
 		off = (uint64) idx * KEYSLOT_TABLE_STRIDE;
 
 		memcpy (rec + L_MAGIC, "VCKS", 4);
-		rec[L_VER] = 1;
+		rec[L_VER] = (unsigned char) ((s >= 2) ? 2 : 1);
 		rec[L_KDF] = 1;
-		rec[L_RSV] = 0; rec[L_RSV + 1] = 0;
+		if (s >= 2)
+			put_u16 (rec + L_RSV, (unsigned) s);   /* authenticated via the aad; informational like cost */
+		else
+		{
+			rec[L_RSV] = 0; rec[L_RSV + 1] = 0;
+		}
 		put_u32 (rec + L_COST, cfg->cost);
 		put_u16 (rec + L_PLEN, (unsigned) plen);
 		memcpy (rec + L_SALT, salt, KEYSLOT_SALT_SIZE);
 		memcpy (aad, rec, L_AAD_LEN);
 		KeyslotWrap (cfg->kdf, cfg->cost, pass, passLen, salt, KEYSLOT_SALT_SIZE,
-		             aad, L_AAD_LEN, payload, plen, rec + L_CT, rec + L_CT + plen);
+		             aad, L_AAD_LEN, blob, ct, rec + L_CT, rec + L_CT + ct);
 	}
 	else /* KSB_DENIABLE */
 	{
@@ -135,13 +169,14 @@ int KeyslotAdd (const KeyslotStoreCfg *cfg, KeyslotArea *area,
 		memcpy (aad, KS_BARE_DOMAIN, 8);
 		memcpy (aad + 8, salt, KEYSLOT_SALT_SIZE);
 		KeyslotWrap (cfg->kdf, cfg->cost, pass, passLen, salt, KEYSLOT_SALT_SIZE,
-		             aad, sizeof (aad), payload, plen, rec + B_CT, rec + B_CT + plen);
+		             aad, sizeof (aad), blob, ct, rec + B_CT, rec + B_CT + ct);
 	}
 
 	if (area->write (area->ctx, off, rec, sizeof (rec)) != 0)
 		idx = -1;
 
 	ks_wipe (payload, sizeof (payload));
+	ks_wipe (blob, sizeof (blob));
 	ks_wipe (rec, sizeof (rec));
 	ks_wipe (salt, sizeof (salt));
 	return idx;
@@ -155,18 +190,23 @@ int KeyslotOpen (const KeyslotStoreCfg *cfg, KeyslotArea *area,
                  unsigned char *vmkOut, int *flagsOut)
 {
 	unsigned char rec[KEYSLOT_TABLE_STRIDE];
-	int plen = plen_of (cfg);
+	int plen = plen_of (cfg), s = af_of (cfg), ct = ct_of (cfg);
+
+	if (!rec_fits (cfg))
+		return 0;
 
 	if (is_labeled (cfg->backend))
 	{
 		/* Constant-time slot search: scan a fixed number of slots (the config's table size, a public
 		   value), run the KDF and MAC on EVERY slot regardless of the "VCKS" marker, and select the
 		   result in constant time with no early return. This leaks neither which slot matched nor how
-		   many are populated. The KDF cost and payload length come from the config (public), never from
-		   the possibly-random slot bytes, so the per-slot work is fixed and a garbage slot cannot force
-		   a huge iteration count. Cost: one KDF per table slot per open (the LUKS trade-off). */
+		   many are populated. The KDF cost, payload length and AF stripe count come from the config
+		   (public), never from the possibly-random slot bytes, so the per-slot work is fixed and a
+		   garbage slot cannot force a huge iteration count. Cost: one KDF per table slot per open (the
+		   LUKS trade-off). The AF merge runs once on the selected stripe blob, after the scan. */
 		unsigned char aad[L_AAD_LEN];
-		unsigned char tmp[KEYSLOT_VMK_MAX + 1], selp[KEYSLOT_VMK_MAX + 1];
+		unsigned char tmp[KEYSLOT_TABLE_STRIDE], selp[KEYSLOT_TABLE_STRIDE];
+		unsigned char payload[KEYSLOT_VMK_MAX + 1];
 		uint64 i, ns = n_slots (cfg, area);
 		int found = 0, b;
 
@@ -178,17 +218,19 @@ int KeyslotOpen (const KeyslotStoreCfg *cfg, KeyslotArea *area,
 				continue;
 			memcpy (aad, rec, L_AAD_LEN);
 			m = KeyslotUnwrapCT (cfg->kdf, cfg->cost, pass, passLen, rec + L_SALT, KEYSLOT_SALT_SIZE,
-			                     aad, L_AAD_LEN, rec + L_CT, plen, rec + L_CT + plen, tmp);
+			                     aad, L_AAD_LEN, rec + L_CT, ct, rec + L_CT + ct, tmp);
 			sel  = m & (found ^ 1);                       /* take the first match only */
 			mask = (unsigned char) (0u - (unsigned) sel);
-			for (b = 0; b < plen; b++)
+			for (b = 0; b < ct; b++)
 				selp[b] = (unsigned char) ((selp[b] & ~mask) | (tmp[b] & mask));
 			found |= m;
 		}
 		if (found)
 		{
-			if (flagsOut) *flagsOut = selp[0];
-			memcpy (vmkOut, selp + 1, cfg->vmkLen);
+			AfMerge (selp, plen, s, payload);
+			if (flagsOut) *flagsOut = payload[0];
+			memcpy (vmkOut, payload + 1, cfg->vmkLen);
+			ks_wipe (payload, sizeof (payload));
 		}
 		ks_wipe (tmp, sizeof (tmp));
 		ks_wipe (selp, sizeof (selp));
@@ -197,7 +239,8 @@ int KeyslotOpen (const KeyslotStoreCfg *cfg, KeyslotArea *area,
 	}
 	else /* KSB_DENIABLE: the passphrase-derived slot (a single always-decrypt unwrap) */
 	{
-		unsigned char aad[8 + KEYSLOT_SALT_SIZE], payload[KEYSLOT_VMK_MAX + 1];
+		unsigned char aad[8 + KEYSLOT_SALT_SIZE], blob[KEYSLOT_TABLE_STRIDE];
+		unsigned char payload[KEYSLOT_VMK_MAX + 1];
 		uint64 off = deniable_index (cfg, area, pass, passLen) * KEYSLOT_TABLE_STRIDE;
 		int ok;
 		if (area->read (area->ctx, off, rec, sizeof (rec)) != 0)
@@ -205,13 +248,15 @@ int KeyslotOpen (const KeyslotStoreCfg *cfg, KeyslotArea *area,
 		memcpy (aad, KS_BARE_DOMAIN, 8);
 		memcpy (aad + 8, rec + B_SALT, KEYSLOT_SALT_SIZE);
 		ok = KeyslotUnwrapCT (cfg->kdf, cfg->cost, pass, passLen, rec + B_SALT, KEYSLOT_SALT_SIZE,
-		                      aad, sizeof (aad), rec + B_CT, plen, rec + B_CT + plen, payload);
+		                      aad, sizeof (aad), rec + B_CT, ct, rec + B_CT + ct, blob);
 		if (ok)
 		{
+			AfMerge (blob, plen, s, payload);
 			if (flagsOut) *flagsOut = payload[0];
 			memcpy (vmkOut, payload + 1, cfg->vmkLen);
 		}
 		ks_wipe (payload, sizeof (payload));
+		ks_wipe (blob, sizeof (blob));
 		ks_wipe (rec, sizeof (rec));
 		return ok;
 	}

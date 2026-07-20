@@ -53,6 +53,12 @@ typedef struct KeyslotStoreCfg
 	int            vmkLen;                              /* wrapped master-key length (all slots equal) */
 	int            maxSlots;                            /* table size for KSB_HEADER / KSB_SIDECAR */
 	void         (*randBytes) (unsigned char *, size_t);/* CSPRNG for per-slot salts */
+	int            afStripes;                           /* anti-forensic stripes s (docs/AF-SPLIT-SPEC.md):
+	                                                       0 or 1 = off (byte-identical legacy records);
+	                                                       s >= 2 AF-splits the payload before wrapping.
+	                                                       Public parameter like 'cost': the open path
+	                                                       sizes its fixed per-slot work from it, never
+	                                                       from record bytes. Bounded by the stride. */
 } KeyslotStoreCfg;
 
 /* Fixed on-medium stride of one labeled table slot (KSB_HEADER / KSB_SIDECAR). */

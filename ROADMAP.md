@@ -136,12 +136,15 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
   yield a byte-identical observable access trace; correctness reads==writes; real in-tree ChaCha20/Sha2
   vs. independent Python; anchor `203b068d…`, `verification/oram_poc.c` step `[13]`). The block-layer +
   position-map integration into the volume layout is a large real-build effort. `docs/ORAM-SPEC.md`.
-- **Anti-forensic (AF) key splitting** (LUKS/TKS1) — **core proven; keyslot-format integration remains
-  (`[FORMAT]`).** The concrete answer to the SSD-remnant caveat: diffuse a keyslot's wrapped key across
-  s stripes so recovery needs all of them and a partial wear-leveling remnant yields nothing. Proven two
-  ways (round-trip; any missing stripe defeats recovery; real `Sha2.c` vs. independent Python; anchor
-  `ddb23937…`, `verification/afsplit_poc.c` step `[15]`). Remaining: store the s stripes in the keyslot
-  record and validate on real flash. `docs/AF-SPLIT-SPEC.md`.
+- **Anti-forensic (AF) key splitting** (LUKS/TKS1) — **core proven AND keyslot-format integration
+  built & proven (`[FORMAT]` done); real-flash validation remains.** The concrete answer to the
+  SSD-remnant caveat: diffuse a keyslot's wrapped key across s stripes so recovery needs all of them
+  and a partial wear-leveling remnant yields nothing. Core proven two ways (anchor `ddb23937…`,
+  step `[15]`); the record integration is shipping code (`src/Common/AfSplit.{c,h}` +
+  `KeyslotStore.c` `afStripes`: labeled v2 records with authenticated s, field-free bare records,
+  byte-identical legacy when off) and proven two ways in step `[36]` (full record bytes vs.
+  independent Python, bare-record anchor `76b60553…`; partial-remnant defeat at record level; AF +
+  legacy coexistence). Remaining: the write/erase discipline on real flash. `docs/AF-SPLIT-SPEC.md`.
 - **Decoy-fragments-by-default** (upstream issue #1072) — **indistinguishability core proven;
   write-into-volumes + SSD validation remain.** Write plausible hidden-volume creation artifacts on
   *every* volume so their presence proves nothing. A real hidden header (`salt || encrypted`) and a

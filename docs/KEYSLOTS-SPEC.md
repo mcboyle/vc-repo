@@ -75,6 +75,13 @@ Record layout (fixed, little-endian; `MK_LEN` = VMK length):
 | ct | MK_LEN | ChaCha20-wrapped VMK |
 | tag | 32 | HMAC-SHA256 |
 
+> **AF-split records (v2, step `[36]`):** with `KeyslotStoreCfg.afStripes = s ≥ 2` the payload is
+> AF-split (`src/Common/AfSplit.{c,h}`, `docs/AF-SPLIT-SPEC.md`) before wrapping, so `ct` grows to
+> `s·plen`. Labeled records then carry `version = 2` and `s` in the tag-authenticated reserved
+> field (informational, like the stored cost — the operative value is the public config, keeping the
+> constant-time search's per-slot work fixed); bare/deniable records stay field-free. `s` is bounded
+> by the 1024-byte stride (`46 + s·plen + 32 ≤ 1024`); 0/1 leaves the record byte-identical legacy.
+
 > **Ship note:** the PoC uses PBKDF2-HMAC-**SHA256** + ChaCha20 because those compose from primitives
 > already proven this session and link cleanly in the harness. The shipping module should use the
 > in-tree **`derive_key_sha512`** (PBKDF2-HMAC-SHA512, the same KDF VeraCrypt already trusts, with a
