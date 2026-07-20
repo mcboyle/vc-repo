@@ -1219,3 +1219,31 @@ if "$VO_CC" -O2 $VO_WNO $VO_NOASM $VO_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/vo
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/vo_cc.log)"
 fi
+
+echo "[48] Catena-BRG memory-hard KDF core (survey alongside Balloon/scrypt) vs independent python"
+# IDEAS-BACKLOG "memory-hard alternatives to benchmark against Argon2id": the bit-reversal-graph (BRG)
+# memory-hard core in the Catena style (Forler-Lucks-Wenzel) over the REAL in-tree SHA-256 -- a
+# sequential fill of 2^g blocks then lambda BRG passes whose bit-reversal permutation forces
+# whole-array access. Memory-hard CORE, not the full keyed Catena KDF. catena_reference.py is
+# independent (hashlib).
+CA_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then CA_CC="$c"; break; fi; done
+CA_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+CA_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+CA_GC="-ffunction-sections -fdata-sections"
+CA_INC="$INC -I$SRCROOT/Crypto"
+if "$CA_CC" -O2 $CA_WNO $CA_NOASM $CA_GC $CA_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/ca_sha2.o 2>/tmp/ca_log \
+   && "$CA_CC" -O2 $CA_WNO $CA_NOASM $CA_INC "$HERE/catena_poc.c" /tmp/ca_sha2.o -Wl,--gc-sections -o /tmp/catena_poc 2>>/tmp/ca_log; then
+	/tmp/catena_poc > /tmp/ca_c.txt; grep -v '^REF' /tmp/ca_c.txt
+	python3 "$HERE/catena_reference.py" > /tmp/ca_py.txt
+	grep '^REF' /tmp/ca_c.txt > /tmp/ca_c_ref.txt; grep '^REF' /tmp/ca_py.txt > /tmp/ca_py_ref.txt
+	if diff -q /tmp/ca_c_ref.txt /tmp/ca_py_ref.txt >/dev/null; then
+		echo "    MATCH: Catena-BRG core (real Sha2 object) == independent python reference"
+	else
+		echo "    MISMATCH"; diff /tmp/ca_c_ref.txt /tmp/ca_py_ref.txt; exit 1
+	fi
+	if grep -Eq '= NO$' /tmp/ca_c.txt; then echo "    CATENA POC FAILED"; exit 1; fi
+	rm -rf "$HERE/__pycache__"
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/ca_log)"
+fi

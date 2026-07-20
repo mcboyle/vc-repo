@@ -45,6 +45,7 @@ byte-for-byte stock; not-sandbox-testable integration is scoped in docs, not wri
 | Randomized/differential robustness (split-key core) | 44.8k seeded invariant checks [45] | IDEAS-BACKLOG |
 | Keyslot constant-time compare timing screen (dudect) | self-validating [46] | IDEAS-BACKLOG |
 | Verifiable OPRF (DLEQ proof) over ristretto255 | RFC 9496 KAT + Python [47] | `docs/OPRF-SPEC.md` |
+| Catena-BRG memory-hard KDF core (survey) | Python byte-for-byte [48] | `docs/CATENA-SPEC.md` |
 | Balloon memory-hard KDF | `635ebeac…` [16] | `docs/BALLOON-SPEC.md` |
 | OPRF password hardening (offline-guess resistance) | `ca5691bd…` [17] | `docs/OPRF-SPEC.md` |
 | Poly1305 one-time authenticator (integrity-tier primitive) | RFC 8439 `a8061dc1…` [18] | `docs/POLY1305-SPEC.md` |
