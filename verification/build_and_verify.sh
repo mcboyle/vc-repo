@@ -1080,3 +1080,34 @@ if "$SR_CC" -O2 $SR_WNO -DVC_ENABLE_SHARECODE $SR_INC -c "$SRCROOT/Common/ShareC
 else
 	echo "    SKIP: no compiler accepted the stock sources (see /tmp/sr_log)"
 fi
+
+echo "[43] OPRF at PRODUCTION parameters: DH-OPRF over full ristretto255 (RFC 9497) vs independent python"
+# docs/OPRF-SPEC.md: step [17]'s OPRF used a 61-bit toy field; this is the real CFRG ciphersuite group
+# OPRF(ristretto255, SHA-512). From-scratch ristretto255 (RFC 9496 encode + Elligator2) +
+# expand_message_xmd(SHA-512) (RFC 9380) on the step-[39] field, over the REAL in-tree Sha2.c. Proven
+# three ways: (1) OFFICIAL KAT -- ristretto encodings of 1B..5B == RFC 9496 A.1; (2) OPRF
+# Blind/Evaluate/Finalize diffed byte-for-byte vs oprf_ristretto_reference.py; (3) identity /
+# blind-independence / wrong-key-differs properties. Transport + RFC 9497 e2e vectors stay real-build.
+OR_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then OR_CC="$c"; break; fi; done
+OR_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+OR_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+OR_GC="-ffunction-sections -fdata-sections"
+OR_INC="$INC -I$SRCROOT/Crypto"
+if "$OR_CC" -O2 $OR_WNO $OR_NOASM $OR_GC $OR_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/or_sha2.o 2>/tmp/or_cc.log \
+   && "$OR_CC" -O2 $OR_WNO $OR_NOASM $OR_INC "$HERE/oprf_ristretto_poc.c" /tmp/or_sha2.o -Wl,--gc-sections -o /tmp/oprf_ristretto_poc 2>>/tmp/or_cc.log; then
+	/tmp/oprf_ristretto_poc > /tmp/or_c.txt || { echo "    OPRF RISTRETTO POC FAILED (basepoint KAT)"; cat /tmp/or_c.txt; exit 1; }
+	grep -vE '^REF ristretto' /tmp/or_c.txt
+	python3 "$HERE/oprf_ristretto_reference.py" > /tmp/or_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+	grep '^REF' /tmp/or_c.txt > /tmp/or_c_ref.txt; grep '^REF' /tmp/or_py.txt > /tmp/or_py_ref.txt
+	if diff -q /tmp/or_c_ref.txt /tmp/or_py_ref.txt >/dev/null; then
+		echo "    MATCH: ristretto255 OPRF (real Sha2 + from-scratch group) == independent python over $(wc -l < /tmp/or_c_ref.txt) REF lines"
+	else
+		echo "    MISMATCH"; diff /tmp/or_c_ref.txt /tmp/or_py_ref.txt | head -6; exit 1
+	fi
+	grep -q '^ristretto255 basepoint KAT (RFC 9496) = YES$' /tmp/or_c.txt || { echo "    RFC 9496 KAT FAILED"; exit 1; }
+	if grep -Eq '= NO$' /tmp/or_c.txt; then echo "    OPRF PROPERTY FAILED"; exit 1; fi
+	rm -rf "$HERE/__pycache__"
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/or_cc.log)"
+fi

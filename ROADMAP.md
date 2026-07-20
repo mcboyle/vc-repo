@@ -215,13 +215,18 @@ brief:
   so equal-time comparisons must be done on target hardware before recommending either).
   Remaining (real-build): mount/create round-trip with `--hash Balloon` on a real volume.
   `docs/BALLOON-SPEC.md`.
-- **OPRF password hardening** (2HashDH / CFRG DH-OPRF, `IDEAS-BACKLOG.md` §C) — **protocol proven;
-  server + threshold integration real-build.** The derived key depends on the password AND a
-  rate-limited server's secret; the server never sees the password or output, so a **seized disk cannot
-  be brute-forced offline**. Proven two ways — deterministic + blind-independent, server-oblivious,
-  wrong-key/wrong-password change the output; real `Sha2.c` vs. independent Python, byte-for-byte
-  (anchor `ca5691bd…`, `verification/oprf_poc.c` step `[17]`). Remaining: a real CFRG group, the server,
-  and the **threshold OPRF/PPSS** split of `k` (composes with the Shamir factor). `docs/OPRF-SPEC.md`.
+- **OPRF password hardening** (2HashDH / CFRG DH-OPRF, `IDEAS-BACKLOG.md` §C) — **protocol proven,
+  AND now proven at production parameters over the full ristretto255 group; server + threshold remain.**
+  The derived key depends on the password AND a rate-limited server's secret; the server never sees the
+  password or output, so a **seized disk cannot be brute-forced offline**. Proven two ways in the toy
+  field (anchor `ca5691bd…`, step `[17]`), and the **production-parameter group is now proven** on the
+  **full ristretto255 curve** (step `[43]`, `verification/oprf_ristretto_poc.c`): a from-scratch
+  ristretto255 (RFC 9496 encode + Elligator2) + `expand_message_xmd(SHA-512)` on the step-`[39]` field,
+  validated against the **official RFC 9496 §A.1 basepoint-multiples KAT** AND diffed byte-for-byte vs
+  independent Python for `Blind`/`Evaluate`/`Finalize` (identity, blind-independence,
+  wrong-key-differs). Remaining (real-build): a constant-time group (the validation group is not
+  side-channel-hardened), the rate-limited server + transport, RFC 9497 e2e vectors, and the
+  **threshold OPRF/PPSS** split of `k` (composes with the Shamir factor). `docs/OPRF-SPEC.md`.
 
 ---
 
