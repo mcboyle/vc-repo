@@ -321,8 +321,13 @@ real-world protection than another primitive.
 - **Fuzzing the untrusted-input parsers** `[M]` — keyslot records, header parsing, share
   deserialization all consume attacker-supplied bytes from a malicious volume. libFuzzer/AFL++ here is
   where memory-safety bugs will be.
-- **Randomized differential testing** `[S] [SANDBOX-OK]` — beyond fixed KATs: zero-length and maximum
-  length passwords, boundary salt sizes, degenerate thresholds (t=n, t=2), duplicate share x-coords.
+- **Randomized differential testing** `[S] [SANDBOX-OK]` — **DONE** (step `[45]`,
+  `verification/differential_test.c`): a seeded fuzzer over the real Shamir/ShamirMac/ShareCode/Keyslot
+  modules — degenerate thresholds (t=2, t=n), duplicate share x-coords, boundary secret lengths,
+  invalid-parameter rejection, random keyslot add/open/revoke sequences, and ShareCode
+  corruption/garbage — 44.8k invariant checks, reproducible (seeded). Beyond fixed KATs: zero-length
+  and maximum length passwords, boundary salt sizes, degenerate thresholds (t=n, t=2), duplicate share
+  x-coords.
 - **Constant-time verification in CI** `[M]` — `dudect`/`ctgrind` over the Shamir and keyslot paths.
 - **Formal methods** `[L] [RESEARCH]` — symbolic analysis (Tamarin/ProVerif) for the network-share and
   OPRF protocols; verified primitives (HACL*/Fiat-Crypto) for new algorithms.

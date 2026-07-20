@@ -1139,3 +1139,31 @@ if "$TR_CC" -O2 $TR_WNO $TR_NOASM $TR_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/tr
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/tr_cc.log)"
 fi
+
+echo "[45] Randomized/differential robustness: real Shamir/ShamirMac/ShareCode/Keyslot over seeded fuzzing"
+# IDEAS-BACKLOG "Randomized differential testing": beyond fixed KATs, a seeded fuzzer drives the REAL
+# compiled modules over thousands of random + boundary configs (degenerate thresholds t=2/t=n,
+# duplicate x-coords, zero/max secret lengths, random keyslot add/open/revoke, ShareCode corruption),
+# asserting invariants hold and nothing crashes or silently returns a wrong answer. Seeded => the
+# verdict is reproducible. Behavioural (no python diff), like steps [9]/[37].
+DF_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then DF_CC="$c"; break; fi; done
+DF_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+DF_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+DF_GC="-ffunction-sections -fdata-sections"
+DF_DEF="-DVC_ENABLE_SHAMIR_MAC -DVC_ENABLE_SHARECODE -DVC_ENABLE_KEYSLOTS"
+DF_INC="$INC -I$SRCROOT/Crypto"
+DF_OK=1
+for m in Shamir ShamirMac ShareCode Keyslot KeyslotStore AfSplit; do
+	"$DF_CC" -O2 $DF_WNO $DF_NOASM $DF_GC $DF_DEF $DF_INC -c "$SRCROOT/Common/$m.c" -o /tmp/df_$m.o 2>>/tmp/df_cc.log || DF_OK=0
+done
+"$DF_CC" -O2 $DF_WNO $DF_NOASM $DF_GC $DF_INC -c "$SRCROOT/Crypto/Sha2.c"     -o /tmp/df_sha2.o   2>>/tmp/df_cc.log || DF_OK=0
+"$DF_CC" -O2 $DF_WNO $DF_NOASM $DF_GC $DF_INC -c "$SRCROOT/Crypto/chacha256.c" -o /tmp/df_chacha.o 2>>/tmp/df_cc.log || DF_OK=0
+if [ "$DF_OK" = 1 ] && "$DF_CC" -O2 $DF_WNO $DF_NOASM $DF_DEF $DF_INC "$HERE/differential_test.c" \
+     /tmp/df_Shamir.o /tmp/df_ShamirMac.o /tmp/df_ShareCode.o /tmp/df_Keyslot.o /tmp/df_KeyslotStore.o /tmp/df_AfSplit.o /tmp/df_sha2.o /tmp/df_chacha.o \
+     -Wl,--gc-sections -o /tmp/differential_test 2>>/tmp/df_cc.log; then
+	if /tmp/differential_test > /tmp/df_out.txt; then cat /tmp/df_out.txt
+	else cat /tmp/df_out.txt; echo "    DIFFERENTIAL CHECKS FAILED"; exit 1; fi
+else
+	echo "    SKIP: no compiler accepted the stock sources (see /tmp/df_cc.log)"
+fi
