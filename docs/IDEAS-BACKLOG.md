@@ -335,7 +335,9 @@ real-world protection than another primitive.
   real constant-time code (|t| < 2).
 - **Formal methods** `[L] [RESEARCH]` — symbolic analysis (Tamarin/ProVerif) for the network-share and
   OPRF protocols; verified primitives (HACL*/Fiat-Crypto) for new algorithms.
-- **Audit preparation** `[M]` — a threat-model-to-control map and a stable public API surface, so an
+- **Audit preparation** `[M]` — **DONE** (`docs/THREAT-CONTROL-MAP.md`): a threat → control →
+  verification-step → residual-limit map (both the threats addressed and those explicitly not), the
+  stable gated public-API surface per module, and a how-to-reproduce-every-claim pointer — so an
   external reviewer has something to review.
 
 ---
