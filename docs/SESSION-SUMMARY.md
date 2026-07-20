@@ -36,6 +36,7 @@ byte-for-byte stock; not-sandbox-testable integration is scoped in docs, not wri
 | AF-split keyslot records (`[FORMAT]` integration) | `76b60553…` [36] | `docs/AF-SPLIT-SPEC.md` |
 | KeyslotArea volume-I/O bindings (file-backed, 3 backends) | behavioural [37] | `docs/KEYSLOTS-SPEC.md` §9 |
 | Balloon wired as mountable PRF (`VC_ENABLE_BALLOON_KDF`) | dk-vectors chained to `635ebeac…` [38] | `docs/BALLOON-SPEC.md` |
+| MR network share at production params (full Ed25519) | RFC 8032 KAT + `ab8b717f…` [39] | `docs/NETWORK-SHARE-SPEC.md` |
 | Balloon memory-hard KDF | `635ebeac…` [16] | `docs/BALLOON-SPEC.md` |
 | OPRF password hardening (offline-guess resistance) | `ca5691bd…` [17] | `docs/OPRF-SPEC.md` |
 | Poly1305 one-time authenticator (integrity-tier primitive) | RFC 8439 `a8061dc1…` [18] | `docs/POLY1305-SPEC.md` |

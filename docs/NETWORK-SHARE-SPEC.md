@@ -43,16 +43,26 @@ build_and_verify.sh step `[10]`, anchor share `cc288fab…`):
 - **[C] Offline / server-presence binding** — a wrong server key (an attacker who lacks `s`) does not
   recover `K`. Without the server's `X^s` step, `C` alone yields nothing.
 
-## Shipping parameters (not the PoC's)
+## Shipping parameters — now proven on the full Ed25519 group (step `[39]`)
 
-The PoC field is `p = 2305843009213693921` (61-bit) purely so modular multiply fits `__int128` and the
-code stays obviously correct. A deployment MUST use real parameters:
-- **Elliptic curve (preferred):** NIST P-256 or Ed25519/X-group, exactly as Tang/jose do — MR needs
-  point addition (`X = C + e·G`) and scalar multiply, so an x-only ladder (bare X25519) is not enough;
-  use a full-group implementation.
-- **or a 2048-bit+ MODP group** (RFC 3526) for a DH instantiation.
-Bind the field/curve via a real EC/bignum library in the build (or delegate to `jose`/`clevis` as
-Clevis does); do not ship the PoC field.
+The original PoC field was `p = 2305843009213693921` (61-bit) purely so modular multiply fits
+`__int128`. The production-parameter MR exchange is now proven on the **full Ed25519 group** (step
+`[39]`, `verification/netshare_ed25519_poc.c`), the spec-preferred full-group curve — chosen over a
+bare X25519 ladder precisely because MR needs point **addition** `X = C + e·G`, not just scalar
+multiply. The group is implemented from scratch (project convention: no new dependency) in extended
+twisted-Edwards coordinates on the proven 256-bit bignum core, with a single field inversion per
+scalar multiply. It is validated two ways:
+
+1. **Official KAT** — the three RFC 8032 §7.1 Ed25519 public keys (basepoint scalar-mult of the
+   SHA-512-clamped secret) are reproduced exactly, anchoring the group arithmetic to the standard.
+2. **Two-way** — the full MR flow (`S = s·G`, `C = c·G`, `K = c·S`; recover `X = C + e·G`,
+   `Y = s·X`, `K = Y − e·S`) and the derived share = SHA-256(compress(K)) are diffed byte-for-byte
+   against `netshare_ed25519_reference.py` (independent Python bigint, affine group). Share anchor
+   `ab8b717f…`; the recover-matches-provision, wrong-server-differs and server-sees-only-blinded-X
+   properties all hold.
+
+A deployment may still instead use NIST P-256 (as Tang/jose do) or a 2048-bit+ MODP group (RFC 3526)
+for a DH instantiation; the exchange algebra is identical. What is **not** yet built is below.
 
 ## Integration (how the share is used)
 
@@ -84,7 +94,10 @@ Clevis does); do not ship the PoC field.
 
 ## What remains to build
 
-The MR algebra is proven. Remaining, real-build only (not sandbox-testable — needs a server and a real
-curve/bignum): the EC/bignum binding at production parameters, the client transport (HTTP(S) to a Tang
-server or a custom endpoint), the `C`-blob storage format, the enroll/unlock CLI, and wiring the
-resulting share into the split-key factor / a keyslot. Validate against a live server on a real build.
+The MR algebra **and the production-parameter (Ed25519) group** are now proven (steps `[10]`, `[39]`).
+Remaining, real-build only (not sandbox-testable — needs a live server): the client transport
+(HTTP(S) to a Tang server or a custom endpoint), the `C`-blob storage format, the enroll/unlock CLI,
+and wiring the resulting share into the split-key factor / a keyslot. A production build would also
+swap the from-scratch group for a constant-time, side-channel-hardened implementation (or delegate to
+`jose`/`clevis`) — the from-scratch group here is proven correct against RFC 8032 but is **not**
+constant-time and is for validation, not shipping. Validate against a live server on a real build.

@@ -117,7 +117,8 @@ Fork feature anchors: KeyScrub RAM-protect `d28b461b…` [6]; duress tag `3d874e
 AF-split keyslot record `76b60553…` [36] (`Common/AfSplit.{c,h}` + `KeyslotStore.c` `afStripes`);
 KeyslotArea file bindings behavioural [37] (`Common/KeyslotAreaFile.{c,h}`); Balloon mountable PRF
 [38] (`-DVC_ENABLE_BALLOON_KDF`: `derive_key_balloon` in Pkcs5.c + `Pkcs5Balloon`, dk-expansion
-vectors chained to the [16] anchor).
+vectors chained to the [16] anchor); MR at production params over full Ed25519 `ab8b717f…` [39]
+(`verification/netshare_ed25519_poc.c`, from-scratch group vs RFC 8032 §7.1 KAT + Python).
 `verification/build_and_verify.sh` runs all.
 
 ## Conventions

@@ -961,3 +961,45 @@ if "$BF_CC" -O2 $BF_WNO $BF_GC -DARGON2_NO_THREADS $BF_INC -c "$BF_ARG/argon2.c"
 else
 	echo "    SKIP: no compiler accepted the stock Pkcs5/Argon2 sources (see /tmp/bf_log)"
 fi
+
+echo "[39] Network share at PRODUCTION parameters: McCallum-Relyea over full Ed25519 vs independent python"
+# docs/NETWORK-SHARE-SPEC.md "Shipping parameters": the spec mandates a FULL-GROUP curve (P-256 or
+# Ed25519) because MR needs point ADDITION X = C + e*G, not an x-only ladder. This replaces step
+# [10]'s 61-bit toy field with the real Ed25519 group, implemented from scratch (extended
+# coordinates, single final inversion) on the proven 256-bit bignum core. Proven two ways: (1) an
+# OFFICIAL KAT -- the three RFC 8032 section 7.1 Ed25519 public keys anchor the group to the
+# standard; (2) the MR values + share diffed byte-for-byte vs netshare_ed25519_reference.py.
+# Links the REAL in-tree Sha2.c (SHA-512 clamp + SHA-256 share). Transport + CLI stay real-build.
+NE_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then NE_CC="$c"; break; fi; done
+NE_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+NE_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+NE_GC="-ffunction-sections -fdata-sections"
+NE_INC="$INC -I$SRCROOT/Crypto"
+if "$NE_CC" -O2 $NE_WNO $NE_NOASM $NE_GC $NE_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/ne_sha2.o 2>/tmp/ne_cc.log \
+   && "$NE_CC" -O2 $NE_WNO $NE_NOASM $NE_INC "$HERE/netshare_ed25519_poc.c" /tmp/ne_sha2.o -Wl,--gc-sections -o /tmp/netshare_ed25519_poc 2>>/tmp/ne_cc.log; then
+	/tmp/netshare_ed25519_poc > /tmp/ne_c.txt || { echo "    NETSHARE ED25519 POC FAILED"; cat /tmp/ne_c.txt; exit 1; }
+	grep -vE '^REF (rfc8032|mr Kprov)' /tmp/ne_c.txt
+	python3 "$HERE/netshare_ed25519_reference.py" > /tmp/ne_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+	grep '^REF' /tmp/ne_c.txt > /tmp/ne_c_ref.txt; grep '^REF' /tmp/ne_py.txt > /tmp/ne_py_ref.txt
+	if diff -q /tmp/ne_c_ref.txt /tmp/ne_py_ref.txt >/dev/null; then
+		echo "    MATCH: MR over Ed25519 (real Sha2 + from-scratch group) == independent python over $(wc -l < /tmp/ne_c_ref.txt) REF lines"
+	else
+		echo "    MISMATCH"; diff /tmp/ne_c_ref.txt /tmp/ne_py_ref.txt | head -6; exit 1
+	fi
+	# the first three REF lines must equal the official RFC 8032 section 7.1 public keys
+	RFC1=d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
+	RFC2=3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c
+	RFC3=fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025
+	if [ "$(grep 'rfc8032 pub' /tmp/ne_c.txt | sed -n 1p | sed 's/.*= //')" = "$RFC1" ] \
+	   && [ "$(grep 'rfc8032 pub' /tmp/ne_c.txt | sed -n 2p | sed 's/.*= //')" = "$RFC2" ] \
+	   && [ "$(grep 'rfc8032 pub' /tmp/ne_c.txt | sed -n 3p | sed 's/.*= //')" = "$RFC3" ]; then
+		echo "    KAT: Ed25519 group reproduces the official RFC 8032 7.1 public keys"
+	else
+		echo "    RFC 8032 KAT MISMATCH"; exit 1
+	fi
+	if grep -Eq '= NO$' /tmp/ne_c.txt; then echo "    MR PROPERTY FAILED"; exit 1; fi
+	rm -rf "$HERE/__pycache__"
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/ne_cc.log)"
+fi

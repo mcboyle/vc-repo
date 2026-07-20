@@ -125,15 +125,19 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
   **Remaining (real-build):** the C++ stream adapters for the mount path, mount-time slot search +
   duress-slot hook, the enroll/rotate/revoke CLI, backup-header-group mirroring of the slot table,
   and deniable-backend validation on real media (`docs/KEYSLOTS-SPEC.md §9`). `docs/KEYSLOTS-SPEC.md`.
-- **Network-bound share source** (Tang/Clevis-style, McCallum–Relyea) — **exchange proven; network
-  client + real curve/wire format remain.** A split-key share whose recovery needs a network server's
-  participation, where the **server never sees the key** and a stolen off-network machine stays locked;
-  composes as a Shamir share (no new derivation seam). The **MR exchange is proven** two ways
-  (provision `K=S^c`; blinded recover `X=C·g^e`, `Y=X^s`, `K=Y·(S^e)⁻¹`): recovered `K` == provisioned
-  `K`, the server sees only the blinded `X` (a different ephemeral recovers the same `K`), and a wrong
-  server key fails — real `Sha2.c` share vs. independent Python bigint, anchor `cc288fab…`,
-  `verification/netshare_poc.c` step `[10]`. Remaining (real-build): EC/bignum at production
-  parameters, the client transport, and the enroll/unlock CLI. `docs/NETWORK-SHARE-SPEC.md`.
+- **Network-bound share source** (Tang/Clevis-style, McCallum–Relyea) — **exchange proven, AND now
+  proven at production parameters (full Ed25519); network client + wire format remain.** A split-key
+  share whose recovery needs a network server's participation, where the **server never sees the key**
+  and a stolen off-network machine stays locked; composes as a Shamir share (no new derivation seam).
+  The **MR exchange is proven** two ways in the toy field (provision `K=S^c`; blinded recover
+  `X=C·g^e`, `Y=X^s`, `K=Y·(S^e)⁻¹`; anchor `cc288fab…`, step `[10]`), and the **production-parameter
+  group is now proven** on the **full Ed25519 curve** (step `[39]`, `verification/netshare_ed25519_poc.c`):
+  a from-scratch extended-coordinate group on the proven 256-bit bignum core, validated against the
+  **official RFC 8032 §7.1 public-key KAT** AND diffed byte-for-byte vs independent Python for the
+  whole MR flow (share anchor `ab8b717f…`; recover==provision, wrong-server-differs,
+  server-sees-only-blinded-X). Remaining (real-build): the client transport, the `C`-blob wire
+  format, the enroll/unlock CLI, and a constant-time group for shipping (the validation group is not
+  side-channel-hardened). `docs/NETWORK-SHARE-SPEC.md`.
 - **Write-only ORAM access-pattern hiding** *(the real mitigation for the multi-snapshot attack — the
   #1 documented limitation).* Every logical write touches K PRNG-chosen physical blocks with fresh
   ciphertext, independent of the logical target, so repeat-imaging cannot detect hidden-volume activity.
