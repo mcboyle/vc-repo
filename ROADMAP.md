@@ -224,9 +224,12 @@ brief:
   ristretto255 (RFC 9496 encode + Elligator2) + `expand_message_xmd(SHA-512)` on the step-`[39]` field,
   validated against the **official RFC 9496 §A.1 basepoint-multiples KAT** AND diffed byte-for-byte vs
   independent Python for `Blind`/`Evaluate`/`Finalize` (identity, blind-independence,
-  wrong-key-differs). Remaining (real-build): a constant-time group (the validation group is not
-  side-channel-hardened), the rate-limited server + transport, RFC 9497 e2e vectors, and the
-  **threshold OPRF/PPSS** split of `k` (composes with the Shamir factor). `docs/OPRF-SPEC.md`.
+  wrong-key-differs). The **threshold OPRF/PPSS split is now also proven over ristretto255** (step
+  `[44]`, `verification/toprf_ristretto_poc.c`): the server key Shamir-split over the scalar field
+  `Z_L`, `t` partial evaluations combined by Lagrange-in-the-exponent to the byte-identical single-key
+  output, `t-1` differ, servers oblivious; diffed byte-for-byte vs Python (3-of-5). Remaining
+  (real-build): a constant-time group (the validation group is not side-channel-hardened), the
+  rate-limited servers + transport, and RFC 9497 e2e vectors. `docs/OPRF-SPEC.md`.
 
 ---
 

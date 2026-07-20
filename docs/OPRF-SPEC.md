@@ -1,9 +1,10 @@
 # OPRF password hardening — design & status
 
-**Status: protocol proven (toy field `[17]`) AND at production parameters over the full ristretto255
-group (`[43]`); server + integration are real-build.** An Oblivious PRF (2HashDH / CFRG DH-OPRF)
-makes the derived key depend on both the **password** and a **secret held by a rate-limited server**,
-while the server learns neither the password nor the output. Consequence: a **stolen disk
+**Status: protocol proven (toy field `[17]`), at production parameters over the full ristretto255
+group (`[43]`), AND the threshold OPRF/PPSS split proven over that group (`[44]`); the rate-limited
+servers + transport are real-build.** An Oblivious PRF (2HashDH / CFRG DH-OPRF) makes the derived key
+depend on both the **password** and a **secret held by a rate-limited server**, while the server
+learns neither the password nor the output. Consequence: a **stolen disk
 cannot be brute-forced offline** — every password guess needs one online query the server can
 rate-limit or lock out. `IDEAS-BACKLOG.md` §C calls this "the most powerful realistic anti-brute-force
 primitive available"; it composes with the Shamir factor as a **threshold OPRF / PPSS** (split the
@@ -75,9 +76,16 @@ end-to-end test vectors, and the threshold split below.
 - **Real group.** Use a CFRG prime-order group — **ristretto255** (proven at step `[43]`) or NIST
   P-256 — via a side-channel-hardened implementation, never the PoC field. The construction is exactly
   the CFRG OPRF (RFC 9497).
-- **Threshold OPRF / PPSS.** Split `k` across `n` servers (each holds a share `k_i`); the client
-  combines partial evaluations so no single server can compute or crack. This is the natural fit with
-  the Shamir factor already built.
+- **Threshold OPRF / PPSS — proven at production parameters (step `[44]`).** Split `k` across `n`
+  servers (each holds a share `k_i`); the client combines partial evaluations so no single server can
+  compute or crack. Step `[44]` (`verification/toprf_ristretto_poc.c`) proves this **over the full
+  ristretto255 group** (composing step `[43]`): the server key is Shamir-split over the scalar field
+  `Z_L` (degree `t-1`), each server returns a partial `k_i·BE`, and any `t` combine by
+  Lagrange-in-the-exponent to `k·BE` — reconstructing **exactly the single-key OPRF output**
+  (byte-identical), while `t-1` partials give a different value and no server sees the password or the
+  unblinded element. Diffed byte-for-byte vs an independent Python (3-of-5), group anchored to the RFC
+  9496 KAT. The rate-limited servers + transport remain real-build. This is the natural fit with the
+  Shamir factor already built.
 - **KDF seam.** `F` becomes a `RAW_SECRET`-style factor (mixed into the password before PBKDF2/Argon2),
   or a keyslot passphrase — no new derivation seam.
 

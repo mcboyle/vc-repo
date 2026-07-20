@@ -1111,3 +1111,31 @@ if "$OR_CC" -O2 $OR_WNO $OR_NOASM $OR_GC $OR_INC -c "$SRCROOT/Crypto/Sha2.c" -o 
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/or_cc.log)"
 fi
+
+echo "[44] Threshold OPRF over ristretto255 (PPSS): real Sha2 + from-scratch group vs independent python"
+# docs/OPRF-SPEC.md "Threshold OPRF / PPSS": step [43]'s ristretto255 OPRF composed with a Shamir split
+# of the server key over the scalar field Z_L, so no single server holds k. Each server returns a
+# partial k_i*BE; any t combine by Lagrange-in-the-exponent to k*BE (the single-key output), t-1 learn
+# nothing. Anchors the group to the RFC 9496 KAT; threshold output diffed byte-for-byte vs python.
+TR_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then TR_CC="$c"; break; fi; done
+TR_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+TR_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+TR_INC="$INC -I$SRCROOT/Crypto"
+if "$TR_CC" -O2 $TR_WNO $TR_NOASM $TR_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/tr_sha2.o 2>/tmp/tr_cc.log \
+   && "$TR_CC" -O2 $TR_WNO $TR_NOASM $TR_INC "$HERE/toprf_ristretto_poc.c" /tmp/tr_sha2.o -Wl,--gc-sections -o /tmp/toprf_ristretto_poc 2>>/tmp/tr_cc.log; then
+	/tmp/toprf_ristretto_poc > /tmp/tr_c.txt || { echo "    TOPRF RISTRETTO POC FAILED (basepoint KAT)"; cat /tmp/tr_c.txt; exit 1; }
+	grep -v '^REF' /tmp/tr_c.txt
+	python3 "$HERE/toprf_ristretto_reference.py" > /tmp/tr_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+	grep '^REF' /tmp/tr_c.txt > /tmp/tr_c_ref.txt; grep '^REF' /tmp/tr_py.txt > /tmp/tr_py_ref.txt
+	if diff -q /tmp/tr_c_ref.txt /tmp/tr_py_ref.txt >/dev/null; then
+		echo "    MATCH: threshold OPRF over ristretto255 == independent python over $(wc -l < /tmp/tr_c_ref.txt) REF lines"
+	else
+		echo "    MISMATCH"; diff /tmp/tr_c_ref.txt /tmp/tr_py_ref.txt | head -4; exit 1
+	fi
+	grep -q '^ristretto255 basepoint KAT (RFC 9496) = YES$' /tmp/tr_c.txt || { echo "    RFC 9496 KAT FAILED"; exit 1; }
+	if grep -Eq '= NO$' /tmp/tr_c.txt; then echo "    TOPRF PROPERTY FAILED"; exit 1; fi
+	rm -rf "$HERE/__pycache__"
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/tr_cc.log)"
+fi

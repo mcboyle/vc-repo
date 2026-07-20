@@ -126,7 +126,9 @@ vectors chained to the [16] anchor); MR at production params over full Ed25519 `
 (`verification/netshare_ed25519_poc.c`, from-scratch group vs RFC 8032 §7.1 KAT + Python); Shamir
 GF(2^8) dudect timing screen [41] (self-validating: flags a leaky ref, clears real gf_mul/gf_inv);
 transcribable share code bech32/BIP-173 [42] (`Common/ShareCode.{c,h}`); OPRF at production params
-over full ristretto255 [43] (`verification/oprf_ristretto_poc.c`, RFC 9496 A.1 KAT + Python).
+over full ristretto255 [43] (`verification/oprf_ristretto_poc.c`, RFC 9496 A.1 KAT + Python);
+threshold OPRF/PPSS over ristretto255 [44] (`verification/toprf_ristretto_poc.c`, Shamir over Z_L +
+Lagrange-in-the-exponent reconstructs the single-key output).
 `verification/build_and_verify.sh` runs all.
 
 ## Conventions
