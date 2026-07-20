@@ -333,8 +333,15 @@ real-world protection than another primitive.
   (step `[41]`) and the keyslot `KeyslotConstTimeEqual` compare (step `[46]`) each screened by a
   self-validating Welch t-test that flags a known-leaky reference (|t| ≈ 700–850) while clearing the
   real constant-time code (|t| < 2).
-- **Formal methods** `[L] [RESEARCH]` — symbolic analysis (Tamarin/ProVerif) for the network-share and
-  OPRF protocols; verified primitives (HACL*/Fiat-Crypto) for new algorithms.
+- **Formal methods** `[L] [RESEARCH]` — **written analysis + mechanization plan DONE**
+  (`docs/FORMAL-ANALYSIS.md`): assumptions (DDH / one-more-gap-DH / ROM), reduction-style security
+  arguments for MR, OPRF, threshold-OPRF/PPSS, and the VOPRF/DLEQ (special-soundness + HVZK), plus a
+  turnkey mechanization plan. **A mechanized proof is not done and is pending a suitable tool +
+  environment** — flagged honestly for two reasons: no prover is installable here, and the standard
+  *symbolic* tools (Tamarin/ProVerif) are a poor fit for MR/OPRF's group-composition blinding, so the
+  right tool is a *computational* one (CryptoVerif/EasyCrypt). Remaining: symbolic analysis
+  (Tamarin/ProVerif) for the transport/authentication properties; verified primitives
+  (HACL*/Fiat-Crypto) for new algorithms.
 - **Audit preparation** `[M]` — **DONE** (`docs/THREAT-CONTROL-MAP.md`): a threat → control →
   verification-step → residual-limit map (both the threats addressed and those explicitly not), the
   stable gated public-API surface per module, and a how-to-reproduce-every-claim pointer — so an
