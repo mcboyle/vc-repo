@@ -1190,3 +1190,32 @@ if "$KE_CC" -O2 $KE_WNO $KE_NOASM $KE_GC -DVC_ENABLE_KEYSLOTS $KE_INC -c "$SRCRO
 else
 	echo "    SKIP: no compiler built the keyslot dudect harness (see /tmp/ke_log)"
 fi
+
+echo "[47] Verifiable OPRF (DLEQ proof) over ristretto255: real Sha2 + from-scratch group vs independent python"
+# docs/OPRF-SPEC.md verifiable mode: the server commits pk=k*G and proves in zero knowledge (Chaum-
+# Pedersen / DLEQ) that the SAME k gave EE=k*BE, so a swapped key or a tampered EE is caught. Reuses
+# the step-[43] ristretto255 group over the REAL Sha2.c. Anchors the group to the RFC 9496 KAT;
+# the proof (c,s)+pk (fixed nonce, deterministic) diffed byte-for-byte vs python; valid verifies,
+# tampered EE and wrong committed key rejected.
+VO_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then VO_CC="$c"; break; fi; done
+VO_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+VO_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+VO_INC="$INC -I$SRCROOT/Crypto"
+if "$VO_CC" -O2 $VO_WNO $VO_NOASM $VO_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/vo_sha2.o 2>/tmp/vo_cc.log \
+   && "$VO_CC" -O2 $VO_WNO $VO_NOASM $VO_INC "$HERE/voprf_ristretto_poc.c" /tmp/vo_sha2.o -Wl,--gc-sections -o /tmp/voprf_ristretto_poc 2>>/tmp/vo_cc.log; then
+	/tmp/voprf_ristretto_poc > /tmp/vo_c.txt || { echo "    VOPRF POC FAILED (basepoint KAT)"; cat /tmp/vo_c.txt; exit 1; }
+	grep -v '^REF' /tmp/vo_c.txt
+	python3 "$HERE/voprf_ristretto_reference.py" > /tmp/vo_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+	grep '^REF' /tmp/vo_c.txt > /tmp/vo_c_ref.txt; grep '^REF' /tmp/vo_py.txt > /tmp/vo_py_ref.txt
+	if diff -q /tmp/vo_c_ref.txt /tmp/vo_py_ref.txt >/dev/null; then
+		echo "    MATCH: VOPRF DLEQ over ristretto255 == independent python over $(wc -l < /tmp/vo_c_ref.txt) REF lines"
+	else
+		echo "    MISMATCH"; diff /tmp/vo_c_ref.txt /tmp/vo_py_ref.txt | head -4; exit 1
+	fi
+	grep -q '^ristretto255 basepoint KAT (RFC 9496) = YES$' /tmp/vo_c.txt || { echo "    RFC 9496 KAT FAILED"; exit 1; }
+	if grep -Eq '= NO$' /tmp/vo_c.txt; then echo "    VOPRF PROPERTY FAILED"; exit 1; fi
+	rm -rf "$HERE/__pycache__"
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/vo_cc.log)"
+fi

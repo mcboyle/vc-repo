@@ -66,6 +66,16 @@ the real in-tree `Sha2.c`. Validated three ways:
 3. **Properties** — the OPRF identity (`r⁻¹·(k·(r·P)) == k·HashToGroup(input)`), blind-independence
    (a fresh blind gives the same output), wrong-server-key-differs, and server-sees-only-blinded-element.
 
+**Verifiable mode (VOPRF) — proven (step `[47]`).** In verifiable mode the server commits a public
+key `pk = k·G` and, with each `EE = k·BE`, proves in zero knowledge (Chaum–Pedersen / **DLEQ**) that
+the *same* `k` relates `(G, pk)` and `(BE, EE)`. The client verifies before finalizing, so a server
+that swaps in a different key — or a MITM that tampers with `EE` — is **caught, not silently trusted**.
+`verification/voprf_ristretto_poc.c` implements GenerateProof (`a1=rr·G`, `a2=rr·BE`, `c=challenge`,
+`s=rr−c·k`) / VerifyProof over the step-`[43]` group: the proof `(c,s)` + `pk` diff byte-for-byte vs
+Python (fixed nonce), a valid proof verifies, and both a tampered `EE` and a wrong committed key are
+rejected. (The exact RFC 9497 verifiable-mode transcript with batched composites stays real-build;
+this is a faithful single-element DLEQ.)
+
 **Still real-build / not shipping:** the from-scratch group is correct-against-RFC but **not
 constant-time** (validation, not deployment); a shipping build uses a side-channel-hardened
 ristretto255/P-256 (or delegates), plus the rate-limited server, the transport, full RFC 9497

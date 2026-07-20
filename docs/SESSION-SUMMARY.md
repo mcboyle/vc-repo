@@ -44,6 +44,7 @@ byte-for-byte stock; not-sandbox-testable integration is scoped in docs, not wri
 | Threshold OPRF / PPSS over ristretto255 (3-of-5) | reconstructs single-key output [44] | `docs/OPRF-SPEC.md` |
 | Randomized/differential robustness (split-key core) | 44.8k seeded invariant checks [45] | IDEAS-BACKLOG |
 | Keyslot constant-time compare timing screen (dudect) | self-validating [46] | IDEAS-BACKLOG |
+| Verifiable OPRF (DLEQ proof) over ristretto255 | RFC 9496 KAT + Python [47] | `docs/OPRF-SPEC.md` |
 | Balloon memory-hard KDF | `635ebeac…` [16] | `docs/BALLOON-SPEC.md` |
 | OPRF password hardening (offline-guess resistance) | `ca5691bd…` [17] | `docs/OPRF-SPEC.md` |
 | Poly1305 one-time authenticator (integrity-tier primitive) | RFC 8439 `a8061dc1…` [18] | `docs/POLY1305-SPEC.md` |
