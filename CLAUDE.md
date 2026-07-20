@@ -48,6 +48,8 @@ src/Common/Shamir.{c,h}              Shamir M-of-N over GF(2^8); shamir_split/sh
 src/Common/ShamirMac.{c,h}           keyed per-share MAC (gated -DVC_ENABLE_SHAMIR_MAC): adversarial
    share tamper/fabrication detection = HMAC-SHA256(macKey,"VCSMshare1"||x||len||y) over Sha2.c [40]
    (dealer-consistency VSS stays the prime-field Feldman/Pedersen scheme [31]/[32]; no GF(2^8) analogue)
+src/Common/ShareCode.{c,h}           transcribable recovery encoding (gated -DVC_ENABLE_SHARECODE):
+   bech32/BIP-173 checksummed "vcs1..." string for a share (+optional MAC), typo-detecting [42]
 src/Volume/HardwareKeyFactorMix.h    C++ glue: HKFMixPassword(VolumePassword, salt) for Volume/Core
 src/Main/HardwareKeyFactorCli.h      wx-free option-string -> HKFConfig parser (BuildHKFConfig)
 src/Crypto/Sha3.{c,h}                from-scratch FIPS-202 (for the SHA3-512 PRF)

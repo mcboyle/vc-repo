@@ -1,10 +1,12 @@
 # Verifiable secret sharing — authenticated shares + catch a cheating dealer
 
-**Status: keyed per-share MAC built & proven (`[40]`); Feldman/Pedersen dealer-consistency proven
-two ways (`[31]`/`[32]`); enrollment/CLI wiring is real-build.** Addresses `IDEAS-BACKLOG.md`
-"Sharing" row (keyed per-share MAC, Feldman/Pedersen VSS, SLIP-39), extending the plain Shamir split
-proven at step `[5]` and its CRC-32 checksum. See "Two complementary guarantees" below for why the
-share-MAC lives in GF(2⁸) with the shipping shares while dealer-consistency VSS is a prime-field scheme.
+**Status: keyed per-share MAC built & proven (`[40]`); transcribable checksummed encoding built &
+proven (`[42]`); Feldman/Pedersen dealer-consistency proven two ways (`[31]`/`[32]`); enrollment/CLI
+wiring is real-build.** Addresses `IDEAS-BACKLOG.md` "Sharing" row (keyed per-share MAC,
+Feldman/Pedersen VSS, SLIP-39 encoding), extending the plain Shamir split proven at step `[5]` and its
+CRC-32 checksum. See "Two complementary guarantees" below for why the share-MAC lives in GF(2⁸) with
+the shipping shares while dealer-consistency VSS is a prime-field scheme; the transcribable encoding
+(§3) is the SLIP-39-style usability piece.
 
 ## The gap it closes
 
@@ -73,12 +75,28 @@ the threshold (a below-threshold set of MAC-valid shares still reconstructs the 
   blinding term for information-theoretic hiding of the secret. Feldman is the simpler, most common
   choice; Pedersen is the drop-in extension if the stronger hiding is wanted.
 
+### 3. Transcribable share encoding — built & proven (step `[42]`)
+
+The other half of the "SLIP-39-style" item is **usability**: a hand-copied recovery share should catch
+transcription errors, not silently reconstruct garbage. `src/Common/ShareCode.{c,h}` (gated
+`-DVC_ENABLE_SHARECODE`) encodes a share as `"vcs1" ‖ base32(ver‖x‖len‖y[‖mac]) ‖ 6-char bech32
+checksum` — a **bech32 (BIP-173) BCH checksum**, chosen over the full SLIP-39 standard because SLIP-39
+is a *separate* sharing scheme with its own 1024-word list that would duplicate this project's GF(2⁸)
+Shamir; the bech32 checksum gives the same guarantee (any ≤ 4 substitution errors detected while the
+string stays ≤ 90 chars) with a self-contained, standard-anchored construction. Proven in step `[42]`:
+the real `ShareCode.c + Shamir.c` vs an independent Python bech32, encodings diffed byte-for-byte;
+plus an **official BIP-173 anchor** (`bech32("a", empty) == "a12uel5l"`), `encode→decode` round-trips
+(with and without the per-share MAC), and **every single-character substitution** in a sample (1922
+mutations) rejected by the checksum. A 256-bit-secret share encodes to ~65 chars, inside the 90-char
+guarantee window; larger shares still detect the overwhelming majority of errors but drop the formal
+bound (segment SLIP-39-style to restore it — documented in `ShareCode.h`).
+
 ### Integration (real-build)
 
 - The per-share MAC composes with the split-key factor now: MAC the shares at enrollment, ship the
   `macKey` in the recovery kit (or derive it from an enrollment passphrase), verify before
-  `shamir_combine`. Publishing the tags (recovery kit / sidecar) and the enroll/verify CLI are the
-  remaining real-build wiring.
+  `shamir_combine`; the ShareCode string is the transcribable carrier (it can embed the tag). Publishing
+  the tags/codes (recovery kit / sidecar) and the enroll/verify CLI are the remaining real-build wiring.
 - For dealer-consistency, the Shamir factor gains a commitment vector at enrollment and a share-check
   at reconstruction using the prime-field VSS; publishing the commitments and its CLI are real-build.
 - **Undersized PoC prime.** 256-bit safe prime is a PoC parameter; production uses ≥3072-bit (or an

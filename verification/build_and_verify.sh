@@ -1052,3 +1052,31 @@ if "$DU_CC" -O2 -I"$SRCROOT" -I"$SRCROOT/Common" "$HERE/shamir_dudect_test.c" -l
 else
 	echo "    SKIP: no compiler built the dudect harness (see /tmp/du_log)"
 fi
+
+echo "[42] Transcribable share encoding (bech32/BIP-173): real ShareCode.c + Shamir.c vs independent python"
+# docs/VSS-SPEC.md / IDEAS-BACKLOG D "SLIP-39-style encoding": a typo-detecting text form for a
+# recovery share. Uses a bech32 (BIP-173) BCH checksum (<=4 substitution errors detected while the
+# string is <=90 chars) over ver||x||len||y[||mac]. Links the REAL ShareCode.c + Shamir.c;
+# sharecode_reference.py is independent (spec bech32 + reimplemented GF(2^8) split). Anchored to the
+# official BIP-173 vector (bech32("a",empty)==a12uel5l); every single-char typo in a sample rejected.
+SR_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then SR_CC="$c"; break; fi; done
+SR_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+SR_INC="$INC -I$SRCROOT/Crypto"
+if "$SR_CC" -O2 $SR_WNO -DVC_ENABLE_SHARECODE $SR_INC -c "$SRCROOT/Common/ShareCode.c" -o /tmp/sr_sharecode.o 2>/tmp/sr_log \
+   && "$SR_CC" -O2 $SR_WNO $SR_INC -c "$SRCROOT/Common/Shamir.c" -o /tmp/sr_shamir.o 2>>/tmp/sr_log \
+   && "$SR_CC" -O2 $SR_WNO -DVC_ENABLE_SHARECODE $SR_INC "$HERE/sharecode_test.c" /tmp/sr_sharecode.o /tmp/sr_shamir.o -o /tmp/sharecode_test 2>>/tmp/sr_log; then
+	if /tmp/sharecode_test > /tmp/sr_c.txt; then cat /tmp/sr_c.txt
+	else cat /tmp/sr_c.txt; echo "    SHARECODE TEST FAILED"; exit 1; fi
+	( cd "$HERE" && python3 sharecode_reference.py ) > /tmp/sr_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+	grep '^REF' /tmp/sr_c.txt > /tmp/sr_c_ref.txt
+	if diff -q /tmp/sr_c_ref.txt /tmp/sr_py.txt >/dev/null; then
+		echo "    MATCH: bech32 share codes (real ShareCode/Shamir objects) == independent python over $(wc -l < /tmp/sr_c_ref.txt) REF lines"
+	else
+		echo "    MISMATCH"; diff /tmp/sr_c_ref.txt /tmp/sr_py.txt | head -4; exit 1
+	fi
+	if grep -Eq 'FAIL$' /tmp/sr_c.txt; then echo "    SHARECODE PROPERTY FAILED"; exit 1; fi
+	rm -rf "$HERE/__pycache__"
+else
+	echo "    SKIP: no compiler accepted the stock sources (see /tmp/sr_log)"
+fi
