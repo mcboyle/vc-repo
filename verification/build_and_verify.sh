@@ -1036,3 +1036,19 @@ if "$SM_CC" -O2 $SM_WNO $SM_NOASM $SM_GC -DVC_ENABLE_SHAMIR_MAC $SM_INC -c "$SRC
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/sm_cc.log)"
 fi
+
+echo "[41] Shamir GF(2^8) timing-leakage screen (dudect): real gf_mul/gf_inv are constant-time"
+# ROADMAP item 15 follow-up (lines ~89-90): Shamir.c's gf_mul/gf_inv were rewritten branchless +
+# table-free to remove a cache/branch side channel; this MEASURES that with a dudect-style
+# (Reparaz-Balasch-Yarom) Welch t-test. Statistical, not a byte KAT, so it is SELF-VALIDATING: the
+# same screen runs on the real branchless gf_mul/gf_inv AND a deliberately variable-time leaky mul,
+# and must FLAG the leaky one while CLEARING the real ones -- that contrast is stable across machines.
+DU_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then DU_CC="$c"; break; fi; done
+if "$DU_CC" -O2 -I"$SRCROOT" -I"$SRCROOT/Common" "$HERE/shamir_dudect_test.c" -lm -o /tmp/shamir_dudect 2>/tmp/du_log; then
+	if /tmp/shamir_dudect > /tmp/du_out.txt; then cat /tmp/du_out.txt
+	else cat /tmp/du_out.txt; echo "    SHAMIR DUDECT SCREEN FAILED"; exit 1; fi
+	grep -q '^gf_mul vs leaky table agree on all 65536 products = YES$' /tmp/du_out.txt || { echo "    LEAKY REF COMPUTES WRONG PRODUCT"; exit 1; }
+else
+	echo "    SKIP: no compiler built the dudect harness (see /tmp/du_log)"
+fi

@@ -86,8 +86,13 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
    a branchless Russian-peasant multiply (fixed 8 iterations, reduction 0x1b) and `a^254` via a
    fixed-exponent square-multiply — no tables, no secret-dependent control flow. Proven byte-identical
    to the table version over **all 65536 inputs** and `a·inv(a)=1` for every `a≠0`; all existing Shamir
-   KATs/threshold checks unchanged (`verification/shamir_test.c`, step `[5]`). A `dudect`/`ctgrind`
-   timing-leakage test in CI is the recommended follow-up. `patches/shamir-constant-time.patch`.
+   KATs/threshold checks unchanged (`verification/shamir_test.c`, step `[5]`). **The recommended
+   `dudect` timing-leakage screen is now built** (`verification/shamir_dudect_test.c`, step `[41]`): a
+   Welch t-test over two input classes on the real `gf_mul`/`gf_inv`, made robust by being
+   **self-validating** — the same screen runs on a deliberately variable-time leaky multiply and must
+   flag it (|t| ≈ 700) while clearing the real branchless primitives (|t| < 2), so the pass/fail is a
+   machine-independent *contrast*, not an absolute cycle count. (A screen is evidence, not a proof of
+   constant-timeness.) `patches/shamir-constant-time.patch`.
 15. **Verifiable Shamir reconstruction** (`Common/Shamir.c`) — `shamir_secret_checksum` (CRC-32) so a
    reconstruction is *verified*: a mistyped share or a below-threshold combine is detected instead of
    silently returning garbage (the header's own "wrong shares yield an incorrect secret" caveat). Matches
