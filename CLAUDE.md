@@ -45,6 +45,9 @@ src/Common/HardwareKeyFactor.{c,h}   the factor module: backends + mixing + gati
    rawSecretBindSalt (gated -DVC_ENABLE_HKF_SALT_BIND) -> RAW_SECRET returns HMAC-SHA256(secret,salt);
      CLI --hkf-bind-salt; binds a reconstructed/threshold secret to the volume (docs/SALT-BINDING-SPEC.md)
 src/Common/Shamir.{c,h}              Shamir M-of-N over GF(2^8); shamir_split/shamir_combine
+src/Common/ShamirMac.{c,h}           keyed per-share MAC (gated -DVC_ENABLE_SHAMIR_MAC): adversarial
+   share tamper/fabrication detection = HMAC-SHA256(macKey,"VCSMshare1"||x||len||y) over Sha2.c [40]
+   (dealer-consistency VSS stays the prime-field Feldman/Pedersen scheme [31]/[32]; no GF(2^8) analogue)
 src/Volume/HardwareKeyFactorMix.h    C++ glue: HKFMixPassword(VolumePassword, salt) for Volume/Core
 src/Main/HardwareKeyFactorCli.h      wx-free option-string -> HKFConfig parser (BuildHKFConfig)
 src/Crypto/Sha3.{c,h}                from-scratch FIPS-202 (for the SHA3-512 PRF)

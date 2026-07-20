@@ -1003,3 +1003,36 @@ if "$NE_CC" -O2 $NE_WNO $NE_NOASM $NE_GC $NE_INC -c "$SRCROOT/Crypto/Sha2.c" -o 
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/ne_cc.log)"
 fi
+
+echo "[40] Keyed per-share MAC: real Common/Shamir.c + ShamirMac.c vs independent python"
+# docs/VSS-SPEC.md / IDEAS-BACKLOG D: plain Shamir + the CRC-32 checksum catch ACCIDENTAL corruption;
+# a keyed MAC is what catches an ADVERSARIAL one. Each GF(2^8) share is tagged
+# HMAC-SHA256(macKey, "VCSMshare1" || x || len || y[]) so a flipped/truncated/relabelled/fabricated
+# share is rejected before shamir_combine. Links the REAL Shamir.c + ShamirMac.c + Sha2.c;
+# shamir_mac_reference.py is independent (stdlib hmac + reimplemented GF(2^8) split). NOTE: this is
+# the adversarial-SHARE half; dealer-consistency VSS stays the prime-field scheme (steps [31]/[32]).
+SM_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then SM_CC="$c"; break; fi; done
+SM_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+SM_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+SM_GC="-ffunction-sections -fdata-sections"
+SM_INC="$INC -I$SRCROOT/Crypto"
+if "$SM_CC" -O2 $SM_WNO $SM_NOASM $SM_GC -DVC_ENABLE_SHAMIR_MAC $SM_INC -c "$SRCROOT/Common/Shamir.c"    -o /tmp/sm_shamir.o 2>/tmp/sm_cc.log \
+   && "$SM_CC" -O2 $SM_WNO $SM_NOASM $SM_GC -DVC_ENABLE_SHAMIR_MAC $SM_INC -c "$SRCROOT/Common/ShamirMac.c" -o /tmp/sm_mac.o 2>>/tmp/sm_cc.log \
+   && "$SM_CC" -O2 $SM_WNO $SM_NOASM $SM_GC $SM_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/sm_sha2.o 2>>/tmp/sm_cc.log \
+   && "$SM_CC" -O2 $SM_WNO $SM_NOASM -DVC_ENABLE_SHAMIR_MAC $SM_INC "$HERE/shamir_mac_test.c" \
+        /tmp/sm_shamir.o /tmp/sm_mac.o /tmp/sm_sha2.o -Wl,--gc-sections -o /tmp/shamir_mac_test 2>>/tmp/sm_cc.log; then
+	if /tmp/shamir_mac_test > /tmp/sm_c.txt; then cat /tmp/sm_c.txt
+	else cat /tmp/sm_c.txt; echo "    SHAMIR MAC TEST FAILED"; exit 1; fi
+	( cd "$HERE" && python3 shamir_mac_reference.py ) > /tmp/sm_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+	grep '^REF' /tmp/sm_c.txt > /tmp/sm_c_ref.txt
+	if diff -q /tmp/sm_c_ref.txt /tmp/sm_py.txt >/dev/null; then
+		echo "    MATCH: keyed per-share MAC (real Shamir/Sha2 objects) == independent python over $(wc -l < /tmp/sm_c_ref.txt) REF lines"
+	else
+		echo "    MISMATCH"; diff /tmp/sm_c_ref.txt /tmp/sm_py.txt | head -4; exit 1
+	fi
+	if grep -Eq 'FAIL$' /tmp/sm_c.txt; then echo "    SHAMIR MAC PROPERTY FAILED"; exit 1; fi
+	rm -rf "$HERE/__pycache__"
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/sm_cc.log)"
+fi

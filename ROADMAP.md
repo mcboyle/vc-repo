@@ -92,8 +92,15 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
    reconstruction is *verified*: a mistyped share or a below-threshold combine is detected instead of
    silently returning garbage (the header's own "wrong shares yield an incorrect secret" caveat). Matches
    Python `zlib.crc32` byte-for-byte (`3b8cfe40`); detection shown in step `[5]`. Self-contained, no new
-   dependency. A keyed per-share MAC (adversarial) and Feldman/Pedersen VSS remain
-   (`IDEAS-BACKLOG.md` §D). `patches/shamir-verifiable-shares.patch`.
+   dependency. **The keyed per-share MAC (adversarial share tamper/fabrication) is now built & proven**
+   (`Common/ShamirMac.{c,h}`, gated `-DVC_ENABLE_SHAMIR_MAC`; `HMAC-SHA256(macKey, "VCSMshare1"‖x‖len‖y)`
+   over the real Sha2.c, keeping Shamir.c dependency-free): a flipped, truncated, x-relabelled, or
+   fabricated share is rejected, and the wrong MAC key rejects — proven two ways in step `[40]` (real
+   Shamir.c + ShamirMac.c vs independent Python; tags diffed byte-for-byte). **Feldman/Pedersen
+   *dealer-consistency* VSS stays the prime-field scheme** (steps `[31]`/`[32]`): its homomorphic check
+   `g^{share}==∏C_j^{i^j}` has **no GF(2⁸) analogue**, so it is a parallel verifiable-sharing scheme,
+   not a byte-wise add-on — the MAC and VSS are complementary (share authentication vs dealer honesty),
+   documented in `docs/VSS-SPEC.md`. `IDEAS-BACKLOG.md` §D; `patches/shamir-verifiable-shares.patch`.
 14. **Memory-hygiene lockdown + zeroization tests** (`Common/KeyScrub.c`) — P0 hardening
    (`IDEAS-BACKLOG.md` §P0.4/§P0.6). `VcKeyMemoryLockdown` (called from `KeyScrubManager::Enable` before
    any secret is derived): `mlockall` (no swap), `RLIMIT_CORE=0` (no core dump), `PR_SET_DUMPABLE=0`
