@@ -328,7 +328,10 @@ real-world protection than another primitive.
   corruption/garbage — 44.8k invariant checks, reproducible (seeded). Beyond fixed KATs: zero-length
   and maximum length passwords, boundary salt sizes, degenerate thresholds (t=n, t=2), duplicate share
   x-coords.
-- **Constant-time verification in CI** `[M]` — `dudect`/`ctgrind` over the Shamir and keyslot paths.
+- **Constant-time verification in CI** `[M]` — **DONE** (`dudect`): the Shamir GF(2⁸) `gf_mul`/`gf_inv`
+  (step `[41]`) and the keyslot `KeyslotConstTimeEqual` compare (step `[46]`) each screened by a
+  self-validating Welch t-test that flags a known-leaky reference (|t| ≈ 700–850) while clearing the
+  real constant-time code (|t| < 2).
 - **Formal methods** `[L] [RESEARCH]` — symbolic analysis (Tamarin/ProVerif) for the network-share and
   OPRF protocols; verified primitives (HACL*/Fiat-Crypto) for new algorithms.
 - **Audit preparation** `[M]` — a threat-model-to-control map and a stable public API surface, so an

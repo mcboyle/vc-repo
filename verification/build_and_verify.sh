@@ -1167,3 +1167,26 @@ if [ "$DF_OK" = 1 ] && "$DF_CC" -O2 $DF_WNO $DF_NOASM $DF_DEF $DF_INC "$HERE/dif
 else
 	echo "    SKIP: no compiler accepted the stock sources (see /tmp/df_cc.log)"
 fi
+
+echo "[46] Keyslot constant-time compare timing screen (dudect): KeyslotConstTimeEqual is data-oblivious"
+# IDEAS-BACKLOG "Constant-time verification in CI -- over the Shamir AND keyslot paths": step [41]
+# screened the Shamir GF(2^8) primitives; this screens the keyslot MAC-as-slot-selector compare
+# (KeyslotConstTimeEqual). Same self-validating dudect Welch t-test: runs on the real compare AND a
+# leaky early-out memcmp, must FLAG the leaky one (class 0 differs in byte 0, class 1 in the last
+# byte) and CLEAR the constant-time one. Contrast-based => stable across machines.
+KE_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then KE_CC="$c"; break; fi; done
+KE_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+KE_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+KE_GC="-ffunction-sections -fdata-sections"
+KE_INC="$INC -I$SRCROOT/Crypto"
+if "$KE_CC" -O2 $KE_WNO $KE_NOASM $KE_GC -DVC_ENABLE_KEYSLOTS $KE_INC -c "$SRCROOT/Common/Keyslot.c" -o /tmp/ke_keyslot.o 2>/tmp/ke_log \
+   && "$KE_CC" -O2 $KE_WNO $KE_NOASM $KE_GC $KE_INC -c "$SRCROOT/Crypto/Sha2.c"     -o /tmp/ke_sha2.o   2>>/tmp/ke_log \
+   && "$KE_CC" -O2 $KE_WNO $KE_NOASM $KE_GC $KE_INC -c "$SRCROOT/Crypto/chacha256.c" -o /tmp/ke_chacha.o 2>>/tmp/ke_log \
+   && "$KE_CC" -O2 $KE_WNO $KE_NOASM -DVC_ENABLE_KEYSLOTS $KE_INC "$HERE/keyslot_dudect_test.c" /tmp/ke_keyslot.o /tmp/ke_sha2.o /tmp/ke_chacha.o -lm -Wl,--gc-sections -o /tmp/keyslot_dudect 2>>/tmp/ke_log; then
+	if /tmp/keyslot_dudect > /tmp/ke_out.txt; then cat /tmp/ke_out.txt
+	else cat /tmp/ke_out.txt; echo "    KEYSLOT DUDECT SCREEN FAILED"; exit 1; fi
+	grep -q '^const-time vs leaky compare agree on all verdicts = YES$' /tmp/ke_out.txt || { echo "    LEAKY REF WRONG VERDICT"; exit 1; }
+else
+	echo "    SKIP: no compiler built the keyslot dudect harness (see /tmp/ke_log)"
+fi
