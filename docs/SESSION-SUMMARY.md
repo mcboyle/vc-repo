@@ -34,6 +34,7 @@ byte-for-byte stock; not-sandbox-testable integration is scoped in docs, not wri
 | Decoy-fragments-by-default (SSD presence) | `47067dd6…` [14] | `docs/DECOY-FRAGMENTS-SPEC.md` |
 | Anti-forensic key splitting (SSD remnant) | `ddb23937…` [15] | `docs/AF-SPLIT-SPEC.md` |
 | AF-split keyslot records (`[FORMAT]` integration) | `76b60553…` [36] | `docs/AF-SPLIT-SPEC.md` |
+| KeyslotArea volume-I/O bindings (file-backed, 3 backends) | behavioural [37] | `docs/KEYSLOTS-SPEC.md` §9 |
 | Balloon memory-hard KDF | `635ebeac…` [16] | `docs/BALLOON-SPEC.md` |
 | OPRF password hardening (offline-guess resistance) | `ca5691bd…` [17] | `docs/OPRF-SPEC.md` |
 | Poly1305 one-time authenticator (integrity-tier primitive) | RFC 8439 `a8061dc1…` [18] | `docs/POLY1305-SPEC.md` |

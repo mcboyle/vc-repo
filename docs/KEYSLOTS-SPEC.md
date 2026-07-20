@@ -195,17 +195,33 @@ Proven:
   labeled backend, the encrypted duress flag round-tripping, and the deniable backend's
   passphrase-derived placement + non-enumerability (`verification/keyslot_store_test.c`, step `[9]`).
 
-## 9. Integration seam — the remaining (real-build) work
+## 9. Integration seam — bindings built (step `[37]`); mount/CLI glue remains (real-build)
 
-The core above is volume-I/O-agnostic; wiring it to VeraCrypt is the next step and is **not
-sandbox-testable** (it needs real volumes and the wx app), so it is scoped here rather than written
-blind:
+The volume-I/O seam is now shipping code: **`src/Common/KeyslotAreaFile.{c,h}`** (gated
+`VC_ENABLE_KEYSLOTS`) binds all three backends over portable stdio for container files and sidecars,
+with every access bounds-checked against the bound window:
 
-- **`KeyslotArea` bindings** — one adapter per backend: `KSB_HEADER` reads/writes the header's reserved
-  slack (offset `TC_VOLUME_HEADER_EFFECTIVE_SIZE`..`TC_VOLUME_HEADER_SIZE` within the primary header
-  region), `KSB_SIDECAR` a `FileStream`, `KSB_DENIABLE` the volume's free-space extent (guarding the
-  hidden-volume reserved region). Bind the store's `kdf` to `KeyslotKdfSha512` and `randBytes` to
-  `RandomNumberGenerator`.
+- `KeyslotAreaBindHeaderSlack` — the primary header's reserved slack
+  `[TC_VOLUME_HEADER_EFFECTIVE_SIZE, TC_VOLUME_HEADER_SIZE)` = `[512, 64K)` (63 slots). Proven in
+  step `[37]` on a synthetic container: the real 512-byte header, the hidden-header region and the
+  data region stay **byte-untouched**, and slots survive a close + cold reopen through real file I/O.
+- `KeyslotAreaBindSidecar` — the whole sidecar file.
+- `KeyslotAreaBindDeniable` — a caller-supplied free-space extent, **clamped below the
+  hidden-volume reserved start** so bare records can never land in hidden space. Step `[37]` also
+  proves the snapshot behaviour honestly: a before/after diff is confined to exactly one stride slot
+  inside the bound window, the rewritten slot carries no plaintext markers and passes monobit /
+  chi-square screens against the random fill — and the diff **does** reveal that a slot changed:
+  the multi-snapshot location leak is asserted in the test as the documented limitation
+  (`docs/THREAT-MODEL.md`), not hidden.
+- AF-split records (`[36]`) compose through the file bindings (tested).
+
+Remaining, real-build only (needs real volumes and the wx app):
+
+- **C++ stream adapters** — the same windows bound over the C++ `File`/`FileStream` classes for the
+  mount path, plus `kdf` → `KeyslotKdfSha512` and `randBytes` → `RandomNumberGenerator`. Note the
+  **backup-header group** at volume end mirrors the primary group; a slot table in the primary slack
+  is not mirrored automatically — restoring a backup header will not restore slots unless the
+  restore path learns to mirror the table.
 - **Mount-time search** — in the C++ mount path (`Volume/VolumeHeader.cpp` / `Core`), after the native
   header (slot 0) fails, call `KeyslotOpen` to recover the VMK from a slot; a slot whose `flags` has
   `KEYSLOT_FLAG_DURESS` invokes `UserInterface::DuressDismount()` instead of mounting.

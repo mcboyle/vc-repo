@@ -61,6 +61,10 @@ src/Common/Keyslot.{c,h}             per-slot VMK wrap/unwrap (gated -DVC_ENABLE
 src/Common/KeyslotStore.{c,h}        3 backends over a KeyslotArea (KSB_HEADER/SIDECAR labeled table,
    KSB_DENIABLE bare records at a passphrase-derived slot); KeyslotAdd/Open/Revoke/Count; lifecycle [9]
 src/Common/KeyslotKdf.c              shipping KeyslotKdfSha512 = in-tree derive_key_sha512 (PBKDF2-512)
+src/Common/AfSplit.{c,h}             LUKS/TKS1 anti-forensic split/merge (arbitrary n, partial diffuse
+   section); KeyslotStoreCfg.afStripes wires it into records (labeled v2, authenticated s) [36]
+src/Common/KeyslotAreaFile.{c,h}     file-backed KeyslotArea bindings: header-slack [512,64K),
+   sidecar whole-file, deniable free-extent clamped below hidden start; bounds-checked stdio [37]
 ```
 Keyslots model: one master key (VMK), many independent wrappings. Slot 0 = untouched native header;
 slots 1..N wrap the same VMK, so add/rotate/revoke never re-encrypts the body. Payload = flags[1]||vmk

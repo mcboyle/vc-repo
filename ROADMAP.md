@@ -116,10 +116,15 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
   in-header table, deniable bare-record placement, sidecar), `Common/KeyslotKdf.c` (in-tree
   `derive_key_sha512` binding). Verified: wrapping two ways (`verification/keyslot_poc.c`, step `[8]`,
   anchor `56434b53…`) and the full add/open/rotate/revoke + deniable + duress-flag lifecycle against
-  the real modules (`verification/keyslot_store_test.c`, step `[9]`). **Remaining (real-build):** the
-  `KeyslotArea` volume-I/O bindings, mount-time slot search + duress-slot hook, and the enroll/rotate/
-  revoke CLI (`docs/KEYSLOTS-SPEC.md §9`); the deniable backend needs multi-snapshot validation on real
-  media. `docs/KEYSLOTS-SPEC.md`.
+  the real modules (`verification/keyslot_store_test.c`, step `[9]`). The **`KeyslotArea` volume-I/O
+  bindings are now built & verified** (`Common/KeyslotAreaFile.{c,h}`, step `[37]`): header-slack
+  window `[512, 64K)` with the real header/hidden-header/data byte-untouched and cold-reopen
+  persistence, whole-file sidecar, and the deniable free-extent binding clamped below a hidden-volume
+  start — with the snapshot diff confined to one blending slot and the multi-snapshot location leak
+  asserted as the documented limitation. AF records (`[36]`) compose through the bindings.
+  **Remaining (real-build):** the C++ stream adapters for the mount path, mount-time slot search +
+  duress-slot hook, the enroll/rotate/revoke CLI, backup-header-group mirroring of the slot table,
+  and deniable-backend validation on real media (`docs/KEYSLOTS-SPEC.md §9`). `docs/KEYSLOTS-SPEC.md`.
 - **Network-bound share source** (Tang/Clevis-style, McCallum–Relyea) — **exchange proven; network
   client + real curve/wire format remain.** A split-key share whose recovery needs a network server's
   participation, where the **server never sees the key** and a stolen off-network machine stays locked;

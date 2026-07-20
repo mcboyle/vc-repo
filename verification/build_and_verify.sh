@@ -893,3 +893,30 @@ if "$KA_CC" -O2 $KA_WNO $KA_NOASM $KA_GC -DVC_ENABLE_KEYSLOTS $KA_INC -c "$SRCRO
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/ka_cc.log)"
 fi
+
+echo "[37] KeyslotArea volume-I/O bindings: real KeyslotAreaFile.c over synthetic containers (KEYSLOTS-SPEC §9)"
+# The volume-I/O seam from docs/KEYSLOTS-SPEC.md §9, file-backed: KSB_HEADER binds the primary
+# header's reserved slack [512, 64K) (real header/hidden-header/data byte-untouched, slots survive a
+# cold reopen), KSB_SIDECAR the whole file, KSB_DENIABLE a free extent clamped below a hidden-volume
+# start (snapshot diff confined to one stride slot; slot blends into random fill; the location leak
+# under multi-snapshot is asserted AS the documented limitation). Behavioural I/O test like step [9]
+# (the record crypto is proven in [8]/[36]).
+KB_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then KB_CC="$c"; break; fi; done
+KB_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+KB_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+KB_GC="-ffunction-sections -fdata-sections"
+KB_INC="$INC -I$SRCROOT/Crypto"
+if "$KB_CC" -O2 $KB_WNO $KB_NOASM $KB_GC -DVC_ENABLE_KEYSLOTS $KB_INC -c "$SRCROOT/Common/KeyslotAreaFile.c" -o /tmp/kb_areafile.o 2>/tmp/kb_cc.log \
+   && "$KB_CC" -O2 $KB_WNO $KB_NOASM $KB_GC -DVC_ENABLE_KEYSLOTS $KB_INC -c "$SRCROOT/Common/AfSplit.c"      -o /tmp/kb_afsplit.o 2>>/tmp/kb_cc.log \
+   && "$KB_CC" -O2 $KB_WNO $KB_NOASM $KB_GC -DVC_ENABLE_KEYSLOTS $KB_INC -c "$SRCROOT/Common/Keyslot.c"      -o /tmp/kb_keyslot.o 2>>/tmp/kb_cc.log \
+   && "$KB_CC" -O2 $KB_WNO $KB_NOASM $KB_GC -DVC_ENABLE_KEYSLOTS $KB_INC -c "$SRCROOT/Common/KeyslotStore.c" -o /tmp/kb_store.o 2>>/tmp/kb_cc.log \
+   && "$KB_CC" -O2 $KB_WNO $KB_NOASM $KB_GC $KB_INC -c "$SRCROOT/Crypto/Sha2.c"      -o /tmp/kb_sha2.o   2>>/tmp/kb_cc.log \
+   && "$KB_CC" -O2 $KB_WNO $KB_NOASM $KB_GC $KB_INC -c "$SRCROOT/Crypto/chacha256.c" -o /tmp/kb_chacha.o 2>>/tmp/kb_cc.log \
+   && "$KB_CC" -O2 $KB_WNO $KB_NOASM -DVC_ENABLE_KEYSLOTS $KB_INC "$HERE/keyslotarea_test.c" \
+        /tmp/kb_areafile.o /tmp/kb_afsplit.o /tmp/kb_keyslot.o /tmp/kb_store.o /tmp/kb_sha2.o /tmp/kb_chacha.o -Wl,--gc-sections -o /tmp/keyslotarea_test 2>>/tmp/kb_cc.log; then
+	if /tmp/keyslotarea_test > /tmp/kb_out.txt; then cat /tmp/kb_out.txt
+	else cat /tmp/kb_out.txt; echo "    KEYSLOT AREA TEST FAILED"; exit 1; fi
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/kb_cc.log)"
+fi
