@@ -30,12 +30,26 @@ ok()   { echo "  PASS: $1"; PASS=$((PASS+1)); }
 bad()  { echo "  FAIL: $1"; FAIL=$((FAIL+1)); }
 skip() { echo "  SKIP: $1"; SKIP=$((SKIP+1)); }
 pend() { echo "  PENDING-INTEGRATION: $1"; PEND=$((PEND+1)); }
+keyok(){ echo "  PASS (key OK, no kernel dm-crypt): $1"; PASS=$((PASS+1)); }
 cleanup() { rm -rf "$WORK" 2>/dev/null; }
 trap cleanup EXIT
 
 have_root() { [ "$(id -u)" = 0 ]; }
 have_loop() { have_root && command -v losetup >/dev/null 2>&1 && [ -e /dev/loop-control ]; }
+have_dm()   { [ -e /dev/mapper/control ]; }   # dm-crypt table load needs this; containers often lack it
 PW="acceptance-pass-1234"
+
+# Classify a mount log when the kernel has no device-mapper (common in containers). VeraCrypt derives
+# the header key and authenticates the header BEFORE it ever calls dmsetup, so the failure point is
+# diagnostic: a device-mapper/dmsetup error means the key was correct and only the kernel table load is
+# missing (a genuine key-level PASS in such an environment); "Incorrect password" means the derived key
+# was wrong. Returns: 0 = mounted, 2 = key-correct-but-no-dm, 3 = wrong key, 1 = other.
+classify_mount_log() {
+	local log="$1"
+	grep -qiE "device-mapper|dmsetup|/dev/mapper/control" "$log" && return 2
+	grep -qiE "Incorrect password|Incorrect PRF" "$log" && return 3
+	return 1
+}
 
 echo "=== Tier 0: build the fork with the feature flags ==="
 # A default build must stay byte-for-byte stock; the flags are all opt-in.
@@ -74,7 +88,13 @@ roundtrip() {
       "$VC" --text --dismount "$vol" >/dev/null 2>&1
       ok "$label: create -> mount -> dismount round-trip"
     else
-      bad "$label: created but mount failed (see $WORK/${label}.m.log)"
+      # Mount returned non-zero. Distinguish "key correct, kernel has no dm-crypt" (still a key-level
+      # PASS) from a genuine wrong-key failure, using the failure signature in the log.
+      classify_mount_log "$WORK/${label}.m.log"; case $? in
+        2) keyok "$label: create -> key re-derived + header authenticated (mount stopped at dm-crypt)";;
+        3) bad   "$label: created but key re-derivation FAILED at mount (wrong key; see $WORK/${label}.m.log)";;
+        *) bad   "$label: created but mount failed (see $WORK/${label}.m.log)";;
+      esac
     fi
   else
     bad "$label: create failed (see $WORK/${label}.c.log)"
@@ -91,15 +111,27 @@ else
   roundtrip "argon2"  "--hash=Argon2 --argon2-memory=64 --argon2-iterations=3" \
                       "--hash=Argon2 --argon2-memory=64 --argon2-iterations=3"   # step 17/11
 
-  # negative: mounting the argon2 volume with different params must FAIL
-  voln="$WORK/argon2.hc"
+  # negative: mounting the argon2 volume with DIFFERENT params must derive a DIFFERENT key. Asserting
+  # merely "does not mount" is too weak where the kernel lacks dm-crypt (nothing ever mounts), so assert
+  # the *wrong-key* signature: the mount must fail specifically with "Incorrect password" (header MAC
+  # failed), NOT with a device-mapper error (which would mean the key matched and the override was
+  # ignored — the exact bug the real build caught). Two axes: wrong memory, and wrong iterations.
+  voln="$WORK/argon2.hc"; mkdir -p "$WORK/n.mnt"
   if [ -f "$voln" ]; then
-    if "$VC" --text --mount "$voln" "$WORK/n.mnt" --password="$PW" --pim=0 --keyfiles="" \
-          --hash=Argon2 --argon2-memory=128 --argon2-iterations=3 --slot=2 >/dev/null 2>&1; then
-      "$VC" --text --dismount "$voln" >/dev/null 2>&1; bad "argon2: wrong params SHOULD NOT mount"
-    else
-      ok "argon2: wrong memory param correctly rejected (key differs)"
-    fi
+    for neg in "--argon2-memory=128 --argon2-iterations=3:wrong-memory" \
+               "--argon2-memory=64 --argon2-iterations=9:wrong-iterations"; do
+      nflags="${neg%%:*}"; ndesc="${neg##*:}"
+      if "$VC" --text --mount "$voln" "$WORK/n.mnt" --password="$PW" --pim=0 --keyfiles="" \
+            --protect-hidden=no --non-interactive --hash=Argon2 $nflags --slot=2 >/"$WORK/argon2.neg.log" 2>&1; then
+        "$VC" --text --dismount "$voln" >/dev/null 2>&1; bad "argon2 $ndesc: SHOULD NOT mount"
+      else
+        classify_mount_log "$WORK/argon2.neg.log"; case $? in
+          3) ok    "argon2 $ndesc: correctly rejected — different key derived (Incorrect password)";;
+          2) bad   "argon2 $ndesc: mount reached dm-crypt with WRONG params — override NOT shaping the key";;
+          *) bad   "argon2 $ndesc: unexpected failure (see $WORK/argon2.neg.log)";;
+        esac
+      fi
+    done
   fi
 
   # --- PENDING-INTEGRATION features (CLI/mount glue is the remaining real-build work) ---
