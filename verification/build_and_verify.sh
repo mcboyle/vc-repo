@@ -1247,3 +1247,33 @@ if "$CA_CC" -O2 $CA_WNO $CA_NOASM $CA_GC $CA_INC -c "$SRCROOT/Crypto/Sha2.c" -o 
 else
 	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/ca_log)"
 fi
+
+echo ""
+echo "[49] Network-bound share END TO END over a real transport: McCallum-Relyea client <-> forked server"
+# Closes docs/NETWORK-SHARE-SPEC.md "What remains to build" as far as a sandbox can: the exchange proven
+# at Ed25519 production parameters (step 39) is now driven through an ACTUAL kernel AF_UNIX socket to a
+# separate server process, with a stored C-blob. Self-validating (enroll share == socket-recovered
+# share; blinded X hides C; off-network fails; wrong server fails) + the enrolled share is diffed
+# byte-for-byte against an independent python (netshare_transport_reference.py). Real in-tree Sha2.c.
+NT_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then NT_CC="$c"; break; fi; done
+NT_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+NT_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+NT_GC="-ffunction-sections -fdata-sections"
+NT_INC="$INC -I$SRCROOT/Crypto"
+if "$NT_CC" -O2 $NT_WNO $NT_NOASM $NT_GC $NT_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/nt_sha2.o 2>/tmp/nt_log \
+   && "$NT_CC" -O2 $NT_WNO $NT_NOASM $NT_INC "$HERE/netshare_transport_poc.c" /tmp/nt_sha2.o -Wl,--gc-sections -o /tmp/netshare_transport_poc 2>>/tmp/nt_log; then
+	/tmp/netshare_transport_poc > /tmp/nt_c.txt; cat /tmp/nt_c.txt
+	python3 "$HERE/netshare_transport_reference.py" > /tmp/nt_py.txt
+	c_share="$(grep -oE 'enrolled share \(c\*S\)[ ]*= [0-9a-f]+' /tmp/nt_c.txt | grep -oE '[0-9a-f]{64}')"
+	p_share="$(grep -oE 'REF enrolled share = [0-9a-f]+' /tmp/nt_py.txt | grep -oE '[0-9a-f]{64}')"
+	if [ -n "$c_share" ] && [ "$c_share" = "$p_share" ]; then
+		echo "    MATCH: enrolled MR share (real Sha2, Ed25519) == independent python reference"
+	else
+		echo "    MISMATCH (c=$c_share py=$p_share)"; exit 1
+	fi
+	if ! grep -q '^NETSHARE TRANSPORT ROUND-TRIP PASSED' /tmp/nt_c.txt; then echo "    NETSHARE TRANSPORT FAILED"; exit 1; fi
+	rm -rf "$HERE/__pycache__"
+else
+	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/nt_log)"
+fi

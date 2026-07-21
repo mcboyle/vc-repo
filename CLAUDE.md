@@ -132,7 +132,9 @@ GF(2^8) dudect timing screen [41] (self-validating: flags a leaky ref, clears re
 transcribable share code bech32/BIP-173 [42] (`Common/ShareCode.{c,h}`); OPRF at production params
 over full ristretto255 [43] (`verification/oprf_ristretto_poc.c`, RFC 9496 A.1 KAT + Python);
 threshold OPRF/PPSS over ristretto255 [44] (`verification/toprf_ristretto_poc.c`, Shamir over Z_L +
-Lagrange-in-the-exponent reconstructs the single-key output).
+Lagrange-in-the-exponent reconstructs the single-key output); McCallum–Relyea network-share END TO END
+over a real socket transport [49] (`verification/netshare_transport_poc.c`, forked server + C-blob;
+enroll share `edf4bd73…` == python; off-network + wrong-server fail).
 `verification/build_and_verify.sh` runs all.
 
 ## Conventions

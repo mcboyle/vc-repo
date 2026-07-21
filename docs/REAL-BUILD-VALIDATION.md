@@ -33,7 +33,7 @@ whose CLI/mount glue is the remaining work (so it doubles as a live checklist).
 | 5 | HKF factor (simulator) | 2 | create + mount with `--hkf-backend simulator`; wrong secret fails | **PROVEN to the kernel boundary** (same secret → key OK; wrong secret AND password-alone → rejected) |
 | 6 | Multiple keyslots enroll/open/rotate/revoke | 2 | `--keyslot-add/open/rotate/kill/list` round-trip; duress-slot hook | **PROVEN** (CLI lifecycle on a real volume; see below). Mount-time auto-search needs kernel dm-crypt |
 | 7 | Duress-dismount end-to-end | 2 | mounted volumes + `--duress-dismount` + duress passphrase → all dismount + scrub | **registration + recognition-routing PROVEN** (`--duress-register`; duress pass routes to the action, real pass mounts, wrong tag falls through). Force-dismount of live mounts needs kernel dm-crypt |
-| 8 | Network-share (MR) unlock | 2+ | enroll against a Tang-style server, unlock; off-network stays locked | **PENDING** — client transport + `C`-blob format + CLI (`NETWORK-SHARE-SPEC.md`) |
+| 8 | Network-share (MR) unlock | 2+ | enroll against a Tang-style server, unlock; off-network stays locked | **transport round-trip PROVEN** over a real socket to a forked server (step `[49]`); off-network + wrong-server fail. Remaining: HTTP(S) to a *live* Tang server + CLI wiring |
 | 9 | OPRF / threshold / VOPRF unlock | 2+ | blind→evaluate→finalize against a rate-limited server | **PENDING** — server + transport (`OPRF-SPEC.md`) |
 | 10 | Keyslot deniable backend multi-snapshot | 2 | before/after images over many writes: location leak bounded as documented | **PENDING** — real-media validation |
 | 11 | AF-split real-flash remnant | 3 | partial remnant of a revoked slot is unrecoverable on real SSD | **PENDING** — hardware |

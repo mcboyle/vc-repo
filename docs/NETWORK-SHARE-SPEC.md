@@ -94,10 +94,27 @@ for a DH instantiation; the exchange algebra is identical. What is **not** yet b
 
 ## What remains to build
 
-The MR algebra **and the production-parameter (Ed25519) group** are now proven (steps `[10]`, `[39]`).
-Remaining, real-build only (not sandbox-testable — needs a live server): the client transport
-(HTTP(S) to a Tang server or a custom endpoint), the `C`-blob storage format, the enroll/unlock CLI,
-and wiring the resulting share into the split-key factor / a keyslot. A production build would also
-swap the from-scratch group for a constant-time, side-channel-hardened implementation (or delegate to
-`jose`/`clevis`) — the from-scratch group here is proven correct against RFC 8032 but is **not**
-constant-time and is for validation, not shipping. Validate against a live server on a real build.
+The MR algebra, the production-parameter (Ed25519) group, **and the end-to-end exchange over a real
+transport** are now proven (steps `[10]`, `[39]`, `[49]`).
+
+**Transport round-trip — proven (step `[49]`, `verification/netshare_transport_poc.c`).** The exchange
+now runs through an **actual kernel `AF_UNIX` socket** to a **separate server process** (a forked
+child), with a persisted `C`-blob `{ S, C }`:
+
+- **enroll** computes the share `K = c·S` offline and stores the blob;
+- **unlock** picks a fresh ephemeral `e`, sends the blinded `X = C + e·G` over the socket, receives
+  `Y = s·X`, and recovers `K = Y − e·S = s·C`, reproducing the enrolled share;
+- the recovered share **equals the enrolled share byte-for-byte**, cross-checked against an
+  independent python (`netshare_transport_reference.py`) over the real in-tree `Sha2.c`;
+- the server **sees only the blinded `X`** (never `C`, never `K`), and a fresh `e` makes `X` differ on
+  every unlock — the server cannot correlate;
+- **off-network** (no server answering) the share is **unrecoverable**; a **wrong server** (different
+  `s`) yields a different share. So the machine unlocks only *with* the network party, as designed.
+
+Remaining, real-build only (needs a live external server, not sandbox-testable): swap the socket for
+**HTTP(S) to a real Tang server** (or a custom endpoint) and wire the recovered share into the
+split-key factor / a keyslot via the CLI. Serialization is a detail the PoC simplifies — it moves
+points in extended-coordinate wire form and stores `C` the same way, where a production build sends
+**compressed** points (32 B); and a production build swaps the from-scratch group for a constant-time,
+side-channel-hardened implementation (or delegates to `jose`/`clevis`) — the from-scratch group here is
+proven correct against RFC 8032 but is **not** constant-time and is for validation, not shipping.
