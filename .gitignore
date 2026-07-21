@@ -34,3 +34,8 @@ verification/__pycache__/
 *.osha256
 *.o.tmp
 *.tmp
+# generated build headers / precompiled headers
+*.xml.h
+*.txt.h
+*.bmp.h
+*.pch

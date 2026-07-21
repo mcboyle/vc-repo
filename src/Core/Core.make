@@ -55,6 +55,14 @@ OBJS += ../Crypto/chacha256.o
 endif
 endif
 
+# Duress token (opt-in via `make DURESS=1`). DuressToken.o was previously only referenced by Main.make's
+# link list, which does not reliably compile it — so a real `make DURESS=1` failed to link with
+# "no such file: ../Common/DuressToken.o". Compiling it here (as with the keyslot objects) produces the
+# .o on disk that both Core and Main's link steps resolve. A default build stays byte-for-byte stock.
+ifeq "$(VC_ENABLE_DURESS)" "1"
+OBJS += ../Common/DuressToken.o
+endif
+
 # Keyed per-share MAC (opt-in via `make SHAMIRMAC=1`). ShamirMac.o uses only the ShamirShare struct +
 # Sha2.o (already in the build), so it links standalone. A default build stays byte-for-byte stock.
 ifeq "$(VC_ENABLE_SHAMIR_MAC)" "1"
