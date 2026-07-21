@@ -44,18 +44,39 @@ command -v clang >/dev/null 2>&1 && log "clang: $(clang --version | head -1)" ||
 command -v python3 >/dev/null 2>&1 && log "python3: $(python3 --version)" || log "WARNING: no python3"
 
 # --- 2. Best-effort: real-build deps (only meaningful in a remote/web box; never blocks) ---
+# The COMPLETE set needed to build the fork end to end, learned from an actual build:
+#   wxWidgets 3.2 (GUI/CLI), libpcsclite-dev + yasm (STOCK VeraCrypt deps — smartcard headers and the
+#   x86-64 AES assembler; without them the build stops in stock code, not the fork's), libfido2 +
+#   libfuse (mount), and libykpers-1 for YubiKey. Some base images already ship several of these.
 if [ "${CLAUDE_CODE_REMOTE:-}" = "true" ]; then
   if command -v apt-get >/dev/null 2>&1; then
-    log "installing real-build deps (best-effort: wxWidgets + YubiKey/FIDO2 + FUSE)"
+    # A broken third-party PPA (e.g. deadsnakes/ondrej) can make `apt-get update` fail for the WHOLE
+    # archive, blocking even main-archive packages. Disable any such PPA best-effort so the main
+    # archive still resolves. (Only touches apt sources in the ephemeral sandbox, never the repo.)
+    for f in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+      [ -f "$f" ] || continue
+      if grep -qiE "deadsnakes|ondrej|ppa\.launchpad" "$f" 2>/dev/null; then
+        sudo mv "$f" "$f.disabled" 2>/dev/null && log "disabled broken PPA: $(basename "$f")" || true
+      fi
+    done
+    log "installing full real-build dep set (best-effort)"
     sudo apt-get update -y >/dev/null 2>&1 || true
     # libwxgtk3.2-dev is named differently across releases; try the common candidates.
-    for pkg in libwxgtk3.2-dev libwxgtk3.0-gtk3-dev libykpers-1-dev libfido2-dev libfuse-dev pkg-config build-essential; do
+    for pkg in build-essential pkg-config yasm \
+               libwxgtk3.2-dev libwxgtk3.0-gtk3-dev \
+               libpcsclite-dev libfido2-dev libfuse3-dev libfuse-dev libykpers-1-dev; do
       sudo apt-get install -y "$pkg" >/dev/null 2>&1 || true
     done
-    if pkg-config --exists wxwidgets 2>/dev/null || ls /usr/include/wx-* >/dev/null 2>&1; then
-      log "wxWidgets present — a full product build (src && make ...) is possible"
+    # Report exactly what a product build can/can't do, so a session knows before it tries.
+    havewx=no; ls /usr/include/wx-* >/dev/null 2>&1 && havewx=yes
+    havepcsc=no; ls /usr/include/PCSC/pcsclite.h /usr/include/pcsclite.h >/dev/null 2>&1 && havepcsc=yes
+    haveyasm=no; command -v yasm >/dev/null 2>&1 && haveyasm=yes
+    log "build deps: wxWidgets=$havewx  libpcsclite-dev=$havepcsc  yasm=$haveyasm"
+    if [ "$havewx" = yes ] && [ "$havepcsc" = yes ]; then
+      log "product build ready:  cd src && make NOGUI=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 ARGON2PARAMS=1 BALLOON=1 SHAMIRMAC=1 SHARECODE=1$([ $haveyasm = yes ] || echo ' NOASM=1')"
     else
-      log "wxWidgets NOT installed (offline or unavailable) — the verification suite still works; the product build does not"
+      log "product build NOT fully provisionable here (apt offline/locked). The verification suite still works: cd verification && ./build_and_verify.sh"
+      [ "$havepcsc" = no ] && log "  missing libpcsclite-dev — the one stock dep that blocked the build in this image"
     fi
   fi
 else
