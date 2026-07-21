@@ -269,7 +269,53 @@ else
     skip "keyslots lifecycle — binary built without KEYSLOTS=1"
   fi
   pend "keyslots duress-slot mount-time trigger + auto mount-from-slot (needs kernel dm-crypt; CLI open proves the key recovery, docs/KEYSLOTS-SPEC.md §9)"
-  pend "duress-dismount end-to-end (--duress-dismount + duress passphrase; docs/DURESS-DISMOUNT-SPEC.md)"
+  # --- Duress passphrase: register a (salt, tag), then prove recognition ROUTES a mount to the safe
+  #     duress action instead of the mount path. The distinguishing observable needs no kernel: a
+  #     recognised duress passphrase never touches the volume (no dm-crypt / no header read), while any
+  #     other credential goes to the normal mount path (dm-crypt error here, or Incorrect password).
+  if "$VC" --text --help 2>&1 | grep -q "duress-register"; then
+    dv="$WORK/duress.hc"; DRP="real-pass-1111"; DDP="duress-pass-9999"; mkdir -p "$WORK/d.mnt"
+    if "$VC" --text --create "$dv" --size=10M --password="$DRP" --pim=0 --keyfiles="" \
+          --encryption=AES --hash=SHA-512 --filesystem=none --volume-type=normal \
+          --random-source=/dev/urandom >/dev/null 2>&1; then
+      dreg="$("$VC" --text --duress-register --new-password="$DDP" 2>&1)"
+      dsalt="$(printf '%s' "$dreg" | grep -oE 'duress-salt=[0-9a-f]+' | cut -d= -f2)"
+      dtag="$( printf '%s' "$dreg" | grep -oE 'duress-hash=[0-9a-f]+' | cut -d= -f2)"
+      if [ "${#dsalt}" = 32 ] && [ "${#dtag}" = 64 ]; then
+        ok "duress: --duress-register prints a 16-byte salt + 32-byte tag"
+      else
+        bad "duress: register did not print a well-formed (salt, tag)"
+      fi
+      dmount() { "$VC" --text --mount "$dv" "$WORK/d.mnt" --password="$1" --duress-salt="$2" \
+                 --duress-hash="$3" --pim=0 --keyfiles="" --protect-hidden=no --non-interactive 2>&1; }
+      # duress passphrase + registered tag -> duress action: NO dm-crypt / NO incorrect-password (the
+      # volume is never opened).
+      dout="$(dmount "$DDP" "$dsalt" "$dtag")"
+      if printf '%s' "$dout" | grep -qiE "device-mapper|Incorrect password|Incorrect PRF"; then
+        bad "duress: registered duress passphrase reached the mount path (not routed to duress)"
+      else
+        ok "duress: registered passphrase routes to the safe duress action (volume never opened)"
+      fi
+      # real passphrase -> normal mount path (reaches dm-crypt = key OK, kernel missing).
+      # (Write to a real file: classify_mount_log greps its input twice, which a process-substitution
+      # FIFO cannot serve.)
+      dmount "$DRP" "$dsalt" "$dtag" >/"$WORK/d.real.log" 2>&1
+      classify_mount_log "$WORK/d.real.log"; [ $? = 2 ] \
+          && ok  "duress: the real passphrase still mounts normally (not hijacked)" \
+          || bad "duress: real passphrase did not follow the normal mount path"
+      # duress passphrase + WRONG tag -> not recognised -> normal mount path (Incorrect password, since
+      # the duress passphrase is not the volume's real password).
+      dmount "$DDP" "$dsalt" "0000000000000000000000000000000000000000000000000000000000000000" >/"$WORK/d.wrong.log" 2>&1
+      classify_mount_log "$WORK/d.wrong.log"; [ $? = 3 ] \
+          && ok  "duress: wrong tag is not recognised (falls through to the normal mount path)" \
+          || bad "duress: wrong tag was mis-recognised as duress"
+    else
+      bad "duress: base volume create failed"
+    fi
+  else
+    skip "duress register/recognition — binary built without --duress-register (DURESS=1)"
+  fi
+  pend "duress-dismount of ACTUALLY-MOUNTED volumes (dismount-all + scrub needs mounted volumes = kernel dm-crypt; the routing + registration above is proven)"
   pend "network-share (McCallum-Relyea) enroll/unlock CLI + transport (docs/NETWORK-SHARE-SPEC.md)"
 fi
 

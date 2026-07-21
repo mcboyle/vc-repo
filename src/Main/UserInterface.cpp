@@ -39,6 +39,9 @@
 #include "Volume/EncryptionAlgorithm.h"
 #include "Volume/VolumeHeader.h"
 #endif
+#if defined(VC_ENABLE_DURESS)
+#include "Common/DuressToken.h"
+#endif
 #endif
 
 namespace VeraCrypt
@@ -191,6 +194,40 @@ namespace VeraCrypt
 		// the kernel device-mapper and are released by the dismounts above; see docs/MEMORY-SCRUB.md.
 		KeyScrubManager::Instance().ScrubNow ("duress");
 #endif
+	}
+
+	void UserInterface::DuressRegister () const
+	{
+		// Register a duress passphrase: pick a random salt, derive tag = HMAC-SHA256(salt, passphrase),
+		// and print both as hex. The user stores these and supplies them as --duress-salt/--duress-hash
+		// at mount time; the passphrase itself is never stored. No volume is read or changed.
+		shared_ptr <VolumePassword> pass = CmdLine->ArgNewPassword;
+		if (!pass || pass->Size() == 0)
+			throw_err (L"--duress-register needs --new-password (the duress passphrase)");
+
+		if (!RandomNumberGenerator::IsRunning())
+			RandomNumberGenerator::Start();
+
+		unsigned char salt[DURESS_SALT_SIZE], tag[DURESS_TAG_SIZE];
+		{
+			BufferPtr saltBuf (salt, sizeof (salt));
+			RandomNumberGenerator::GetData (saltBuf);
+		}
+		DuressTokenDerive (salt, DURESS_SALT_SIZE, pass->DataPtr(), (int) pass->Size(), tag);
+
+		wstring saltHex, tagHex;
+		static const wchar_t *hexd = L"0123456789abcdef";
+		for (int i = 0; i < DURESS_SALT_SIZE; ++i) { saltHex += hexd[salt[i] >> 4]; saltHex += hexd[salt[i] & 0xf]; }
+		for (int i = 0; i < DURESS_TAG_SIZE;  ++i) { tagHex  += hexd[tag[i]  >> 4]; tagHex  += hexd[tag[i]  & 0xf]; }
+
+		ShowString (L"Duress passphrase registered. Save these and pass them at mount time:\n");
+		ShowString (L"  --duress-salt=" + saltHex + L"\n");
+		ShowString (L"  --duress-hash=" + tagHex  + L"\n");
+		ShowString (L"A --mount whose password is this passphrase (with the pair above) runs the safe\n"
+		            L"duress action (dismount all + scrub, mount nothing) instead of mounting.\n");
+
+		{ volatile unsigned char *p = tag;  size_t n = sizeof (tag);  while (n--) *p++ = 0; }
+		{ volatile unsigned char *p = salt; size_t n = sizeof (salt); while (n--) *p++ = 0; }
 	}
 #endif
 
@@ -1502,6 +1539,10 @@ const FileManager fileManagers[] = {
 #if defined(VC_ENABLE_DURESS)
 		case CommandId::DuressDismount:
 			DuressDismount();
+			return true;
+
+		case CommandId::DuressRegister:
+			DuressRegister();
 			return true;
 #endif
 

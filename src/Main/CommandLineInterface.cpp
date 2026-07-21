@@ -148,6 +148,7 @@ namespace VeraCrypt
 #endif
 #if defined(VC_ENABLE_DURESS)
 		parser.AddSwitch (L"",	L"duress-dismount",		_("Safe duress action: dismount all volumes + scrub RAM keys, mount nothing (non-destructive)"));
+		parser.AddSwitch (L"",	L"duress-register",		_("Register a duress passphrase (--new-password): print the (salt, tag) to save and pass as --duress-salt/--duress-hash at mount"));
 		parser.AddOption (L"",	L"duress-hash",			_("Duress passphrase tag (hex, 32 bytes): if the mount password matches, run the safe duress action instead of mounting"));
 		parser.AddOption (L"",	L"duress-salt",			_("Duress passphrase salt (hex, 16 bytes), paired with --duress-hash"));
 #endif
@@ -898,6 +899,16 @@ namespace VeraCrypt
 			// Explicit panic switch.
 			if (parser.Found (L"duress-dismount"))
 				ArgCommand = CommandId::DuressDismount;
+
+			// Register a duress passphrase: generate a random salt, derive the tag, and print the
+			// (salt, tag) pair the user then supplies as --duress-salt/--duress-hash at mount time. The
+			// passphrase (via --new-password) is never stored — only its salted HMAC tag. No volume needed.
+			if (parser.Found (L"duress-register"))
+			{
+				if (!ArgNewPassword)
+					throw_err (L"--duress-register needs --new-password (the duress passphrase to register)");
+				ArgCommand = CommandId::DuressRegister;
+			}
 
 			// Duress-passphrase recognition: a pre-registered (salt, tag) turns a *mount* whose
 			// password is the duress passphrase into the safe duress action instead — so entering the

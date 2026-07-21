@@ -47,6 +47,8 @@ namespace VeraCrypt
 		// secrets from RAM, mounting nothing. Destroys nothing on disk (unlike a crypto-erase, which
 		// leaves a "destruction" tell and forfeits deniability). See docs/DURESS-DISMOUNT-SPEC.md.
 		virtual void DuressDismount () const;
+		// Register a duress passphrase: print the (salt, tag) to save and supply at mount time.
+		virtual void DuressRegister () const;
 #endif
 #if defined(VC_ENABLE_KEYSLOTS)
 		// Keyslot lifecycle: add / test-open / rotate / revoke / list additional wrappings of the

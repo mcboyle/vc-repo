@@ -42,6 +42,9 @@ namespace VeraCrypt
 			DeleteSecurityTokenKeyfiles,
 			DismountVolumes,
 			DuressDismount,
+#if defined(VC_ENABLE_DURESS)
+			DuressRegister,
+#endif
 			DisplayVersion,
 			DisplayVolumeProperties,
 			ExportTokenKeyfile,

@@ -49,15 +49,19 @@ At mount time, if the entered password's tag matches, the safe duress action run
 mounting:
 
 ```sh
-# one-time: pick a duress passphrase and compute (salt, tag) offline
-python3 -c 'import hmac,hashlib,os; s=os.urandom(16); \
-  print("salt", s.hex()); \
-  print("hash", hmac.new(s, b"my duress passphrase", hashlib.sha256).hexdigest())'
+# one-time: register a duress passphrase — the CLI picks a random salt, derives the tag, and prints
+# both (the passphrase itself is never stored). No volume is read or changed.
+veracrypt --text --duress-register --new-password 'my duress passphrase'
+#   --duress-salt=ea386b73f5421bac9dd36ff48037bd33
+#   --duress-hash=cd450092a00eca37bdff9645f23c207c6edcb1f532d7381199738c40991cd676
 
 # then wire the registered (salt, tag) into how you invoke veracrypt (wrapper/config):
 veracrypt --duress-salt <hex16> --duress-hash <hex32> --mount /dev/sdX /mnt/x
 # → if the password you type is the duress passphrase, everything dismounts + scrubs; nothing mounts.
 ```
+
+(Equivalent offline computation, if you prefer not to run the binary:
+`python3 -c 'import hmac,hashlib,os; s=os.urandom(16); print("salt", s.hex()); print("hash", hmac.new(s, b"my duress passphrase", hashlib.sha256).hexdigest())'`.)
 
 Properties:
 - The duress passphrase itself is **never stored** — only the salt and the HMAC tag, which do not
@@ -98,9 +102,22 @@ a wrong one, and the constant-time compare is exact (equal matches; a one-byte d
 (16 bytes) = `3d874ea97ea3fa5bc792bd87554ae502c7ebde535ed06243a9b171247afeb808` (also cross-checked
 against Python's stdlib `hmac`).
 
-### What is NOT unit-tested here
+### Real-build end-to-end (registration + recognition routing — proven)
 
-The dismount/scrub **orchestration** in `UserInterface::DuressDismount()` drives the mount/unmount
-subsystem and the wx application, which cannot be exercised in this sandbox. The verified core is the
-duress-passphrase recognition (the crypto) and the fact that the action is wired to `ScrubNow()`;
-exercise the end-to-end dismount on a real build with mounted volumes.
+On a real build (`verification/realbuild/acceptance.sh`) the full registration and recognition path is
+now exercised against the actual binary:
+
+- `--duress-register --new-password <p>` prints a well-formed 16-byte salt + 32-byte tag;
+- a `--mount` whose password **is** the duress passphrase (with that `(salt, tag)`) is **routed to the
+  safe duress action** — it never reaches the mount path (no header read, no dm-crypt), observable as
+  the absence of any device-mapper / incorrect-password outcome;
+- the volume's **real** passphrase still follows the normal mount path (not hijacked);
+- the duress passphrase with a **wrong** tag is not recognised and falls through to the normal mount
+  path (`Incorrect password`, since it is not the volume's real password).
+
+### What still needs a real kernel
+
+The dismount/scrub **of actually-mounted volumes** in `UserInterface::DuressDismount()` needs mounted
+volumes, i.e. kernel dm-crypt, which the sandbox lacks. The recognition + routing decision above (the
+security-critical "does this run the duress action or mount?") and the crypto core are proven; the
+remaining step is the force-dismount of live mounts on a real build.
