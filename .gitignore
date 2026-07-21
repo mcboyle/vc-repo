@@ -21,3 +21,4 @@ run_*
 # Python bytecode cache from verification cross-imports
 verification/__pycache__/
 *.pyc
+*.d

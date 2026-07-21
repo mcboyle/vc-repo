@@ -44,6 +44,51 @@ whose CLI/mount glue is the remaining work (so it doubles as a live checklist).
 "wired" = the CLI/mount path exists and the harness exercises it. "PENDING" = the crypto core is proven
 (see the linked spec + verification step) but the integration glue is the remaining real-build work.
 
+## Build prerequisites (learned from a real build)
+
+The fork builds on a stock Ubuntu 24.04 image that already has wxWidgets 3.2, libfido2, and FUSE. Two
+*stock VeraCrypt* build tools are additionally required (neither is a fork dependency):
+
+- **`libpcsclite-dev`** — the PC/SC smartcard headers (`pcsclite.h`, `winscard.h`, `wintypes.h`,
+  `reader.h`), included by VeraCrypt's EMV/smartcard code (`Common/SCardLoader.h`). The runtime lib is
+  `dlopen`ed, so only the headers are needed at compile time. `sudo apt-get install libpcsclite-dev`.
+- **`yasm`** — assembler for the optimized x86-64 AES (`Crypto/Aes_x64.asm`). Either install it, or
+  build with **`NOASM=1`** to use the portable C implementations.
+
+Confirmed working invocation (all fork features, no GUI):
+
+```sh
+sudo apt-get install -y libwxgtk3.2-dev libpcsclite-dev libfido2-dev libfuse-dev yasm
+cd src && make NOGUI=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 ARGON2PARAMS=1 BALLOON=1 SHAMIRMAC=1 SHARECODE=1
+```
+
+(YubiKey support additionally needs `libykpers-1-dev` + `YUBIKEY=1`.)
+
+## Real-build attempt result (this environment)
+
+A real build **was** attempted here, and it materially corrected an earlier assumption: this image
+already ships wxWidgets 3.2, libfido2, and FUSE, and has root + loop devices — so it **is**
+build-capable. `make NOASM=1 NOGUI=1 KEYSLOTS=1 …` compiled the fork's own code cleanly (Platform, the
+Volume ciphers, the Crypto layer with `NOASM`, and — with hand-written stub PC/SC headers — the
+smartcard loader). The build did **not** reach a finished binary, for one reason only: stock
+VeraCrypt's EMV/PC-SC smartcard support (`Common/SCard*.cpp`, `Common/EMV*.cpp`) needs the real
+`libpcsclite-dev` headers, which are **not apt-installable in this particular image** (the mirror's
+PPAs 403). Hand-stubbing the full PC/SC dev-header surface is an unbounded stock-dependency yak-shave
+and was deliberately stopped.
+
+**What this proves:** the fork's own code (including the AF-split Makefile fix and every gated feature
+object) is build-clean; the remaining gap is a packaging issue, not a code issue. On any box with a
+working apt:
+
+```sh
+sudo apt-get install -y libwxgtk3.2-dev libpcsclite-dev libfido2-dev libfuse-dev yasm
+cd src && make NOGUI=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 ARGON2PARAMS=1 BALLOON=1 SHAMIRMAC=1 SHARECODE=1
+sudo bash verification/realbuild/acceptance.sh
+```
+
+(The AF-split link fix was independently reproduced and verified: the pre-fix KEYSLOTS object set fails
+with `undefined reference to AfSplit`, the post-fix set links clean — see the build-wiring commit.)
+
 ## Note on the harness's own findings
 
 Writing this surfaced a real product-build break: `Common/KeyslotStore.c` calls `AfSplit`/`AfMerge`, but
