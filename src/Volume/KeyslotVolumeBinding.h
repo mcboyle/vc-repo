@@ -90,6 +90,54 @@ namespace VeraCrypt
 		cfg.afStripes = 0;
 		return cfg;
 	}
+
+	// Bind an arbitrary [base, base+len) window of a File as the KeyslotArea (sidecar = whole file).
+	inline void KeyslotBindWindow (KeyslotArea &area, KeyslotFileArea &ctx, File *file, uint64 base, uint64 len)
+	{
+		ctx.file = file; ctx.base = base; ctx.len = len;
+		area.read  = &KeyslotFileArea::ReadCb;
+		area.write = &KeyslotFileArea::WriteCb;
+		area.size  = &KeyslotFileArea::SizeCb;
+		area.ctx   = &ctx;
+	}
+
+	// KSB_SIDECAR: the whole 'file' is the area (a separate file; the volume is never touched).
+	inline void KeyslotBindSidecar (KeyslotArea &area, KeyslotFileArea &ctx, File *file)
+	{
+		KeyslotBindWindow (area, ctx, file, 0, file->Length());
+	}
+
+	// KSB_DENIABLE: a free-space window [freeStart, freeEnd) of the container, clamped below
+	// 'hiddenReservedStart' (0 = none) so a bare record can never land in a hidden volume's space.
+	// Returns false if the resulting window cannot hold a slot.
+	inline bool KeyslotBindDeniable (KeyslotArea &area, KeyslotFileArea &ctx, File *file,
+	                                 uint64 freeStart, uint64 freeEnd, uint64 hiddenReservedStart)
+	{
+		uint64 end = freeEnd;
+		if (hiddenReservedStart != 0 && hiddenReservedStart < end)
+			end = hiddenReservedStart;
+		if (freeStart >= end || end - freeStart < KEYSLOT_TABLE_STRIDE)
+			return false;
+		KeyslotBindWindow (area, ctx, file, freeStart, end - freeStart);
+		return true;
+	}
+
+	// Store config for the sidecar (labeled table, like the header backend) and deniable (bare records
+	// at a passphrase-derived slot) backends. maxSlots 0 lets the store size the table from the area.
+	inline KeyslotStoreCfg KeyslotSidecarCfg (int vmkLen)
+	{
+		KeyslotStoreCfg cfg = KeyslotHeaderCfg (vmkLen);
+		cfg.backend  = KSB_SIDECAR;
+		cfg.maxSlots = 0;   // sidecar file is sized by the user; use the whole area
+		return cfg;
+	}
+	inline KeyslotStoreCfg KeyslotDeniableCfg (int vmkLen)
+	{
+		KeyslotStoreCfg cfg = KeyslotHeaderCfg (vmkLen);
+		cfg.backend  = KSB_DENIABLE;
+		cfg.maxSlots = 0;
+		return cfg;
+	}
 }
 
 #endif // VC_ENABLE_KEYSLOTS

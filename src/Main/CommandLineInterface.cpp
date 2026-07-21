@@ -163,6 +163,8 @@ namespace VeraCrypt
 		parser.AddOption (L"",	L"keyslot-kill",		_("Revoke keyslot number N (0-based, header-slack table)"));
 		parser.AddSwitch (L"",	L"keyslot-list",		_("List occupied keyslots in the header-slack table"));
 		parser.AddSwitch (L"",	L"keyslot-duress",		_("With --keyslot-add: mark the new slot as a duress slot (opening it triggers the safe duress action, not a mount)"));
+		parser.AddOption (L"",	L"keyslot-backend",		_("Keyslot placement: header (default, primary-header slack), sidecar (a separate file), or deniable (a passphrase-derived slot in the container's free space)"));
+		parser.AddOption (L"",	L"keyslot-sidecar",		_("Sidecar file for --keyslot-backend=sidecar (created if absent)"));
 #endif
 		parser.AddSwitch (L"h", L"help",				_("Display detailed command line help"), wxCMD_LINE_OPTION_HELP);
 		parser.AddSwitch (L"",	L"import-token-keyfiles", _("Import keyfiles to security token"));
@@ -928,6 +930,20 @@ namespace VeraCrypt
 			ArgKeyslotPassword = ArgNewPassword;
 			ArgKeyslotIndex = -1;
 			ArgKeyslotDuress = parser.Found (L"keyslot-duress");
+			ArgKeyslotBackend = 1;   // KSB_HEADER
+			wxString ksBackend;
+			if (parser.Found (L"keyslot-backend", &ksBackend))
+			{
+				if (ksBackend.IsSameAs (L"header", false))        ArgKeyslotBackend = 1;
+				else if (ksBackend.IsSameAs (L"deniable", false)) ArgKeyslotBackend = 2;
+				else if (ksBackend.IsSameAs (L"sidecar", false))  ArgKeyslotBackend = 3;
+				else throw_err (L"--keyslot-backend must be header, sidecar or deniable");
+			}
+			wxString ksSidecar;
+			if (parser.Found (L"keyslot-sidecar", &ksSidecar))
+				ArgKeyslotSidecar.reset (new FilePath (wstring (ksSidecar)));
+			if (ArgKeyslotBackend == 3 && !ArgKeyslotSidecar)
+				throw_err (L"--keyslot-backend=sidecar requires --keyslot-sidecar <path>");
 
 			int ksCmds = 0;
 			if (parser.Found (L"keyslot-add"))    { ArgCommand = CommandId::KeyslotAdd;    ksCmds++; }

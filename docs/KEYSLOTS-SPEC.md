@@ -228,6 +228,18 @@ with every access bounds-checked against the bound window:
   constant-time `KeyslotOpen` used for opening). Proven: enroll→open (exact master-key match)→wrong-pass
   reject→add/kill→rotate→duress-flag round-trip, with slot 0 and the body byte-untouched throughout.
 
+All three backends are selectable from the CLI via `--keyslot-backend header|sidecar|deniable`
+(`Volume/KeyslotVolumeBinding.h` binds each window over the app `File`; the CLI opens a sidecar with
+`--keyslot-sidecar <path>`, created + random-filled to 64 KiB on first use). Proven on a real volume
+(acceptance harness):
+
+- **sidecar** — slots live in a separate file; the **volume container is byte-identical** after
+  add/open, and the slot recovers the exact master key.
+- **deniable** — a bare record at a passphrase-derived offset in the container's data region; the
+  **header region `[0, 64K)` is byte-identical**, the slot opens with its passphrase and recovers the
+  master key, and a wrong passphrase opens nothing. The slot is not enumerable (`--keyslot-list`
+  reports this by design).
+
 Remaining, real-build only (needs the kernel / real media):
 
 - **Mount-time auto-search** — having a plain `--mount` try `KeyslotOpen` after the native header fails
@@ -237,7 +249,6 @@ Remaining, real-build only (needs the kernel / real media):
 - **Backup-header mirroring** — the backup-header group at volume end mirrors the primary group; a slot
   table in the primary slack is not mirrored automatically, so restoring a backup header will not
   restore slots unless the restore path learns to mirror the table.
-- **Deniable / sidecar backends via the CLI** — the header-slack backend is wired; the deniable and
-  sidecar placements (proven in the store + file bindings, steps `[9]`/`[37]`) are not yet selectable
-  from the CLI (`--keyslot-backend`). Deniable-backend robustness against **multi-snapshot** must also
-  be validated on real media (same caveat class as hidden volumes, `docs/THREAT-MODEL.md`).
+- **Deniable-backend multi-snapshot robustness** must be validated on real media (same caveat class as
+  hidden volumes, `docs/THREAT-MODEL.md`): a before/after image diff reveals that *a* slot-sized region
+  changed, though not its contents (step `[37]` asserts this bound honestly).

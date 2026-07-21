@@ -99,6 +99,8 @@ namespace VeraCrypt
 		shared_ptr <VolumePassword> ArgKeyslotPassword;   // the NEW slot's passphrase (add/rotate/open/kill target)
 		int ArgKeyslotIndex;                              // --keyslot-kill N
 		bool ArgKeyslotDuress;                            // mark the added slot as a duress slot
+		int ArgKeyslotBackend;                            // KeyslotBackend: 1=header(default) 2=deniable 3=sidecar
+		shared_ptr <FilePath> ArgKeyslotSidecar;          // --keyslot-sidecar path (KSB_SIDECAR)
 #endif
 		bool ArgQuick;
 		FilesystemPath ArgRandomSourcePath;

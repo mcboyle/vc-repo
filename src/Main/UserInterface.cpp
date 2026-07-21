@@ -212,20 +212,70 @@ namespace VeraCrypt
 		if (!RandomNumberGenerator::IsRunning())
 			RandomNumberGenerator::Start();
 
-		// KeyslotList / KeyslotKill do not need the master key: open the file read/write and drive the
-		// header-slack table directly.
+		const int backend = CmdLine->ArgKeyslotBackend;   // 1 header, 2 deniable, 3 sidecar
+		const int vmkLen  = 1 + (int) VolumeHeader::GetMasterKeyDataSize();
+
+		// Bind 'area'/'areaCtx' over 'storeFile' for the chosen backend. For header/deniable the store IS
+		// the container (deniable = a passphrase-derived slot in the free-space/data region, so the
+		// header stays untouched); for sidecar the store is a separate file. Returns the matching cfg.
+		// dataEnd is the container length (deniable free-space upper bound).
+		KeyslotFileArea areaCtx; KeyslotArea area;
+		struct BindResult { KeyslotStoreCfg cfg; bool ok; };
+		#define KS_BIND(storeFileP, volLen) ([&]() -> BindResult {                                        \
+			BindResult r; r.ok = true;                                                                    \
+			if (backend == 3)      { KeyslotBindSidecar  (area, areaCtx, (storeFileP)); r.cfg = KeyslotSidecarCfg (vmkLen); } \
+			else if (backend == 2) { r.ok = KeyslotBindDeniable (area, areaCtx, (storeFileP), TC_VOLUME_DATA_OFFSET, (volLen), 0); r.cfg = KeyslotDeniableCfg (vmkLen); } \
+			else                   { KeyslotBindHeaderSlack (area, areaCtx, (storeFileP)); r.cfg = KeyslotHeaderCfg (vmkLen); } \
+			return r; })()
+		const wchar_t *backendName = backend == 3 ? L"sidecar" : backend == 2 ? L"deniable" : L"header";
+
+		// Open the store file. Sidecar lives in its own file (created + random-filled on first use);
+		// header/deniable use the container itself.
+		make_shared_auto (File, storeFile);
+		bool sidecarCreated = false;
+		if (backend == 3)
+		{
+			if (!CmdLine->ArgKeyslotSidecar)
+				throw_err (L"--keyslot-backend=sidecar requires --keyslot-sidecar <path>");
+			bool exists = FilesystemPath (*CmdLine->ArgKeyslotSidecar).IsFile();
+			storeFile->Open (*CmdLine->ArgKeyslotSidecar,
+				exists ? File::OpenReadWrite : File::CreateReadWrite, File::ShareReadWriteIgnoreLock);
+			if (!exists)
+			{
+				// Size a fresh sidecar to 64 KiB (63 slots at the 1 KiB stride) and fill it with random,
+				// so unused slots are indistinguishable from fill.
+				SecureBuffer fill (KEYSLOT_TABLE_STRIDE);
+				for (int s = 0; s < 64; ++s)
+				{
+					KeyslotRandBytes (fill.Ptr(), fill.Size());
+					storeFile->Write (ConstBufferPtr (fill.Ptr(), fill.Size()));
+				}
+				storeFile->Flush();
+				sidecarCreated = true;
+			}
+		}
+		else
+		{
+			storeFile->Open (*volumePath, File::OpenReadWrite, File::ShareReadWriteIgnoreLock);
+		}
+		(void) sidecarCreated;
+		// Container length (for the deniable free-space window) — the store file's own length.
+		uint64 volLen = storeFile->Length();
+
+		// KeyslotList / KeyslotKill do not need the master key.
 		if (command == CommandId::KeyslotList || command == CommandId::KeyslotKill)
 		{
-			make_shared_auto (File, file);
-			file->Open (*volumePath, File::OpenReadWrite, File::ShareReadWriteIgnoreLock);
-			KeyslotFileArea areaCtx; KeyslotArea area;
-			KeyslotBindHeaderSlack (area, areaCtx, file.get());
-			KeyslotStoreCfg cfg = KeyslotHeaderCfg (VolumeHeader::GetLargestSerializedKeySize());
-
+			BindResult br = KS_BIND (storeFile.get(), volLen);
+			if (!br.ok)
+				throw_err (L"keyslot area could not be bound (container too small for the deniable window)");
+			KeyslotStoreCfg cfg = br.cfg;
 			if (command == CommandId::KeyslotList)
 			{
 				int n = KeyslotCount (&cfg, &area);
-				ShowString (StringConverter::ToWide (StringConverter::ToSingle (n)) + L" keyslot(s) occupied in the header-slack table\n");
+				if (backend == 2)
+					ShowString (L"deniable backend: slots are not enumerable without their passphrase (by design)\n");
+				else
+					ShowString (StringConverter::ToWide (StringConverter::ToSingle (n)) + wxString (L" keyslot(s) occupied in the ") + backendName + L" table\n");
 			}
 			else
 			{
@@ -238,19 +288,11 @@ namespace VeraCrypt
 
 		// Add / Open / Rotate need the VMK. Recover it via the existing password/keyfiles by opening the
 		// volume header (no mount — works on a plain file with no kernel device-mapper). Do this in an
-		// inner scope so the Volume's own file handle is released BEFORE we open our read/write handle,
-		// avoiding a self-inflicted sharing conflict on the container.
+		// inner scope so the Volume's own file handle is released BEFORE it matters.
 		if (!CmdLine->ArgPassword)
 			throw_err (L"the existing volume password (--password) is required to recover the master key");
 
-		// VMK for the header backend is always eaIndex[1] || masterKeys(DataKeyAreaMaxSize). Fixed size,
-		// so a keyslot probe can be sized before opening anything.
-		const int vmkLen = 1 + (int) VolumeHeader::GetMasterKeyDataSize();
 		SecureBuffer vmk;
-
-		// Recover the VMK with --password. Try the native header first (Core->OpenVolume, header decrypt
-		// only — no dm-crypt), then fall back to an existing keyslot so --password may be ANY enrolled
-		// passphrase (this is what lets rotation retire a keyslot rather than only the native header).
 		{
 			bool recovered = false;
 			shared_ptr <Volume> volume;
@@ -281,29 +323,27 @@ namespace VeraCrypt
 			}
 			else
 			{
-				// Native header did not accept --password; try opening a keyslot with it.
-				make_shared_auto (File, rf);
-				rf->Open (*volumePath, File::OpenRead, File::ShareReadWriteIgnoreLock);
-				KeyslotFileArea rctx; KeyslotArea rarea;
-				KeyslotBindHeaderSlack (rarea, rctx, rf.get());
-				KeyslotStoreCfg rcfg = KeyslotHeaderCfg (vmkLen);
-				vmk.Allocate (vmkLen);
-				int fl = 0;
-				if (KeyslotOpen (&rcfg, &rarea, CmdLine->ArgPassword->DataPtr(),
-				                 (int) CmdLine->ArgPassword->Size(), vmk.Ptr(), &fl))
-					recovered = true;
+				// Native header did not accept --password; try opening a keyslot with it, in the SAME
+				// backend the command targets.
+				BindResult br = KS_BIND (storeFile.get(), volLen);
+				if (br.ok)
+				{
+					KeyslotStoreCfg rcfg = br.cfg;
+					vmk.Allocate (vmkLen);
+					int fl = 0;
+					if (KeyslotOpen (&rcfg, &area, CmdLine->ArgPassword->DataPtr(),
+					                 (int) CmdLine->ArgPassword->Size(), vmk.Ptr(), &fl))
+						recovered = true;
+				}
 			}
 			if (!recovered)
 				throw_err (L"could not recover the master key: --password did not open the native header or any keyslot");
-		}   // any Volume / read handle released here
+		}
 
-		// Now open our own read/write handle for the header-slack table.
-		make_shared_auto (File, file);
-		file->Open (*volumePath, File::OpenReadWrite, File::ShareReadWriteIgnoreLock);
-		KeyslotFileArea areaCtx; KeyslotArea area;
-		KeyslotBindHeaderSlack (area, areaCtx, file.get());
-
-		KeyslotStoreCfg cfg = KeyslotHeaderCfg ((int) vmk.Size());
+		BindResult br = KS_BIND (storeFile.get(), volLen);
+		if (!br.ok)
+			throw_err (L"keyslot area could not be bound (container too small for the deniable window)");
+		KeyslotStoreCfg cfg = br.cfg;
 
 		shared_ptr <VolumePassword> slotPass = CmdLine->ArgKeyslotPassword;
 
@@ -345,7 +385,11 @@ namespace VeraCrypt
 				// simply added.) Uses the admin-side indexed open, which reveals the matching index.
 				SecureBuffer out (vmk.Size());
 				int killed = -1;
-				for (int i = 0; i < cfg.maxSlots; ++i)
+				// Scan the labeled table. maxSlots is set for the header backend; for sidecar it is 0 and
+				// the table spans the whole area, so derive the count from the bound window. (Deniable is
+				// not a labeled table — KeyslotOpenAt returns 0 for it, so the scan simply finds nothing.)
+				int scanSlots = cfg.maxSlots > 0 ? cfg.maxSlots : (int) (areaCtx.len / KEYSLOT_TABLE_STRIDE);
+				for (int i = 0; i < scanSlots; ++i)
 				{
 					if (i == idx)   // never retire the slot we just added
 						continue;

@@ -225,6 +225,43 @@ else
       cmp -s <(tail -c 5242880 "$ksv.orig") <(tail -c 5242880 "$ksv") \
           && ok  "keyslots: data region untouched" \
           || bad "keyslots: data region changed"
+
+      # --- sidecar backend: slots live in a SEPARATE file; the volume is byte-untouched ---
+      if "$VC" --text --help 2>&1 | grep -q "keyslot-backend"; then
+        cp "$ksv" "$ksv.presc"; sc="$WORK/ks.sidecar"
+        "$VC" --text --keyslot-add "$ksv" --keyslot-backend=sidecar --keyslot-sidecar="$sc" \
+              --password="$P1" --new-password="sidecar-pass" --pim=0 --keyfiles="" >/dev/null 2>&1
+        cmp -s "$ksv.presc" "$ksv" \
+            && ok  "keyslots sidecar: volume byte-untouched (slots in a separate file)" \
+            || bad "keyslots sidecar: volume changed"
+        "$VC" --text --keyslot-open "$ksv" --keyslot-backend=sidecar --keyslot-sidecar="$sc" \
+              --password="$P1" --new-password="sidecar-pass" --pim=0 --keyfiles="" 2>&1 | grep -qi "matches the native" \
+            && ok  "keyslots sidecar: slot opens & recovers the master key" \
+            || bad "keyslots sidecar: slot did not open"
+        "$VC" --text --keyslot-open "$ksv" --keyslot-backend=sidecar --keyslot-sidecar="$sc" \
+              --password="$P1" --new-password="wrong" --pim=0 --keyfiles="" 2>&1 | grep -qi "matches the native" \
+            && bad "keyslots sidecar: WRONG passphrase opened a slot" \
+            || ok  "keyslots sidecar: wrong passphrase rejected"
+
+        # --- deniable backend: a bare record at a passphrase-derived offset in the DATA region;
+        #     the header region [0,64K) is byte-untouched and the slot is not enumerable ---
+        cp "$ksv" "$ksv.preden"
+        "$VC" --text --keyslot-add "$ksv" --keyslot-backend=deniable \
+              --password="$P1" --new-password="deniable-pass" --pim=0 --keyfiles="" >/dev/null 2>&1
+        cmp -s <(head -c 65536 "$ksv.preden") <(head -c 65536 "$ksv") \
+            && ok  "keyslots deniable: header region [0,64K) byte-untouched" \
+            || bad "keyslots deniable: header region changed"
+        "$VC" --text --keyslot-open "$ksv" --keyslot-backend=deniable \
+              --password="$P1" --new-password="deniable-pass" --pim=0 --keyfiles="" 2>&1 | grep -qi "matches the native" \
+            && ok  "keyslots deniable: passphrase-derived slot opens & recovers the master key" \
+            || bad "keyslots deniable: slot did not open"
+        "$VC" --text --keyslot-open "$ksv" --keyslot-backend=deniable \
+              --password="$P1" --new-password="wrong" --pim=0 --keyfiles="" 2>&1 | grep -qi "matches the native" \
+            && bad "keyslots deniable: WRONG passphrase opened a slot" \
+            || ok  "keyslots deniable: wrong passphrase rejected"
+      else
+        skip "keyslot sidecar/deniable backends — binary built without --keyslot-backend"
+      fi
     else
       bad "keyslots: base volume create failed"
     fi
