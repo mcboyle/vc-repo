@@ -57,8 +57,15 @@ if command -v make >/dev/null 2>&1; then
   if [ -x "$VC" ]; then
     ok "veracrypt binary present ($VC) — using it (pass a path as arg 1 to override)"
   else
-    echo "  building: make -C $SRC NOGUI=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 ARGON2PARAMS=1 BALLOON=1 SHAMIRMAC=1 SHARECODE=1 HKF=1"
-    if make -C "$SRC" NOGUI=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 ARGON2PARAMS=1 BALLOON=1 SHAMIRMAC=1 SHARECODE=1 HKF=1 >/"$WORK"/build.log 2>&1; then
+    # clang is required in practice: gcc hard-errors on stock Crypto/chacha256.c ("duplicate static").
+    # HKF_SIMULATOR (not just HKF) so the simulator round-trip below can run — testing only, never ship.
+    VCC=""; command -v clang >/dev/null 2>&1 && VCC="CC=clang CXX=clang++"
+    # `make clean` first: the build system does NOT rebuild objects when only -D feature flags change,
+    # so objects left by a differently-flagged build would silently produce a mixed binary (this
+    # exact trap produced two phantom bugs during validation — treat flag changes as clean builds).
+    make -C "$SRC" clean >/dev/null 2>&1 || true
+    echo "  building: make -C $SRC $VCC NOGUI=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 ARGON2PARAMS=1 BALLOON=1 SHAMIRMAC=1 SHARECODE=1 HKF_SIMULATOR=1"
+    if make -C "$SRC" $VCC NOGUI=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 ARGON2PARAMS=1 BALLOON=1 SHAMIRMAC=1 SHARECODE=1 HKF_SIMULATOR=1 -j4 >/"$WORK"/build.log 2>&1; then
       ok "fork built with all feature flags"
       [ -x "$VC" ] || VC="$(find "$SRC" -name veracrypt -type f -perm -u+x 2>/dev/null | head -1)"
     else
@@ -134,10 +141,52 @@ else
     done
   fi
 
+  # --- HKF simulator factor round-trip (needs a build with HKF_SIMULATOR=1) ---
+  # The 2FA acceptance criterion has THREE negative axes: wrong secret, no factor at all (password
+  # alone must be insufficient), and — implicitly — the stock volume above proving no-factor mounts
+  # still work. All classified by failure signature as with argon2.
+  if "$VC" --text --help 2>&1 | grep -q "hkf-backend"; then
+    HKFSEC="00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+    HKFBAD="ff112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+    volh="$WORK/hkf.hc"; mkdir -p "$WORK/hkf.mnt"
+    if "$VC" --text --create "$volh" --size=10M --password="$PW" --pim=0 --keyfiles="" \
+          --encryption=AES --hash=SHA-512 --filesystem=none --volume-type=normal \
+          --random-source=/dev/urandom --hkf-backend=simulator --hkf-sim-secret="$HKFSEC" \
+          >/"$WORK/hkf.c.log" 2>&1; then
+      if "$VC" --text --mount "$volh" "$WORK/hkf.mnt" --password="$PW" --pim=0 --keyfiles="" \
+            --protect-hidden=no --non-interactive --slot=1 --hkf-backend=simulator \
+            --hkf-sim-secret="$HKFSEC" >/"$WORK/hkf.m.log" 2>&1; then
+        "$VC" --text --dismount "$volh" >/dev/null 2>&1
+        ok "hkf-simulator: create -> mount -> dismount round-trip"
+      else
+        classify_mount_log "$WORK/hkf.m.log"; case $? in
+          2) keyok "hkf-simulator: create -> factor mixed + key re-derived + header authenticated";;
+          *) bad   "hkf-simulator: same secret did not re-derive the key (see $WORK/hkf.m.log)";;
+        esac
+      fi
+      for neg in "--hkf-backend=simulator --hkf-sim-secret=$HKFBAD:wrong-secret" ":no-factor"; do
+        nflags="${neg%%:*}"; ndesc="${neg##*:}"
+        if "$VC" --text --mount "$volh" "$WORK/hkf.mnt" --password="$PW" --pim=0 --keyfiles="" \
+              --protect-hidden=no --non-interactive --slot=2 $nflags >/"$WORK/hkf.neg.log" 2>&1; then
+          "$VC" --text --dismount "$volh" >/dev/null 2>&1; bad "hkf-simulator $ndesc: SHOULD NOT mount"
+        else
+          classify_mount_log "$WORK/hkf.neg.log"; case $? in
+            3) ok  "hkf-simulator $ndesc: correctly rejected (password alone / wrong secret insufficient)";;
+            2) bad "hkf-simulator $ndesc: reached dm-crypt WITHOUT the right factor — factor not gating the key";;
+            *) bad "hkf-simulator $ndesc: unexpected failure (see $WORK/hkf.neg.log)";;
+          esac
+        fi
+      done
+    else
+      bad "hkf-simulator: create failed (see $WORK/hkf.c.log)"
+    fi
+  else
+    skip "HKF simulator round-trip — binary built without HKF_SIMULATOR=1"
+  fi
+
   # --- PENDING-INTEGRATION features (CLI/mount glue is the remaining real-build work) ---
   pend "keyslots enroll/open/rotate/revoke CLI (docs/KEYSLOTS-SPEC.md §9 — C++ stream adapters + CLI)"
   pend "duress-dismount end-to-end (--duress-dismount + duress passphrase; docs/DURESS-DISMOUNT-SPEC.md)"
-  pend "HKF factor mount round-trip with a SIMULATOR backend (--hkf-backend simulator; docs/HARDWARE-2FA.md)"
   pend "network-share (McCallum-Relyea) enroll/unlock CLI + transport (docs/NETWORK-SHARE-SPEC.md)"
 fi
 

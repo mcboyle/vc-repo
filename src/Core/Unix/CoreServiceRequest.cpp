@@ -32,6 +32,10 @@ namespace VeraCrypt
 		Argon2Iterations  = sr.DeserializeUInt32 ("Argon2Iterations");
 		Argon2Parallelism = sr.DeserializeUInt32 ("Argon2Parallelism");
 #endif
+#if defined(VC_ENABLE_HKF)
+		sr.Deserialize ("HKFActive", HKFActive);
+		sr.Deserialize ("HKFConfigBlob", BufferPtr ((uint8 *) &HKFCfg, sizeof (HKFCfg)));
+#endif
 	}
 
 	void CoreServiceRequest::Serialize (shared_ptr <Stream> stream) const
@@ -50,6 +54,10 @@ namespace VeraCrypt
 		sr.Serialize ("Argon2MemCostKiB",  Argon2MemCostKiB);
 		sr.Serialize ("Argon2Iterations",  Argon2Iterations);
 		sr.Serialize ("Argon2Parallelism", Argon2Parallelism);
+#endif
+#if defined(VC_ENABLE_HKF)
+		sr.Serialize ("HKFActive", HKFActive);
+		sr.Serialize ("HKFConfigBlob", ConstBufferPtr ((const uint8 *) &HKFCfg, sizeof (HKFCfg)));
 #endif
 	}
 

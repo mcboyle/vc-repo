@@ -69,6 +69,16 @@ ifeq "$(VC_ENABLE_DURESS)" "1"
 OBJS += ../Common/DuressToken.o
 endif
 
+# Hardware/threshold key factor (opt-in via `make HKF=1` / `HKF_SIMULATOR=1` / `YUBIKEY=1` / `FIDO2=1`;
+# the -DVC_ENABLE_HKF define is added globally by the top-level Makefile). The factor module carries its
+# own CRC-32 and, for the simulator/FIDO2-profile backends, uses Crypto/Sha2.o (already in the build).
+# Shamir.o provides the M-of-N reconstruction the RAW_SECRET backend consumes. A default build compiles
+# neither and stays byte-for-byte stock.
+ifeq "$(VC_ENABLE_HKF)" "1"
+OBJS += ../Common/HardwareKeyFactor.o
+OBJS += ../Common/Shamir.o
+endif
+
 # Keyed per-share MAC (opt-in via `make SHAMIRMAC=1`). ShamirMac.o uses only the ShamirShare struct +
 # Sha2.o (already in the build), so it links standalone. A default build stays byte-for-byte stock.
 ifeq "$(VC_ENABLE_SHAMIR_MAC)" "1"

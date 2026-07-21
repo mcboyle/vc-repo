@@ -25,6 +25,11 @@
 #if defined(VC_ENABLE_ARGON2_PARAMS)
 #include "Common/Pkcs5.h"   // Argon2*ParamsOverride: suspend the runtime override during the KAT self-test
 #endif
+#if defined(VC_ENABLE_HKF)
+extern "C" {
+#include "Common/HardwareKeyFactor.h"   // suspend the active factor during the KAT self-test
+}
+#endif
 
 namespace VeraCrypt
 {
@@ -1167,6 +1172,20 @@ namespace VeraCrypt
 
 	void EncryptionTest::TestPkcs5 ()
 	{
+#if defined(VC_ENABLE_HKF)
+		// The known-answer tests below (fixed passwords -> fixed derived keys, and a header
+		// encrypt/decrypt round-trip whose Decrypt path mixes any active hardware factor into the
+		// password) validate the ALGORITHMS, not the user's factor. With a factor configured
+		// (--hkf-backend ...), Decrypt would derive a mixed key and the round-trip would fail,
+		// aborting every create/mount that runs the self-test. Detach the active config for the
+		// duration of the test and restore it on every exit path.
+		struct HKFSuspend {
+			const HKFConfig *saved;
+			HKFSuspend ()  : saved (g_hkfActiveConfig) { HKFSetActiveConfig (0); }
+			~HKFSuspend () { HKFSetActiveConfig (saved); }
+		} hkfSuspend;
+		(void) hkfSuspend;
+#endif
 		VolumePassword password ((uint8*) "password", 8);
 		static const uint8 saltData[] = { 0x12, 0x34, 0x56, 0x78 };
 		ConstBufferPtr salt (saltData, sizeof (saltData));

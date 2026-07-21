@@ -30,7 +30,7 @@ whose CLI/mount glue is the remaining work (so it doubles as a live checklist).
 | 2 | Fork builds with all flags | 0 | `make NOGUI=1 KEYSLOTS=1 …` links (this is where the AF-split link gap was caught) | wired |
 | 3 | Balloon as `--hash` | 2 | create + mount + dismount a `--hash=Balloon` volume | **create proven**; mount blocked only by kernel dm-crypt |
 | 4 | Argon2 explicit params | 2 | create + mount with `--argon2-memory/-iterations`; **mount with different params must fail** | **PROVEN to the kernel boundary** (see below) |
-| 5 | HKF factor (simulator) | 2 | create + mount with `--hkf-backend simulator`; wrong secret fails | wired CLI; harness marks PENDING until confirmed |
+| 5 | HKF factor (simulator) | 2 | create + mount with `--hkf-backend simulator`; wrong secret fails | **PROVEN to the kernel boundary** (same secret → key OK; wrong secret AND password-alone → rejected) |
 | 6 | Multiple keyslots enroll/open/rotate/revoke | 2 | `--keyslot-add/open/rotate/kill/list` round-trip; duress-slot hook | **PENDING** — C++ stream adapters + CLI (`KEYSLOTS-SPEC.md §9`) |
 | 7 | Duress-dismount end-to-end | 2 | mounted volumes + `--duress-dismount` + duress passphrase → all dismount + scrub | **PENDING** — wx orchestration (`DURESS-DISMOUNT-SPEC.md`) |
 | 8 | Network-share (MR) unlock | 2+ | enroll against a Tang-style server, unlock; off-network stays locked | **PENDING** — client transport + `C`-blob format + CLI (`NETWORK-SHARE-SPEC.md`) |
@@ -112,6 +112,41 @@ reproduce the key and different params do not. The only step not exercised here 
 this container exposes no `/dev/mapper/control`). Stock SHA-512 create/mount behaves
 identically (reaches `dmsetup` with the right password, `Incorrect password` with a wrong
 one), confirming no regression.
+
+## HKF simulator round-trip (item #5) — proven, four more defects fixed
+
+Wiring the flagship 2FA feature into the product build surfaced that **`make HKF=1` had never
+existed**: no knob in `src/Makefile`, and no makefile compiled `HardwareKeyFactor.o`/`Shamir.o`
+(CLAUDE.md documented the object-list addition as a manual step). The knobs now exist:
+`HKF=1`, `HKF_SIMULATOR=1` (testing only — never ship), `YUBIKEY=1` (`-lykpers-1`),
+`FIDO2=1` (`-lfido2`); the objects are wired in `Core/Core.make`. Fixes found on the way:
+
+1. **Stale-object trap (build system, twice):** VeraCrypt's make does not rebuild objects when
+   only `-D` feature flags change, so a rebuild with new flags silently produced a **mixed
+   binary** — the CLI had the `--hkf-*` options but `VolumeCreator`/`VolumeHeader` had the
+   hooks compiled out, creating volumes that ignored the factor. gdb (breakpoint on
+   `HKFShouldApply` never firing during a create) pinned it. Rule adopted, and mechanized in
+   the acceptance harness: **treat any feature-flag change as a clean build**.
+2. **Self-test contamination (HKF edition):** with a factor active, the startup KAT's header
+   encrypt/decrypt round-trip mixed the factor into its fixed password and threw `TestFailed`,
+   aborting every create/mount. Fixed with an RAII suspend/restore of `g_hkfActiveConfig`
+   around `EncryptionTest::TestPkcs5` — the same pattern as the Argon2 override.
+3. **CoreService gap (HKF edition):** the factor config is a process global set after the
+   privileged child forks; mount-time derivation in the child never saw it. The config now
+   travels on every `CoreServiceRequest` (raw POD blob — parent and child are the same binary;
+   the pipe already carries the volume password, so no new exposure class) and is re-applied in
+   the child, which wipes its copy when a request carries no factor.
+
+**Round-trip result** (create `--hkf-backend=simulator --hkf-sim-secret=<64-hex>`):
+- mount with the **same** secret → factor mixed, key re-derived, header authenticated → `dmsetup`;
+- mount with a **wrong** secret → `Incorrect password`;
+- mount with **no factor at all** → `Incorrect password` — the password alone is insufficient,
+  which is precisely the 2FA property;
+- stock volumes and `--test` (factor configured) unaffected.
+
+The default build (no flags) was rebuilt from clean and links — all gated code compiles out.
+Harness: `pass=9 fail=0` in this environment (`stock`/`balloon`/`argon2`/`hkf-simulator`
+positives + 4 wrong-key negatives, each classified by failure signature).
 
 ## Real-build attempt result (earlier, superseded by the section above)
 

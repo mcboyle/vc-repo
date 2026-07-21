@@ -15,6 +15,11 @@
 
 #include "Platform/Serializable.h"
 #include "Core/Core.h"
+#if defined(VC_ENABLE_HKF)
+extern "C" {
+#include "Common/HardwareKeyFactor.h"
+}
+#endif
 
 namespace VeraCrypt
 {
@@ -24,7 +29,14 @@ namespace VeraCrypt
 #if defined(VC_ENABLE_ARGON2_PARAMS)
 			, Argon2OverrideActive (false), Argon2MemCostKiB (0), Argon2Iterations (0), Argon2Parallelism (1)
 #endif
-			{ }
+#if defined(VC_ENABLE_HKF)
+			, HKFActive (false)
+#endif
+			{
+#if defined(VC_ENABLE_HKF)
+				Memory::Zero (&HKFCfg, sizeof (HKFCfg));
+#endif
+			}
 		TC_SERIALIZABLE (CoreServiceRequest);
 
 		virtual bool RequiresElevation () const { return false; }
@@ -46,6 +58,16 @@ namespace VeraCrypt
 		uint32 Argon2MemCostKiB;
 		uint32 Argon2Iterations;
 		uint32 Argon2Parallelism;
+#endif
+#if defined(VC_ENABLE_HKF)
+		// The hardware/threshold key factor config is likewise a process-global (set by the CLI via
+		// HKFSetActiveConfig) that the forked CoreService child performing mount-time key derivation
+		// would otherwise never see. Carried as a raw POD blob: parent and child run the same binary,
+		// so the struct layout is identical, and the pipe already transports the volume password —
+		// the factor secret adds no new exposure class. Re-applied in ProcessRequests; the child
+		// scrubs its copy when the config is cleared.
+		bool      HKFActive;
+		HKFConfig HKFCfg;
 #endif
 	};
 

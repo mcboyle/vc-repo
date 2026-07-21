@@ -23,6 +23,11 @@
 #if defined(VC_ENABLE_ARGON2_PARAMS)
 #include "Common/Pkcs5.h"   // Argon2*ParamsOverride: propagate the explicit-params override to the child
 #endif
+#if defined(VC_ENABLE_HKF)
+extern "C" {
+#include "Common/HardwareKeyFactor.h"   // propagate the active factor config to the child
+}
+#endif
 #include "Platform/Unix/Process.h"
 #include "Core/Core.h"
 #include "CoreUnix.h"
@@ -176,6 +181,26 @@ namespace VeraCrypt
 					Argon2SetParamsOverride (1, request->Argon2MemCostKiB, request->Argon2Iterations, request->Argon2Parallelism);
 				else
 					Argon2SetParamsOverride (0, 0, 0, 1);
+#endif
+
+#if defined(VC_ENABLE_HKF)
+				// Re-apply the front-end's hardware/threshold factor config in this child so mount-time
+				// derivation (VolumeHeader::Decrypt) mixes the factor exactly as create did. The copy
+				// lives in function-local static storage (g_hkfActiveConfig points at it) and is wiped
+				// when a request arrives with no factor, so the secret does not outlive its use.
+				{
+					static HKFConfig childHKFCfg;
+					if (request->HKFActive)
+					{
+						childHKFCfg = request->HKFCfg;
+						HKFSetActiveConfig (&childHKFCfg);
+					}
+					else
+					{
+						HKFSetActiveConfig (nullptr);
+						Memory::Zero (&childHKFCfg, sizeof (childHKFCfg));
+					}
+				}
 #endif
 
 				try
@@ -424,6 +449,20 @@ namespace VeraCrypt
 			request.Argon2MemCostKiB  = mem;
 			request.Argon2Iterations  = iters;
 			request.Argon2Parallelism = par;
+		}
+#endif
+
+#if defined(VC_ENABLE_HKF)
+		// Snapshot the active hardware/threshold factor config for the child (see CoreServiceRequest.h).
+		if (g_hkfActiveConfig && g_hkfActiveConfig->backend != HKF_BACKEND_NONE)
+		{
+			request.HKFActive = true;
+			request.HKFCfg = *g_hkfActiveConfig;
+		}
+		else
+		{
+			request.HKFActive = false;
+			Memory::Zero (&request.HKFCfg, sizeof (request.HKFCfg));
 		}
 #endif
 

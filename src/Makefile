@@ -153,6 +153,7 @@ export VC_ENABLE_KEYSLOTS ?= 0
 export VC_ENABLE_ARGON2_PARAMS ?= 0
 export VC_ENABLE_SHAMIR_MAC ?= 0
 export VC_ENABLE_SHARECODE ?= 0
+export VC_ENABLE_HKF ?= 0
 
 export GCC_GTEQ_440 := 0
 export GCC_GTEQ_430 := 0
@@ -236,6 +237,30 @@ endif
 ifeq "$(origin ARGON2PARAMS)" "command line"
 	VC_ENABLE_ARGON2_PARAMS := 1
 	C_CXX_FLAGS += -DVC_ENABLE_ARGON2_PARAMS
+endif
+
+# Hardware/threshold key factor (opt-in). `make HKF=1` defines the feature macro for the whole build,
+# exposes the --hkf-* CLI options, and links Common/HardwareKeyFactor.o + Common/Shamir.o (see
+# Core/Core.make). Backends are separately opt-in: YUBIKEY=1 (-lykpers-1), FIDO2=1 (-lfido2), and
+# HKF_SIMULATOR=1 (software token — TESTING ONLY, never ship). A plain `make` stays byte-for-byte
+# stock. See docs/HARDWARE-2FA.md.
+ifeq "$(origin HKF)" "command line"
+	VC_ENABLE_HKF := 1
+	C_CXX_FLAGS += -DVC_ENABLE_HKF
+endif
+ifeq "$(origin HKF_SIMULATOR)" "command line"
+	VC_ENABLE_HKF := 1
+	C_CXX_FLAGS += -DVC_ENABLE_HKF -DVC_ENABLE_HKF_SIMULATOR
+endif
+ifeq "$(origin YUBIKEY)" "command line"
+	VC_ENABLE_HKF := 1
+	C_CXX_FLAGS += -DVC_ENABLE_HKF -DVC_ENABLE_YUBIKEY_HMAC
+	export LIBS += -lykpers-1
+endif
+ifeq "$(origin FIDO2)" "command line"
+	VC_ENABLE_HKF := 1
+	C_CXX_FLAGS += -DVC_ENABLE_HKF -DVC_ENABLE_FIDO2
+	export LIBS += -lfido2
 endif
 
 # RAW_SECRET salt-binding (opt-in; an HKF sub-feature). `make HKF_SALT_BIND=1` makes the RAW_SECRET

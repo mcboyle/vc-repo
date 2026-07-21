@@ -91,10 +91,14 @@ sudo apt-get update && sudo apt-get install -y libykpers-1-dev libfido2-dev libw
 #   -DVC_ENABLE_YUBIKEY_HMAC   YubiKey backend   (link -lykpers-1)
 #   -DVC_ENABLE_FIDO2          FIDO2 backend     (link -lfido2)
 #   -DVC_ENABLE_HKF_SIMULATOR  software token    (testing only — never ship)
-cd src && make   # add the flags via CFLAGS/CXXFLAGS/LIBS (see docs/HARDWARE-2FA.md §Build)
+cd src && make CC=clang CXX=clang++ HKF=1            # or HKF_SIMULATOR=1 / YUBIKEY=1 / FIDO2=1
 ```
-Add `Common/HardwareKeyFactor.c` and `Common/Shamir.c` to the Common object list (next to
-`Keyfiles.o`) and set the defines + `-lykpers-1 -lfido2`. Windows: add to `Common.vcxproj`.
+The make knobs are wired (top-level `Makefile` + `Core/Core.make`): `HKF=1` compiles
+`HardwareKeyFactor.o` + `Shamir.o` and exposes the `--hkf-*` CLI; `YUBIKEY=1`/`FIDO2=1` add the
+backend + `-lykpers-1`/`-lfido2`; `HKF_SIMULATOR=1` adds the software token (testing only — never
+ship). Use clang (gcc rejects stock `Crypto/chacha256.c`), and **`make clean` when changing feature
+flags** — make does not rebuild objects on `-D` changes, and a mixed binary silently drops hooks
+(see docs/REAL-BUILD-VALIDATION.md). Windows: add the sources to `Common.vcxproj` manually.
 
 ## Verification methodology (the project's convention — keep it)
 
