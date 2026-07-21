@@ -240,12 +240,25 @@ All three backends are selectable from the CLI via `--keyslot-backend header|sid
   master key, and a wrong passphrase opens nothing. The slot is not enumerable (`--keyslot-list`
   reports this by design).
 
-Remaining, real-build only (needs the kernel / real media):
+**Mount-time auto-search — built and proven** (`Volume/Volume.cpp`). A plain `--mount` whose password
+does not open any native header now falls through to the header-slack keyslots (`Volume::Open` builds a
+read-only `KeyslotArea` over the volume `File` and calls `KeyslotOpen`):
 
-- **Mount-time auto-search** — having a plain `--mount` try `KeyslotOpen` after the native header fails
-  (and invoke `UserInterface::DuressDismount()` for a `KEYSLOT_FLAG_DURESS` slot) rather than requiring
-  `--keyslot-open`. The key-recovery half is proven by the CLI above; only the final dm-crypt table
-  load is unexercised in a sandbox (the universal Tier-2 boundary).
+- a **normal** matching slot recovers the effective header plaintext (the keyslot payload — now the
+  full 448-byte `Deserialize` input, not just the master keys), rebuilds the header via
+  `VolumeHeader::RebuildFromKeyslot` (zero-padding the reserved tail no field/CRC covers), and mounts
+  from it **without re-deriving the header key**;
+- a slot flagged `KEYSLOT_FLAG_DURESS` throws `KeyslotDuress` (registered in the volume exception set,
+  so it crosses the CoreService boundary), which the CLI catches to run the safe duress action
+  (dismount all + scrub, **mount nothing**).
+
+Proven on a real volume (acceptance harness): a plain `--mount` with a normal slot passphrase recovers
+the VMK, rebuilds the header, and reaches the kernel `dmsetup` step (would mount on a real kernel); a
+plain `--mount` with a duress slot passphrase fires the duress action and never touches the volume; a
+wrong passphrase is rejected. Only the final dm-crypt table load is unexercised in a sandbox (the
+universal Tier-2 boundary).
+
+Remaining, real-build only (needs the kernel / real media):
 - **Backup-header mirroring** — the backup-header group at volume end mirrors the primary group; a slot
   table in the primary slack is not mirrored automatically, so restoring a backup header will not
   restore slots unless the restore path learns to mirror the table.

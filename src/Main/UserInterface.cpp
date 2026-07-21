@@ -250,7 +250,7 @@ namespace VeraCrypt
 			RandomNumberGenerator::Start();
 
 		const int backend = CmdLine->ArgKeyslotBackend;   // 1 header, 2 deniable, 3 sidecar
-		const int vmkLen  = 1 + (int) VolumeHeader::GetMasterKeyDataSize();
+		const int vmkLen  = 1 + (int) VolumeHeader::GetKeyslotPayloadSize();
 
 		// Bind 'area'/'areaCtx' over 'storeFile' for the chosen backend. For header/deniable the store IS
 		// the container (deniable = a passphrase-derived slot in the free-space/data region, so the
@@ -343,7 +343,7 @@ namespace VeraCrypt
 
 			if (volume)
 			{
-				ConstBufferPtr mk = volume->GetHeader()->GetMasterKeys();
+				ConstBufferPtr mk = volume->GetHeader()->GetHeaderPlaintext();   // effective header plaintext (keyslot payload)
 				int eaIndex = -1, i = 0;
 				wstring eaName = volume->GetEncryptionAlgorithm()->GetName();
 				foreach (shared_ptr <EncryptionAlgorithm> ea, EncryptionAlgorithm::GetAvailableAlgorithms())
@@ -1437,6 +1437,9 @@ const FileManager fileManagers[] = {
 					break;
 
 				case CommandId::MountVolume:
+#if defined(VC_ENABLE_KEYSLOTS)
+					try {
+#endif
 					if (Preferences.OpenExplorerWindowAfterMount)
 					{
 						// Open explorer window for an already mounted volume
@@ -1466,6 +1469,19 @@ const FileManager fileManagers[] = {
 						}
 						mountedVolumes.push_back (volume);
 					}
+#if defined(VC_ENABLE_KEYSLOTS)
+					}
+					catch (KeyslotDuress&)
+					{
+						// The password opened a keyslot flagged as a DURESS slot: run the safe duress
+						// action (dismount all + scrub, mount nothing) instead of mounting this volume.
+						// Nothing on disk is altered; see docs/KEYSLOTS-SPEC.md §5, DURESS-DISMOUNT-SPEC.md.
+						ShowString (L"Duress keyslot: dismounting all volumes and scrubbing keys; nothing mounted.\n");
+#if defined(VC_ENABLE_DURESS)
+						DuressDismount();
+#endif
+					}
+#endif
 					break;
 
 				default:

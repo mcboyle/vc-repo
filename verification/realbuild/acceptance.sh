@@ -268,7 +268,37 @@ else
   else
     skip "keyslots lifecycle — binary built without KEYSLOTS=1"
   fi
-  pend "keyslots duress-slot mount-time trigger + auto mount-from-slot (needs kernel dm-crypt; CLI open proves the key recovery, docs/KEYSLOTS-SPEC.md §9)"
+  # --- Mount-time keyslot auto-search: a plain --mount tries keyslots after the native header fails,
+  #     mounting from a normal slot and FIRING THE DURESS ACTION on a duress slot. Both are observable
+  #     without the kernel: a normal-slot mount reaches dm-crypt (key recovered + header rebuilt), while
+  #     a duress-slot mount prints the duress message and never touches the volume.
+  if "$VC" --text --help 2>&1 | grep -q "keyslot-add"; then
+    av="$WORK/autos.hc"; AP1="autos-native-1"; AP2="autos-normal-2"; AP3="autos-duress-3"; mkdir -p "$WORK/a.mnt"
+    if "$VC" --text --create "$av" --size=10M --password="$AP1" --pim=0 --keyfiles="" \
+          --encryption=AES --hash=SHA-512 --filesystem=none --volume-type=normal \
+          --random-source=/dev/urandom >/dev/null 2>&1; then
+      "$VC" --text --keyslot-add "$av" --password="$AP1" --new-password="$AP2" --pim=0 --keyfiles="" >/dev/null 2>&1
+      "$VC" --text --keyslot-add "$av" --password="$AP1" --new-password="$AP3" --keyslot-duress --pim=0 --keyfiles="" >/dev/null 2>&1
+      amount() { "$VC" --text --mount "$av" "$WORK/a.mnt" --password="$1" --pim=0 --keyfiles="" \
+                 --protect-hidden=no --non-interactive --slot="$2" 2>&1; }
+      # normal keyslot -> auto-search recovers the VMK, rebuilds the header, reaches the kernel step
+      amount "$AP2" 5 >/"$WORK/a.norm.log" 2>&1
+      classify_mount_log "$WORK/a.norm.log"; [ $? = 2 ] \
+          && ok  "keyslots auto-search: a plain --mount with a NORMAL slot passphrase mounts via the slot (key recovered, header rebuilt)" \
+          || bad "keyslots auto-search: normal-slot --mount did not recover via the keyslot"
+      # duress keyslot -> fires the duress action; the volume is never opened (no dm-crypt / no Incorrect)
+      amount "$AP3" 6 >/"$WORK/a.dur.log" 2>&1
+      if grep -qi "Duress keyslot" "$WORK/a.dur.log" && ! grep -qiE "device-mapper|Incorrect password" "$WORK/a.dur.log"; then
+        ok "keyslots auto-search: a plain --mount with a DURESS slot passphrase fires the duress action (nothing mounted)"
+      else
+        bad "keyslots auto-search: duress slot did not fire the duress action"
+      fi
+    else
+      bad "keyslots auto-search: base volume create failed"
+    fi
+  else
+    skip "keyslots mount-time auto-search — binary built without keyslots"
+  fi
   # --- Duress passphrase: register a (salt, tag), then prove recognition ROUTES a mount to the safe
   #     duress action instead of the mount path. The distinguishing observable needs no kernel: a
   #     recognised duress passphrase never touches the volume (no dm-crypt / no header read), while any
