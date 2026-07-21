@@ -22,3 +22,15 @@ run_*
 verification/__pycache__/
 *.pyc
 *.d
+# VeraCrypt per-CPU-feature object variants (SIMD-dispatched build artifacts)
+*.o0
+*.osse2
+*.ossse3
+*.osse41
+*.oavx
+*.oavx2
+*.oavx512
+*.oshani
+*.osha256
+*.o.tmp
+*.tmp
