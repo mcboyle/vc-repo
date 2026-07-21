@@ -151,6 +151,8 @@ export VC_ENABLE_KEYSCRUB ?= 0
 export VC_ENABLE_DURESS ?= 0
 export VC_ENABLE_KEYSLOTS ?= 0
 export VC_ENABLE_ARGON2_PARAMS ?= 0
+export VC_ENABLE_SHAMIR_MAC ?= 0
+export VC_ENABLE_SHARECODE ?= 0
 
 export GCC_GTEQ_440 := 0
 export GCC_GTEQ_430 := 0
@@ -241,6 +243,27 @@ endif
 # already-gated HardwareKeyFactor.c + the CLI; a plain `make` stays stock. See docs/SALT-BINDING-SPEC.md.
 ifeq "$(origin HKF_SALT_BIND)" "command line"
 	C_CXX_FLAGS += -DVC_ENABLE_HKF_SALT_BIND
+endif
+
+# Balloon memory-hard KDF as a selectable PRF (opt-in). `make BALLOON=1` exposes the Balloon hash
+# (--hash Balloon) via derive_key_balloon in Common/Pkcs5.c + the Pkcs5Balloon class in Volume/ (both
+# already in the build); no new objects. A plain `make` stays byte-for-byte stock. docs/BALLOON-SPEC.md.
+ifeq "$(origin BALLOON)" "command line"
+	C_CXX_FLAGS += -DVC_ENABLE_BALLOON_KDF
+endif
+
+# Keyed per-share MAC for Shamir shares (opt-in). `make SHAMIRMAC=1` adds Common/ShamirMac.o (adversarial
+# share tamper/fabrication detection). Sha2.o is already in the build. docs/VSS-SPEC.md.
+ifeq "$(origin SHAMIRMAC)" "command line"
+	VC_ENABLE_SHAMIR_MAC := 1
+	C_CXX_FLAGS += -DVC_ENABLE_SHAMIR_MAC
+endif
+
+# Transcribable checksummed share encoding (opt-in). `make SHARECODE=1` adds Common/ShareCode.o (bech32/
+# BIP-173 recovery strings). Sha2.o is already in the build. docs/VSS-SPEC.md.
+ifeq "$(origin SHARECODE)" "command line"
+	VC_ENABLE_SHARECODE := 1
+	C_CXX_FLAGS += -DVC_ENABLE_SHARECODE
 endif
 
 #------ Linux configuration ------

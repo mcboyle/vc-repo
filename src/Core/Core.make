@@ -48,9 +48,23 @@ ifeq "$(VC_ENABLE_KEYSLOTS)" "1"
 OBJS += ../Common/Keyslot.o
 OBJS += ../Common/KeyslotStore.o
 OBJS += ../Common/KeyslotKdf.o
+OBJS += ../Common/AfSplit.o          # KeyslotStore.c calls AfSplit/AfMerge (afStripes) — required to link
+OBJS += ../Common/KeyslotAreaFile.o  # file-backed KeyslotArea bindings (header-slack / sidecar / deniable)
 ifneq "$(VC_ENABLE_KEYSCRUB)" "1"
 OBJS += ../Crypto/chacha256.o
 endif
+endif
+
+# Keyed per-share MAC (opt-in via `make SHAMIRMAC=1`). ShamirMac.o uses only the ShamirShare struct +
+# Sha2.o (already in the build), so it links standalone. A default build stays byte-for-byte stock.
+ifeq "$(VC_ENABLE_SHAMIR_MAC)" "1"
+OBJS += ../Common/ShamirMac.o
+endif
+
+# Transcribable share encoding (opt-in via `make SHARECODE=1`). ShareCode.o likewise needs only the
+# ShamirShare struct; a default build stays byte-for-byte stock.
+ifeq "$(VC_ENABLE_SHARECODE)" "1"
+OBJS += ../Common/ShareCode.o
 endif
 
 include $(BUILD_INC)/Makefile.inc
