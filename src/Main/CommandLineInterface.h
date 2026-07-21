@@ -54,6 +54,13 @@ namespace VeraCrypt
 			MountVolume,
 			RestoreHeaders,
 			SavePreferences,
+#if defined(VC_ENABLE_KEYSLOTS)
+			KeyslotAdd,
+			KeyslotOpen,
+			KeyslotRotate,
+			KeyslotKill,
+			KeyslotList,
+#endif
 			Test
 		};
 	};
@@ -87,6 +94,11 @@ namespace VeraCrypt
 		int ArgPim;
 #if defined(VC_ENABLE_HKF)
 		HKFConfig ArgHKFConfig;
+#endif
+#if defined(VC_ENABLE_KEYSLOTS)
+		shared_ptr <VolumePassword> ArgKeyslotPassword;   // the NEW slot's passphrase (add/rotate/open/kill target)
+		int ArgKeyslotIndex;                              // --keyslot-kill N
+		bool ArgKeyslotDuress;                            // mark the added slot as a duress slot
 #endif
 		bool ArgQuick;
 		FilesystemPath ArgRandomSourcePath;

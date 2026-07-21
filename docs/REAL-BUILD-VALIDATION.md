@@ -31,7 +31,7 @@ whose CLI/mount glue is the remaining work (so it doubles as a live checklist).
 | 3 | Balloon as `--hash` | 2 | create + mount + dismount a `--hash=Balloon` volume | **create proven**; mount blocked only by kernel dm-crypt |
 | 4 | Argon2 explicit params | 2 | create + mount with `--argon2-memory/-iterations`; **mount with different params must fail** | **PROVEN to the kernel boundary** (see below) |
 | 5 | HKF factor (simulator) | 2 | create + mount with `--hkf-backend simulator`; wrong secret fails | **PROVEN to the kernel boundary** (same secret → key OK; wrong secret AND password-alone → rejected) |
-| 6 | Multiple keyslots enroll/open/rotate/revoke | 2 | `--keyslot-add/open/rotate/kill/list` round-trip; duress-slot hook | **PENDING** — C++ stream adapters + CLI (`KEYSLOTS-SPEC.md §9`) |
+| 6 | Multiple keyslots enroll/open/rotate/revoke | 2 | `--keyslot-add/open/rotate/kill/list` round-trip; duress-slot hook | **PROVEN** (CLI lifecycle on a real volume; see below). Mount-time auto-search needs kernel dm-crypt |
 | 7 | Duress-dismount end-to-end | 2 | mounted volumes + `--duress-dismount` + duress passphrase → all dismount + scrub | **PENDING** — wx orchestration (`DURESS-DISMOUNT-SPEC.md`) |
 | 8 | Network-share (MR) unlock | 2+ | enroll against a Tang-style server, unlock; off-network stays locked | **PENDING** — client transport + `C`-blob format + CLI (`NETWORK-SHARE-SPEC.md`) |
 | 9 | OPRF / threshold / VOPRF unlock | 2+ | blind→evaluate→finalize against a rate-limited server | **PENDING** — server + transport (`OPRF-SPEC.md`) |
@@ -112,6 +112,48 @@ reproduce the key and different params do not. The only step not exercised here 
 this container exposes no `/dev/mapper/control`). Stock SHA-512 create/mount behaves
 identically (reaches `dmsetup` with the right password, `Incorrect password` with a wrong
 one), confirming no regression.
+
+## Multiple keyslots (item #6) — CLI lifecycle proven on a real volume
+
+The keyslot core (`Common/Keyslot*.{c,h}`, steps `[8]`/`[9]`/`[36]`/`[37]`) is now wired into the
+product: a C++ mount-path binding (`Volume/KeyslotVolumeBinding.h`) exposes the header-slack
+`KeyslotArea` over the app's `File` class, `VolumeHeader::GetMasterKeys()` surfaces the VMK (the header
+key area) on a successful open, and five CLI verbs drive the proven `KeyslotStore` ops:
+
+```
+--keyslot-add    volume --password <existing> --new-password <new> [--keyslot-duress]
+--keyslot-open   volume --password <existing> --new-password <probe>
+--keyslot-rotate volume --password <opens-a-slot> --new-password <new>
+--keyslot-kill=N volume
+--keyslot-list   volume
+```
+
+Every op recovers the VMK with `--password` (via the native header **or** an existing keyslot — so a
+slot passphrase is a first-class opener) and works on the primary header slack `[512, 64K)`; slot 0 and
+the body are never touched. Because the ops are pure header-region file I/O, the **entire lifecycle is
+provable without the kernel** — `--keyslot-open` reports whether the passphrase recovers the *exact*
+master key, which is the mount capability itself.
+
+Proven end-to-end on a real 10 MiB container (mechanised in `verification/realbuild/acceptance.sh`):
+
+- enroll a slot under a second passphrase → it opens and the recovered master key **matches the native
+  header byte-for-byte** (this passphrase mounts the volume);
+- a wrong passphrase opens no slot;
+- add a third, revoke the first → the revoked passphrase no longer opens, the survivor still does;
+- rotate using a slot passphrase as the opener → the old slot is retired and the new one installed;
+- a `--keyslot-duress` slot round-trips its flag (open reports `[DURESS slot]`);
+- the native 512-byte header and the whole data body are **byte-identical** before and after.
+
+`KeyslotOpenAt` (a per-index admin open, distinct from the constant-time `KeyslotOpen` mount path) was
+added to let rotation locate the slot to retire. Two build-integration issues surfaced and were fixed:
+the RNG must be `Start()`ed and `GetData` called with `allowAnyLength` for the 1 KiB slot fills, and
+the VMK size is `DataKeyAreaMaxSize` (exposed as `GetMasterKeyDataSize()`), not the
+smaller `GetLargestSerializedKeySize()` — using the latter made a slot probe mis-sized.
+
+The one piece that still needs a real kernel is the **mount-time convenience**: having a plain `--mount`
+automatically try keyslots after the native header fails (and invoke the duress action on a duress
+slot). The key-recovery half of that is exactly what `--keyslot-open` proves here; only the final
+dm-crypt table load is unexercised, the same universal Tier-2 boundary as items #3/#4/#5.
 
 ## HKF simulator round-trip (item #5) — proven, four more defects fixed
 

@@ -48,6 +48,12 @@ namespace VeraCrypt
 		// leaves a "destruction" tell and forfeits deniability). See docs/DURESS-DISMOUNT-SPEC.md.
 		virtual void DuressDismount () const;
 #endif
+#if defined(VC_ENABLE_KEYSLOTS)
+		// Keyslot lifecycle: add / test-open / rotate / revoke / list additional wrappings of the
+		// volume master key in the primary header slack (docs/KEYSLOTS-SPEC.md §9). Never touches the
+		// native 512-byte header or the body.
+		virtual void KeyslotCommand (CommandId::Enum command) const;
+#endif
 		virtual void DisplayVolumeProperties (const VolumeInfoList &volumes) const;
 		virtual void DoShowError (const wxString &message) const = 0;
 		virtual void DoShowInfo (const wxString &message) const = 0;

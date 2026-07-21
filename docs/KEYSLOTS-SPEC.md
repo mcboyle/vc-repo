@@ -215,22 +215,29 @@ with every access bounds-checked against the bound window:
   (`docs/THREAT-MODEL.md`), not hidden.
 - AF-split records (`[36]`) compose through the file bindings (tested).
 
-Remaining, real-build only (needs real volumes and the wx app):
+**Built and proven on a real volume** (step `[6-realbuild]`, `docs/REAL-BUILD-VALIDATION.md`):
 
-- **C++ stream adapters** — the same windows bound over the C++ `File`/`FileStream` classes for the
-  mount path, plus `kdf` → `KeyslotKdfSha512` and `randBytes` → `RandomNumberGenerator`. Note the
-  **backup-header group** at volume end mirrors the primary group; a slot table in the primary slack
-  is not mirrored automatically — restoring a backup header will not restore slots unless the
-  restore path learns to mirror the table.
-- **Mount-time search** — in the C++ mount path (`Volume/VolumeHeader.cpp` / `Core`), after the native
-  header (slot 0) fails, call `KeyslotOpen` to recover the VMK from a slot; a slot whose `flags` has
-  `KEYSLOT_FLAG_DURESS` invokes `UserInterface::DuressDismount()` instead of mounting.
+- **C++ mount-path binding** — `Volume/KeyslotVolumeBinding.h` binds the header-slack window over the
+  app's `File` class (`kdf` → `KeyslotKdfSha512`, `randBytes` → `RandomNumberGenerator`), and
+  `VolumeHeader::GetMasterKeys()` / `GetMasterKeyDataSize()` surface the VMK on a successful open.
 - **CLI** — `--keyslot-add` / `--keyslot-open` / `--keyslot-rotate` / `--keyslot-kill N` /
-  `--keyslot-list`, each opening the volume via any existing slot to recover the VMK, then calling the
-  matching store op. `--keyslot-backend header|deniable|sidecar` selects placement.
-- **Deniable-backend hardening** — the passphrase-derived placement is implemented and tested, but its
-  robustness against **multi-snapshot** and its free-space/hidden-volume-region interaction must be
-  validated on real media before it is trusted (same class of caveat as hidden volumes in
-  `docs/THREAT-MODEL.md`).
+  `--keyslot-list` (`Main/CommandLineInterface.cpp`, `Main/UserInterface.cpp::KeyslotCommand`). Each
+  recovers the VMK with `--password` via the native header **or** an existing keyslot, then runs the
+  matching store op on the header-slack backend. `KeyslotOpenAt` (`Common/KeyslotStore.c`) is the
+  admin-side per-index open rotation uses to locate the slot to retire (distinct from the
+  constant-time `KeyslotOpen` used for opening). Proven: enroll→open (exact master-key match)→wrong-pass
+  reject→add/kill→rotate→duress-flag round-trip, with slot 0 and the body byte-untouched throughout.
 
-Validate all of the above on a real build, as with the other integration layers in this fork.
+Remaining, real-build only (needs the kernel / real media):
+
+- **Mount-time auto-search** — having a plain `--mount` try `KeyslotOpen` after the native header fails
+  (and invoke `UserInterface::DuressDismount()` for a `KEYSLOT_FLAG_DURESS` slot) rather than requiring
+  `--keyslot-open`. The key-recovery half is proven by the CLI above; only the final dm-crypt table
+  load is unexercised in a sandbox (the universal Tier-2 boundary).
+- **Backup-header mirroring** — the backup-header group at volume end mirrors the primary group; a slot
+  table in the primary slack is not mirrored automatically, so restoring a backup header will not
+  restore slots unless the restore path learns to mirror the table.
+- **Deniable / sidecar backends via the CLI** — the header-slack backend is wired; the deniable and
+  sidecar placements (proven in the store + file bindings, steps `[9]`/`[37]`) are not yet selectable
+  from the CLI (`--keyslot-backend`). Deniable-backend robustness against **multi-snapshot** must also
+  be validated on real media (same caveat class as hidden volumes, `docs/THREAT-MODEL.md`).

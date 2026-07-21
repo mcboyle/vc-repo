@@ -60,12 +60,16 @@ if command -v make >/dev/null 2>&1; then
     # clang is required in practice: gcc hard-errors on stock Crypto/chacha256.c ("duplicate static").
     # HKF_SIMULATOR (not just HKF) so the simulator round-trip below can run — testing only, never ship.
     VCC=""; command -v clang >/dev/null 2>&1 && VCC="CC=clang CXX=clang++"
-    # `make clean` first: the build system does NOT rebuild objects when only -D feature flags change,
-    # so objects left by a differently-flagged build would silently produce a mixed binary (this
-    # exact trap produced two phantom bugs during validation — treat flag changes as clean builds).
-    make -C "$SRC" clean >/dev/null 2>&1 || true
-    echo "  building: make -C $SRC $VCC NOGUI=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 ARGON2PARAMS=1 BALLOON=1 SHAMIRMAC=1 SHARECODE=1 HKF_SIMULATOR=1"
-    if make -C "$SRC" $VCC NOGUI=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 ARGON2PARAMS=1 BALLOON=1 SHAMIRMAC=1 SHARECODE=1 HKF_SIMULATOR=1 -j4 >/"$WORK"/build.log 2>&1; then
+    FLAGS="NOGUI=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 ARGON2PARAMS=1 BALLOON=1 SHAMIRMAC=1 SHARECODE=1 HKF_SIMULATOR=1"
+    # `make clean` first, WITH the same feature flags: the build system does NOT rebuild objects when
+    # only -D feature flags change, AND a plain `make clean` only removes objects that are in OBJS for
+    # the *current* flags — so a feature object (e.g. Common/KeyScrub.o) left by a differently-flagged
+    # build would survive the clean and silently produce a mixed binary or a duplicate-symbol link
+    # error. Passing the flags to clean puts every feature object in OBJS so it is actually removed.
+    # (This trap produced several phantom failures during validation — always clean WITH the flags.)
+    make -C "$SRC" $FLAGS clean >/dev/null 2>&1 || true
+    echo "  building: make -C $SRC $VCC $FLAGS"
+    if make -C "$SRC" $VCC $FLAGS -j4 >/"$WORK"/build.log 2>&1; then
       ok "fork built with all feature flags"
       [ -x "$VC" ] || VC="$(find "$SRC" -name veracrypt -type f -perm -u+x 2>/dev/null | head -1)"
     else
@@ -185,7 +189,49 @@ else
   fi
 
   # --- PENDING-INTEGRATION features (CLI/mount glue is the remaining real-build work) ---
-  pend "keyslots enroll/open/rotate/revoke CLI (docs/KEYSLOTS-SPEC.md §9 — C++ stream adapters + CLI)"
+  # --- Keyslots enroll/open/rotate/revoke/list (needs a build with KEYSLOTS=1) ---
+  # The keyslot ops live entirely in the primary header slack [512,64K) and never touch slot 0 (the
+  # native header) or the body — so the whole lifecycle is provable WITHOUT the kernel: a keyslot-open
+  # reports whether the passphrase recovers the exact master key (== can mount). Full round-trip:
+  # add P2 -> opens & matches; wrong pass -> no open; add P3, kill 0, P2 gone / P3 stays; rotate; and
+  # a byte-diff proving the 512-byte header + data region are untouched.
+  if "$VC" --text --help 2>&1 | grep -q "keyslot-add"; then
+    ksv="$WORK/ks.hc"; P1="ks-native-1"; P2="ks-second-2"; P3="ks-third-3"
+    if "$VC" --text --create "$ksv" --size=10M --password="$P1" --pim=0 --keyfiles="" \
+          --encryption=AES --hash=SHA-512 --filesystem=none --volume-type=normal \
+          --random-source=/dev/urandom >/dev/null 2>&1; then
+      cp "$ksv" "$ksv.orig"
+      ksok() { "$VC" --text --keyslot-open "$ksv" --password="$1" --new-password="$2" --pim=0 --keyfiles="" 2>&1 | grep -qi "matches the native"; }
+      "$VC" --text --keyslot-add "$ksv" --password="$P1" --new-password="$P2" --pim=0 --keyfiles="" >/dev/null 2>&1
+      ksok "$P1" "$P2"  && ok  "keyslots: enrolled slot opens & recovers the exact master key" \
+                        || bad "keyslots: enrolled slot did not recover the master key"
+      ksok "$P1" "wrongpass" && bad "keyslots: WRONG passphrase opened a slot" \
+                             || ok  "keyslots: wrong passphrase correctly rejected"
+      # add a 2nd slot, revoke the 1st, confirm P2 gone and P3 stays
+      "$VC" --text --keyslot-add "$ksv" --password="$P1" --new-password="$P3" --pim=0 --keyfiles="" >/dev/null 2>&1
+      "$VC" --text --keyslot-kill=0 "$ksv" >/dev/null 2>&1
+      { ! ksok "$P1" "$P2"; } && ksok "$P1" "$P3" \
+          && ok  "keyslots: revoke removes exactly the killed slot (P2 gone, P3 opens)" \
+          || bad "keyslots: revoke did not behave (P2 still opens or P3 lost)"
+      # rotate P3 -> a new passphrase using P3 itself as the opening credential
+      "$VC" --text --keyslot-rotate "$ksv" --password="$P3" --new-password="ks-fourth-4" --pim=0 --keyfiles="" >/dev/null 2>&1
+      { ! ksok "$P1" "$P3"; } && ksok "$P1" "ks-fourth-4" \
+          && ok  "keyslots: rotate retires the old slot and installs the new one" \
+          || bad "keyslots: rotate did not swap the slot"
+      # the native 512-byte header and the data body must be byte-identical throughout
+      cmp -s <(head -c 512 "$ksv.orig") <(head -c 512 "$ksv") \
+          && ok  "keyslots: native 512-byte header untouched" \
+          || bad "keyslots: native header changed"
+      cmp -s <(tail -c 5242880 "$ksv.orig") <(tail -c 5242880 "$ksv") \
+          && ok  "keyslots: data region untouched" \
+          || bad "keyslots: data region changed"
+    else
+      bad "keyslots: base volume create failed"
+    fi
+  else
+    skip "keyslots lifecycle — binary built without KEYSLOTS=1"
+  fi
+  pend "keyslots duress-slot mount-time trigger + auto mount-from-slot (needs kernel dm-crypt; CLI open proves the key recovery, docs/KEYSLOTS-SPEC.md §9)"
   pend "duress-dismount end-to-end (--duress-dismount + duress passphrase; docs/DURESS-DISMOUNT-SPEC.md)"
   pend "network-share (McCallum-Relyea) enroll/unlock CLI + transport (docs/NETWORK-SHARE-SPEC.md)"
 fi

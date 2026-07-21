@@ -156,6 +156,14 @@ namespace VeraCrypt
 		parser.AddOption (L"",	L"argon2-iterations",	_("Argon2id time cost / iterations (explicit; overrides the PIM-derived default)"));
 		parser.AddOption (L"",	L"argon2-parallelism",	_("Argon2id parallelism / lanes (explicit; stock is fixed at 1)"));
 #endif
+#if defined(VC_ENABLE_KEYSLOTS)
+		parser.AddSwitch (L"",	L"keyslot-add",			_("Add a keyslot: wrap the volume's master key under a NEW passphrase (--new-password); open with the existing password/keyfiles. Header-slack backend"));
+		parser.AddSwitch (L"",	L"keyslot-open",		_("Test-open a keyslot with --new-password: reports whether that passphrase recovers the master key (does not mount)"));
+		parser.AddSwitch (L"",	L"keyslot-rotate",		_("Rotate: add a slot under --new-password, then revoke the slot the existing --password opens"));
+		parser.AddOption (L"",	L"keyslot-kill",		_("Revoke keyslot number N (0-based, header-slack table)"));
+		parser.AddSwitch (L"",	L"keyslot-list",		_("List occupied keyslots in the header-slack table"));
+		parser.AddSwitch (L"",	L"keyslot-duress",		_("With --keyslot-add: mark the new slot as a duress slot (opening it triggers the safe duress action, not a mount)"));
+#endif
 		parser.AddSwitch (L"h", L"help",				_("Display detailed command line help"), wxCMD_LINE_OPTION_HELP);
 		parser.AddSwitch (L"",	L"import-token-keyfiles", _("Import keyfiles to security token"));
 		parser.AddOption (L"k", L"keyfiles",			_("Keyfiles"));
@@ -908,6 +916,40 @@ namespace VeraCrypt
 				{ volatile unsigned char *p = tag;  size_t n = sizeof (tag);  while (n--) *p++ = 0; }
 				{ volatile unsigned char *p = salt; size_t n = sizeof (salt); while (n--) *p++ = 0; }
 			}
+		}
+#endif
+
+#if defined(VC_ENABLE_KEYSLOTS)
+		{
+			// Keyslot lifecycle commands. The existing --password/--keyfiles open the volume (via the
+			// native header or any slot) to recover the master key; --new-password is the slot being
+			// added / opened / rotated in. All operate on the primary header's reserved slack and never
+			// touch the 512-byte header or the data body. See docs/KEYSLOTS-SPEC.md §9.
+			ArgKeyslotPassword = ArgNewPassword;
+			ArgKeyslotIndex = -1;
+			ArgKeyslotDuress = parser.Found (L"keyslot-duress");
+
+			int ksCmds = 0;
+			if (parser.Found (L"keyslot-add"))    { ArgCommand = CommandId::KeyslotAdd;    ksCmds++; }
+			if (parser.Found (L"keyslot-open"))   { ArgCommand = CommandId::KeyslotOpen;   ksCmds++; }
+			if (parser.Found (L"keyslot-rotate")) { ArgCommand = CommandId::KeyslotRotate; ksCmds++; }
+			if (parser.Found (L"keyslot-list"))   { ArgCommand = CommandId::KeyslotList;   ksCmds++; }
+			wxString killArg;
+			if (parser.Found (L"keyslot-kill", &killArg))
+			{
+				ArgCommand = CommandId::KeyslotKill; ksCmds++;
+				try { ArgKeyslotIndex = StringConverter::ToInt32 (wstring (killArg)); }
+				catch (...) { throw_err (L"--keyslot-kill needs a slot number"); }
+				if (ArgKeyslotIndex < 0)
+					throw_err (L"--keyslot-kill slot number must be >= 0");
+			}
+			if (ksCmds > 1)
+				throw_err (L"specify only one --keyslot-* command at a time");
+			if (ksCmds == 1 && (ArgVolumePath.get() == nullptr))
+				throw_err (L"--keyslot-* requires a volume path");
+			if ((ArgCommand == CommandId::KeyslotAdd || ArgCommand == CommandId::KeyslotOpen
+				 || ArgCommand == CommandId::KeyslotRotate) && !ArgKeyslotPassword)
+				throw_err (L"this --keyslot-* command needs --new-password (the slot passphrase)");
 		}
 #endif
 

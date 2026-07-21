@@ -145,10 +145,14 @@ Lagrange-in-the-exponent reconstructs the single-key output).
 
 ## Good next tasks (see ROADMAP.md)
 
-1. **Multiple keyslots — finish the integration** (`docs/KEYSLOTS-SPEC.md §9`). The core is built &
-   verified (`Common/Keyslot*.{c,h}`, `KeyslotKdf.c`; steps `[8]`/`[9]`). Remaining, real-build only:
-   the `KeyslotArea` volume-I/O bindings per backend, the mount-time slot search + duress-slot hook,
-   the enroll/open/rotate/revoke/list CLI, and multi-snapshot validation of the deniable backend.
+1. **Multiple keyslots — CLI + header-backend integration DONE** (`docs/KEYSLOTS-SPEC.md §9`,
+   `docs/REAL-BUILD-VALIDATION.md #6`). The `--keyslot-add/open/rotate/kill/list` CLI, the C++
+   mount-path binding (`Volume/KeyslotVolumeBinding.h`), and VMK recovery via native-header-or-keyslot
+   are built and proven on a real volume (enroll→open with exact master-key match→revoke→rotate→duress
+   flag, slot 0 + body byte-untouched; harness `pass=15`). Remaining, kernel/real-media only: the
+   mount-time auto-search (plain `--mount` tries slots + fires duress on a duress slot), backup-header
+   table mirroring, `--keyslot-backend` for the deniable/sidecar placements, and multi-snapshot
+   validation of the deniable backend.
 2. **Network-bound share source — finish the integration** (`docs/NETWORK-SHARE-SPEC.md`). The
    McCallum–Relyea exchange is proven (step `[10]`). Remaining, real-build only: EC/bignum at
    production parameters (P-256/Ed25519 or 2048-bit MODP), the client transport, and enroll/unlock CLI.

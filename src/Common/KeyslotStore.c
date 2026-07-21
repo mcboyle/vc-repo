@@ -262,6 +262,45 @@ int KeyslotOpen (const KeyslotStoreCfg *cfg, KeyslotArea *area,
 	}
 }
 
+/* ---- indexed open (admin-side; rotate/list-owned) ---- */
+
+/* Open EXACTLY labeled-table slot 'index' with 'pass'. Unlike KeyslotOpen (the mount path, which is
+   constant-time and hides which slot matched), this deliberately reveals per-index success so an admin
+   holding the passphrase can locate the slot to revoke during rotation. Returns 1 and fills vmkOut on a
+   match, 0 otherwise (empty slot / wrong pass / out of range). Labeled backends only. */
+int KeyslotOpenAt (const KeyslotStoreCfg *cfg, KeyslotArea *area, int index,
+                   const unsigned char *pass, int passLen,
+                   unsigned char *vmkOut, int *flagsOut)
+{
+	unsigned char rec[KEYSLOT_TABLE_STRIDE];
+	unsigned char aad[L_AAD_LEN], tmp[KEYSLOT_TABLE_STRIDE];
+	unsigned char payload[KEYSLOT_VMK_MAX + 1];
+	int plen = plen_of (cfg), s = af_of (cfg), ct = ct_of (cfg), m;
+
+	if (!is_labeled (cfg->backend) || !rec_fits (cfg))
+		return 0;
+	if (index < 0 || (uint64) index >= n_slots (cfg, area))
+		return 0;
+	if (area->read (area->ctx, (uint64) index * KEYSLOT_TABLE_STRIDE, rec, sizeof (rec)) != 0)
+		return 0;
+	if (memcmp (rec, "VCKS", 4) != 0)
+		return 0;   /* empty/random slot */
+
+	memcpy (aad, rec, L_AAD_LEN);
+	m = KeyslotUnwrapCT (cfg->kdf, cfg->cost, pass, passLen, rec + L_SALT, KEYSLOT_SALT_SIZE,
+	                     aad, L_AAD_LEN, rec + L_CT, ct, rec + L_CT + ct, tmp);
+	if (m)
+	{
+		AfMerge (tmp, plen, s, payload);
+		if (flagsOut) *flagsOut = payload[0];
+		memcpy (vmkOut, payload + 1, cfg->vmkLen);
+	}
+	ks_wipe (payload, sizeof (payload));
+	ks_wipe (tmp, sizeof (tmp));
+	ks_wipe (rec, sizeof (rec));
+	return m;
+}
+
 /* ---- revoke / count ---- */
 
 int KeyslotRevoke (const KeyslotStoreCfg *cfg, KeyslotArea *area, int index)

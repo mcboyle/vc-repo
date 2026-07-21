@@ -34,6 +34,11 @@
 #include "UserInterface.h"
 #if defined(VC_ENABLE_KEYSCRUB)
 #include "Core/KeyScrubEvents.h"
+#if defined(VC_ENABLE_KEYSLOTS)
+#include "Volume/KeyslotVolumeBinding.h"
+#include "Volume/EncryptionAlgorithm.h"
+#include "Volume/VolumeHeader.h"
+#endif
 #endif
 
 namespace VeraCrypt
@@ -186,6 +191,177 @@ namespace VeraCrypt
 		// the kernel device-mapper and are released by the dismounts above; see docs/MEMORY-SCRUB.md.
 		KeyScrubManager::Instance().ScrubNow ("duress");
 #endif
+	}
+#endif
+
+#if defined(VC_ENABLE_KEYSLOTS)
+	void UserInterface::KeyslotCommand (CommandId::Enum command) const
+	{
+		// The volume's master-key material (VMK) is the decrypted 448-byte header plaintext. A keyslot
+		// is an independent wrapping of it under another passphrase, stored in the primary header slack
+		// [512, 64K); slot 0 (the native header) and the body are never touched. We recover the VMK by
+		// opening the volume in-process (header decrypt only — no dm-crypt, so this runs anywhere),
+		// prepend a 1-byte cipher (EA) index so a slot can be mounted stand-alone, and drive the proven
+		// KeyslotStore ops through the header-slack KeyslotArea. See docs/KEYSLOTS-SPEC.md §9.
+		shared_ptr <VolumePath> volumePath = CmdLine->ArgVolumePath;
+		if (!volumePath)
+			throw_err (L"--keyslot-* requires a volume path");
+
+		// The store's per-slot salts and the revoke overwrite draw from the CSPRNG; make sure it is
+		// running (add/kill both need it). Harmless if already started.
+		if (!RandomNumberGenerator::IsRunning())
+			RandomNumberGenerator::Start();
+
+		// KeyslotList / KeyslotKill do not need the master key: open the file read/write and drive the
+		// header-slack table directly.
+		if (command == CommandId::KeyslotList || command == CommandId::KeyslotKill)
+		{
+			make_shared_auto (File, file);
+			file->Open (*volumePath, File::OpenReadWrite, File::ShareReadWriteIgnoreLock);
+			KeyslotFileArea areaCtx; KeyslotArea area;
+			KeyslotBindHeaderSlack (area, areaCtx, file.get());
+			KeyslotStoreCfg cfg = KeyslotHeaderCfg (VolumeHeader::GetLargestSerializedKeySize());
+
+			if (command == CommandId::KeyslotList)
+			{
+				int n = KeyslotCount (&cfg, &area);
+				ShowString (StringConverter::ToWide (StringConverter::ToSingle (n)) + L" keyslot(s) occupied in the header-slack table\n");
+			}
+			else
+			{
+				if (KeyslotRevoke (&cfg, &area, CmdLine->ArgKeyslotIndex) != 0)
+					throw_err (L"keyslot revoke failed (index out of range or write error)");
+				ShowString (L"Keyslot revoked.\n");
+			}
+			return;
+		}
+
+		// Add / Open / Rotate need the VMK. Recover it via the existing password/keyfiles by opening the
+		// volume header (no mount — works on a plain file with no kernel device-mapper). Do this in an
+		// inner scope so the Volume's own file handle is released BEFORE we open our read/write handle,
+		// avoiding a self-inflicted sharing conflict on the container.
+		if (!CmdLine->ArgPassword)
+			throw_err (L"the existing volume password (--password) is required to recover the master key");
+
+		// VMK for the header backend is always eaIndex[1] || masterKeys(DataKeyAreaMaxSize). Fixed size,
+		// so a keyslot probe can be sized before opening anything.
+		const int vmkLen = 1 + (int) VolumeHeader::GetMasterKeyDataSize();
+		SecureBuffer vmk;
+
+		// Recover the VMK with --password. Try the native header first (Core->OpenVolume, header decrypt
+		// only — no dm-crypt), then fall back to an existing keyslot so --password may be ANY enrolled
+		// passphrase (this is what lets rotation retire a keyslot rather than only the native header).
+		{
+			bool recovered = false;
+			shared_ptr <Volume> volume;
+			try
+			{
+				volume = Core->OpenVolume (volumePath, Preferences.DefaultMountOptions.PreserveTimestamps,
+					CmdLine->ArgPassword, CmdLine->ArgPim, CmdLine->ArgHash, CmdLine->ArgKeyfiles,
+					CmdLine->ArgMountOptions.EMVSupportEnabled, VolumeProtection::ReadOnly);
+			}
+			catch (PasswordException&) { volume.reset(); }
+
+			if (volume)
+			{
+				ConstBufferPtr mk = volume->GetHeader()->GetMasterKeys();
+				int eaIndex = -1, i = 0;
+				wstring eaName = volume->GetEncryptionAlgorithm()->GetName();
+				foreach (shared_ptr <EncryptionAlgorithm> ea, EncryptionAlgorithm::GetAvailableAlgorithms())
+				{
+					if (ea->GetName() == eaName) { eaIndex = i; break; }
+					++i;
+				}
+				if (eaIndex < 0 || eaIndex > 255)
+					throw_err (L"internal: cannot index the volume cipher for the keyslot");
+				vmk.Allocate (1 + mk.Size());
+				vmk.Ptr()[0] = (uint8) eaIndex;
+				BufferPtr (vmk.Ptr() + 1, mk.Size()).CopyFrom (mk);
+				recovered = true;
+			}
+			else
+			{
+				// Native header did not accept --password; try opening a keyslot with it.
+				make_shared_auto (File, rf);
+				rf->Open (*volumePath, File::OpenRead, File::ShareReadWriteIgnoreLock);
+				KeyslotFileArea rctx; KeyslotArea rarea;
+				KeyslotBindHeaderSlack (rarea, rctx, rf.get());
+				KeyslotStoreCfg rcfg = KeyslotHeaderCfg (vmkLen);
+				vmk.Allocate (vmkLen);
+				int fl = 0;
+				if (KeyslotOpen (&rcfg, &rarea, CmdLine->ArgPassword->DataPtr(),
+				                 (int) CmdLine->ArgPassword->Size(), vmk.Ptr(), &fl))
+					recovered = true;
+			}
+			if (!recovered)
+				throw_err (L"could not recover the master key: --password did not open the native header or any keyslot");
+		}   // any Volume / read handle released here
+
+		// Now open our own read/write handle for the header-slack table.
+		make_shared_auto (File, file);
+		file->Open (*volumePath, File::OpenReadWrite, File::ShareReadWriteIgnoreLock);
+		KeyslotFileArea areaCtx; KeyslotArea area;
+		KeyslotBindHeaderSlack (area, areaCtx, file.get());
+
+		KeyslotStoreCfg cfg = KeyslotHeaderCfg ((int) vmk.Size());
+
+		shared_ptr <VolumePassword> slotPass = CmdLine->ArgKeyslotPassword;
+
+		if (command == CommandId::KeyslotOpen)
+		{
+			SecureBuffer out (vmk.Size());
+			int flags = 0;
+			int ok = KeyslotOpen (&cfg, &area, slotPass->DataPtr(), (int) slotPass->Size(), out.Ptr(), &flags);
+			if (!ok)
+			{
+				ShowString (L"No keyslot opens with that passphrase.\n");
+				throw_err (L"keyslot open failed");
+			}
+			// Success == this passphrase recovers the exact master key. Prove it byte-for-byte.
+			bool match = (out.Size() == vmk.Size()
+				&& memcmp (out.Ptr() + 1, vmk.Ptr() + 1, vmk.Size() - 1) == 0);
+			ShowString (wxString (L"Keyslot opens: recovered master key ")
+				+ (match ? L"matches the native header (this passphrase mounts the volume)"
+				         : L"DIFFERS from the native header")
+				+ ((flags & KEYSLOT_FLAG_DURESS) ? L" [DURESS slot]" : L"") + L"\n");
+			if (!match)
+				throw_err (L"recovered master key does not match");
+			return;
+		}
+
+		if (command == CommandId::KeyslotAdd || command == CommandId::KeyslotRotate)
+		{
+			int flags = CmdLine->ArgKeyslotDuress ? KEYSLOT_FLAG_DURESS : 0;
+			int idx = KeyslotAdd (&cfg, &area, slotPass->DataPtr(), (int) slotPass->Size(), flags, vmk.Ptr());
+			if (idx < 0)
+				throw_err (L"keyslot add failed (table full or write error)");
+			ShowString (wxString::Format (L"Added keyslot %d%s.\n", idx,
+				(flags & KEYSLOT_FLAG_DURESS) ? L" (duress)" : L""));
+
+			if (command == CommandId::KeyslotRotate)
+			{
+				// Retire the OLD passphrase: revoke the table slot that --password opens, if any. (When
+				// --password is the native header, there is no table slot to retire — the new slot is
+				// simply added.) Uses the admin-side indexed open, which reveals the matching index.
+				SecureBuffer out (vmk.Size());
+				int killed = -1;
+				for (int i = 0; i < cfg.maxSlots; ++i)
+				{
+					if (i == idx)   // never retire the slot we just added
+						continue;
+					if (KeyslotOpenAt (&cfg, &area, i, CmdLine->ArgPassword->DataPtr(),
+					                   (int) CmdLine->ArgPassword->Size(), out.Ptr(), NULL))
+					{
+						if (KeyslotRevoke (&cfg, &area, i) == 0) { killed = i; break; }
+					}
+				}
+				if (killed >= 0)
+					ShowString (wxString::Format (L"Rotated: retired old keyslot %d.\n", killed));
+				else
+					ShowString (L"Rotated: new slot added (the old credential is the native header, which is not a revocable keyslot).\n");
+			}
+			return;
+		}
 	}
 #endif
 
@@ -1282,6 +1458,16 @@ const FileManager fileManagers[] = {
 #if defined(VC_ENABLE_DURESS)
 		case CommandId::DuressDismount:
 			DuressDismount();
+			return true;
+#endif
+
+#if defined(VC_ENABLE_KEYSLOTS)
+		case CommandId::KeyslotAdd:
+		case CommandId::KeyslotOpen:
+		case CommandId::KeyslotRotate:
+		case CommandId::KeyslotKill:
+		case CommandId::KeyslotList:
+			KeyslotCommand (cmdLine.ArgCommand);
 			return true;
 #endif
 

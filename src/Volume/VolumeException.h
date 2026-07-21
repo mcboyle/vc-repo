@@ -27,6 +27,16 @@ namespace VeraCrypt
 
 #define TC_EXCEPTION(NAME) TC_EXCEPTION_DECL(NAME,VolumeException)
 
+/* Keyslot duress marker (gated): thrown by Volume::Open when the matching keyslot carries
+   KEYSLOT_FLAG_DURESS — the caller must run the safe duress action (dismount all + scrub, mount
+   nothing) instead of mounting. Registered via the exception set so it serializes across the
+   CoreService boundary like every other volume exception. Empty in a default build. */
+#if defined(VC_ENABLE_KEYSLOTS)
+#define TC_KEYSLOT_EXCEPTION_SET TC_EXCEPTION (KeyslotDuress);
+#else
+#define TC_KEYSLOT_EXCEPTION_SET
+#endif
+
 #undef TC_EXCEPTION_SET
 #define TC_EXCEPTION_SET \
 	TC_EXCEPTION (HigherVersionRequired); \
@@ -37,7 +47,8 @@ namespace VeraCrypt
 	TC_EXCEPTION (VolumeEncryptionNotCompleted); \
 	TC_EXCEPTION (VolumeHostInUse); \
 	TC_EXCEPTION (VolumeProtected); \
-	TC_EXCEPTION (VolumeReadOnly);
+	TC_EXCEPTION (VolumeReadOnly); \
+	TC_KEYSLOT_EXCEPTION_SET
 
 	TC_EXCEPTION_SET;
 

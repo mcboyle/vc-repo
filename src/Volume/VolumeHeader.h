@@ -78,6 +78,17 @@ namespace VeraCrypt
 		VolumeTime GetVolumeCreationTime () const { return VolumeCreationTime; }
 		void SetSize (uint32 headerSize);
 		bool IsMasterKeyVulnerable () const { return XtsKeyVulnerable; }
+#if defined(VC_ENABLE_KEYSLOTS)
+		/* The volume master-key material (VMK): the concatenated primary + secondary (XTS) master keys
+		   as laid out in the header key area (DataKeyAreaMaxSize bytes), populated by a successful
+		   Decrypt. This IS what a keyslot wraps (docs/KEYSLOTS-SPEC.md §1): a passphrase that recovers
+		   these exact bytes has the same open capability as the native header. */
+		ConstBufferPtr GetMasterKeys () const { return ConstBufferPtr (DataAreaKey.Ptr(), DataAreaKey.Size()); }
+		/* Fixed size of the master-key material a keyslot wraps (the header key area). Lets the CLI size a
+		   keyslot probe before opening any volume, so recovery via an existing slot matches the add-time
+		   record layout. */
+		static size_t GetMasterKeyDataSize () { return DataKeyAreaMaxSize; }
+#endif
 
 	protected:
 		bool DecryptWithHeaderKey (const ConstBufferPtr &encryptedData, shared_ptr <Pkcs5Kdf> pkcs5, const ConstBufferPtr &headerKey, const EncryptionAlgorithmList &encryptionAlgorithms, const EncryptionModeList &encryptionModes);

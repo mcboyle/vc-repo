@@ -76,6 +76,13 @@ int KeyslotOpen (const KeyslotStoreCfg *cfg, KeyslotArea *area,
                  const unsigned char *pass, int passLen,
                  unsigned char *vmkOut, int *flagsOut);
 
+/* Open exactly labeled-table slot 'index' with 'pass' (admin-side; used by rotation to locate the
+   slot to retire). Reveals per-index success, unlike the constant-time KeyslotOpen mount path.
+   Returns 1 and fills vmkOut (+ *flagsOut if non-NULL) on a match, 0 otherwise. Labeled backends only. */
+int KeyslotOpenAt (const KeyslotStoreCfg *cfg, KeyslotArea *area, int index,
+                   const unsigned char *pass, int passLen,
+                   unsigned char *vmkOut, int *flagsOut);
+
 /* Revoke slot 'index' (KSB_HEADER / KSB_SIDECAR): overwrite it with fresh random. Returns 0 on
    success. The VMK is unchanged, so revocation is instant and needs no body re-encryption. */
 int KeyslotRevoke (const KeyslotStoreCfg *cfg, KeyslotArea *area, int index);
