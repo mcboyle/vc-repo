@@ -37,6 +37,11 @@ OBJS += KeyScrubEvents.o
 OBJS += ../Common/KeyScrub.o
 OBJS += ../Crypto/t1ha2.o
 OBJS += ../Crypto/chacha256.o
+# chacha256.c dispatches to chacha_ECRYPT_encrypt_bytes (SSSE3 SIMD inner loop) when the CPU has
+# SSSE3; that symbol lives in chacha-xmm.c, which uses _mm_shuffle_epi8 and so must be built with
+# -mssse3. Use the .ossse3 object convention (compiled via Makefile.inc's %.ossse3 rule and linked
+# through $(OBJSSSSE3)) — the same mechanism blake2s_SSSE3 uses.
+OBJSSSSE3 += ../Crypto/chacha-xmm.ossse3
 OBJS += ../Crypto/chachaRng.o
 endif
 
@@ -52,6 +57,7 @@ OBJS += ../Common/AfSplit.o          # KeyslotStore.c calls AfSplit/AfMerge (afS
 OBJS += ../Common/KeyslotAreaFile.o  # file-backed KeyslotArea bindings (header-slack / sidecar / deniable)
 ifneq "$(VC_ENABLE_KEYSCRUB)" "1"
 OBJS += ../Crypto/chacha256.o
+OBJSSSSE3 += ../Crypto/chacha-xmm.ossse3   # SSSE3 inner loop (only add when KeyScrub did not already)
 endif
 endif
 

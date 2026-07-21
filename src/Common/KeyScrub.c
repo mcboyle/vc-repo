@@ -303,4 +303,16 @@ void VcKsRamProtectShutdown (void)
 	VcSecureWipe (&g_ksIVMask,   sizeof (g_ksIVMask));
 }
 
+/*
+ * HKFScrubActiveConfig fallback. The KeyScrub event manager (KeyScrubEvents.cpp) calls
+ * HKFScrubActiveConfig() on every scrub trigger so any live hardware/threshold factor secret is
+ * wiped. The real definition lives in HardwareKeyFactor.c, which is only compiled when the HKF
+ * feature is enabled. A KEYSCRUB build *without* HKF has no factor to scrub, so provide a no-op with
+ * the same C linkage here to satisfy the call site. Guarded on !VC_ENABLE_HKF so the two definitions
+ * never collide. The header declares it under VC_ENABLE_KEYSCRUB, so the prototype is in scope.
+ */
+#if !defined(VC_ENABLE_HKF)
+void HKFScrubActiveConfig (void) { }
+#endif
+
 #endif /* VC_ENABLE_KEYSCRUB */
