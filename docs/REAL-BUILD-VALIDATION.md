@@ -28,8 +28,8 @@ whose CLI/mount glue is the remaining work (so it doubles as a live checklist).
 |---|---|---|---|---|
 | 1 | Default build stays stock | 0 | `make` (no flags) → binary identical behaviour to upstream | wired |
 | 2 | Fork builds with all flags | 0 | `make NOGUI=1 KEYSLOTS=1 …` links (this is where the AF-split link gap was caught) | wired |
-| 3 | Balloon as `--hash` | 2 | create + mount + dismount a `--hash=Balloon` volume | **wired** (harness) |
-| 4 | Argon2 explicit params | 2 | create + mount with `--argon2-memory/-iterations`; **mount with different params must fail** | **wired** (harness) |
+| 3 | Balloon as `--hash` | 2 | create + mount + dismount a `--hash=Balloon` volume | **create proven**; mount blocked only by kernel dm-crypt |
+| 4 | Argon2 explicit params | 2 | create + mount with `--argon2-memory/-iterations`; **mount with different params must fail** | **PROVEN to the kernel boundary** (see below) |
 | 5 | HKF factor (simulator) | 2 | create + mount with `--hkf-backend simulator`; wrong secret fails | wired CLI; harness marks PENDING until confirmed |
 | 6 | Multiple keyslots enroll/open/rotate/revoke | 2 | `--keyslot-add/open/rotate/kill/list` round-trip; duress-slot hook | **PENDING** — C++ stream adapters + CLI (`KEYSLOTS-SPEC.md §9`) |
 | 7 | Duress-dismount end-to-end | 2 | mounted volumes + `--duress-dismount` + duress passphrase → all dismount + scrub | **PENDING** — wx orchestration (`DURESS-DISMOUNT-SPEC.md`) |
@@ -64,7 +64,56 @@ cd src && make NOGUI=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 ARGON2PARAMS=1 BALLOON=1 S
 
 (YubiKey support additionally needs `libykpers-1-dev` + `YUBIKEY=1`.)
 
-## Real-build attempt result (this environment)
+## Full-featured build + Tier-2 run (this environment) — three real defects fixed
+
+A complete `veracrypt` binary now links with every feature flag
+(`NOGUI KEYSLOTS KEYSCRUB DURESS ARGON2PARAMS BALLOON SHAMIRMAC SHARECODE HKF`,
+`CC=clang CXX=clang++`) and runs. The fork CLI is live (`--keyscrub`,
+`--duress-dismount`, `--argon2-memory/-iterations/-parallelism`). `--test` passes all
+algorithm KATs and the self-contained verification suite stays green (48/48).
+
+Running the Tier-2 acceptance path surfaced and fixed **three defects that only a full
+product build can reach — the in-process verification suite cannot, by construction**:
+
+1. **Build wiring** — `chacha256.c` dispatches to `chacha_ECRYPT_encrypt_bytes` (an SSSE3
+   SIMD inner loop) but that translation unit (`chacha-xmm.c`) was in no makefile; and
+   `KeyScrubEvents.cpp` calls `HKFScrubActiveConfig()` whose only definition is HKF-gated.
+   A `KEYSCRUB`/`KEYSLOTS` build failed to link. Fixed: `chacha-xmm.ossse3` via the
+   existing `.ossse3` (`-mssse3`) object convention, and a same-linkage no-op
+   `HKFScrubActiveConfig` fallback under `!VC_ENABLE_HKF`.
+
+2. **Self-test contamination** — with an Argon2 parameter override active
+   (`--argon2-memory/-iterations`), the startup KAT `EncryptionTest::TestPkcs5` derived its
+   fixed PIM-1 vector through the *overridden* costs and threw `TestFailed`, so **every
+   create with explicit params aborted**. Fixed: snapshot/suspend/restore the override
+   (RAII) around the Argon2 KAT so it validates the algorithm against canonical params.
+
+3. **The override never reached the actual Linux derivation** — the C++
+   `Pkcs5Argon2::DeriveKey` (the path the Linux app uses for *both* create and mount)
+   computed iterations + memory from stock `get_argon2_params(pim)`, ignoring the override;
+   only parallelism leaked through. So `--argon2-memory/-iterations` were effectively
+   **no-ops** for the volume key on Linux, and — separately — the override is a process
+   global set *after* the privileged `CoreService` child forks, so it did not cross to the
+   child that performs mount-time derivation. Fixed both: resolve via
+   `Argon2GetResolvedParams` in the C++ KDF, and serialize the override on every
+   `CoreServiceRequest` (re-applied in the child before any derivation).
+
+**Round-trip result (proven up to the kernel boundary):** create a volume with
+`--argon2-memory=64 --argon2-iterations=3`, then
+
+- mount with the **same** params → key re-derived, header decrypted + authenticated,
+  proceeds to `dmsetup` (fails only there — this sandbox kernel has no device-mapper);
+- mount with **`--argon2-memory=128`** or **`--argon2-iterations=9`** → `Incorrect password`
+  (the header MAC fails because the key genuinely differs).
+
+That difference in failure point *is* the acceptance criterion for item #4: the same params
+reproduce the key and different params do not. The only step not exercised here is the final
+`dmsetup` device-mapper table load, which needs a kernel with dm-crypt (Tier-2 on a real VM;
+this container exposes no `/dev/mapper/control`). Stock SHA-512 create/mount behaves
+identically (reaches `dmsetup` with the right password, `Incorrect password` with a wrong
+one), confirming no regression.
+
+## Real-build attempt result (earlier, superseded by the section above)
 
 A real build **was** attempted here, and it materially corrected an earlier assumption: this image
 already ships wxWidgets 3.2, libfido2, and FUSE, and has root + loop devices — so it **is**

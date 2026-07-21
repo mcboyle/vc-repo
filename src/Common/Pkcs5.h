@@ -76,6 +76,11 @@ void   Argon2SetParamsOverride (int active, uint32 memCostKiB, uint32 iterations
 int    Argon2GetResolvedParams (int pim, uint32 *iterations, uint32 *memCostKiB, uint32 *parallelism);
 /* Effective parallelism (override when active, else 1) — used at the argon2id_hash_raw call site. */
 uint32 Argon2GetParallelism (void);
+/* Read the raw override state (active flag + the three stored values) without resolving against a PIM.
+   Used by the algorithm self-test to snapshot, suspend, and restore the override so a KAT validates the
+   Argon2 implementation against its canonical (stock-PIM) parameters rather than the user's runtime
+   override. Any out-pointer may be NULL. */
+void   Argon2GetParamsOverride (int *active, uint32 *memCostKiB, uint32 *iterations, uint32 *parallelism);
 #endif
 
 /* HMAC-BLAKE2b-512 PRF. Output written to d/input_digest which must be at least 64 bytes long.

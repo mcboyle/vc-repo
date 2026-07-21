@@ -20,7 +20,11 @@ namespace VeraCrypt
 {
 	struct CoreServiceRequest : public Serializable
 	{
-		CoreServiceRequest () : ElevateUserPrivileges (false), FastElevation (false), UseDummySudoPassword (false), AllowInsecureMount (false) { }
+		CoreServiceRequest () : ElevateUserPrivileges (false), FastElevation (false), UseDummySudoPassword (false), AllowInsecureMount (false)
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+			, Argon2OverrideActive (false), Argon2MemCostKiB (0), Argon2Iterations (0), Argon2Parallelism (1)
+#endif
+			{ }
 		TC_SERIALIZABLE (CoreServiceRequest);
 
 		virtual bool RequiresElevation () const { return false; }
@@ -32,6 +36,17 @@ namespace VeraCrypt
 		string UserEnvPATH;
 		bool UseDummySudoPassword;
 		bool AllowInsecureMount;
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+		// The explicit Argon2id parameter override (CLI --argon2-memory/-iterations/-parallelism) is a
+		// process-global set in the front-end after the privileged CoreService child was already forked,
+		// so it does not otherwise reach the child that performs mount-time key derivation. Carry it on
+		// every request and re-apply it in the child (CoreService::ProcessRequests) so a volume created
+		// with explicit Argon2 params can actually be mounted. Not stored in the header, exactly like PIM.
+		bool   Argon2OverrideActive;
+		uint32 Argon2MemCostKiB;
+		uint32 Argon2Iterations;
+		uint32 Argon2Parallelism;
+#endif
 	};
 
 	struct CheckFilesystemRequest : CoreServiceRequest

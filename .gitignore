@@ -39,3 +39,4 @@ verification/__pycache__/
 *.txt.h
 *.bmp.h
 *.pch
+src/Main/veracrypt

@@ -2090,6 +2090,14 @@ uint32 Argon2GetParallelism (void)
 {
 	return g_argon2Override.active ? g_argon2Override.parallelism : 1;
 }
+
+void Argon2GetParamsOverride (int *active, uint32 *memCostKiB, uint32 *iterations, uint32 *parallelism)
+{
+	if (active)      *active      = g_argon2Override.active;
+	if (memCostKiB)  *memCostKiB  = g_argon2Override.memCostKiB;
+	if (iterations)  *iterations  = g_argon2Override.iterations;
+	if (parallelism) *parallelism = g_argon2Override.parallelism;
+}
 #endif
 #endif
 

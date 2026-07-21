@@ -26,6 +26,12 @@ namespace VeraCrypt
 		sr.Deserialize ("UserEnvPATH", UserEnvPATH);
 		sr.Deserialize ("UseDummySudoPassword", UseDummySudoPassword);
 		sr.Deserialize ("AllowInsecureMount", AllowInsecureMount);
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+		sr.Deserialize ("Argon2OverrideActive", Argon2OverrideActive);
+		Argon2MemCostKiB  = sr.DeserializeUInt32 ("Argon2MemCostKiB");
+		Argon2Iterations  = sr.DeserializeUInt32 ("Argon2Iterations");
+		Argon2Parallelism = sr.DeserializeUInt32 ("Argon2Parallelism");
+#endif
 	}
 
 	void CoreServiceRequest::Serialize (shared_ptr <Stream> stream) const
@@ -39,6 +45,12 @@ namespace VeraCrypt
 		sr.Serialize ("UserEnvPATH", UserEnvPATH);
 		sr.Serialize ("UseDummySudoPassword", UseDummySudoPassword);
 		sr.Serialize ("AllowInsecureMount", AllowInsecureMount);
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+		sr.Serialize ("Argon2OverrideActive", Argon2OverrideActive);
+		sr.Serialize ("Argon2MemCostKiB",  Argon2MemCostKiB);
+		sr.Serialize ("Argon2Iterations",  Argon2Iterations);
+		sr.Serialize ("Argon2Parallelism", Argon2Parallelism);
+#endif
 	}
 
 	// CheckFilesystemRequest

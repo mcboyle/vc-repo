@@ -20,6 +20,9 @@
 #include "Platform/SystemLog.h"
 #include "Platform/Thread.h"
 #include "Platform/Unix/Poller.h"
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+#include "Common/Pkcs5.h"   // Argon2*ParamsOverride: propagate the explicit-params override to the child
+#endif
 #include "Platform/Unix/Process.h"
 #include "Core/Core.h"
 #include "CoreUnix.h"
@@ -164,6 +167,16 @@ namespace VeraCrypt
 				Core->SetUserEnvPATH (request->UserEnvPATH);
 				Core->ForceUseDummySudoPassword(request->UseDummySudoPassword);
 				Core->SetAllowInsecureMount(request->AllowInsecureMount);
+
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+				// Re-apply the front-end's explicit Argon2 override in this child before any key
+				// derivation runs, so mount-time derivation matches what create used. Cleared when the
+				// front-end had no override, so a normal mount is unaffected.
+				if (request->Argon2OverrideActive)
+					Argon2SetParamsOverride (1, request->Argon2MemCostKiB, request->Argon2Iterations, request->Argon2Parallelism);
+				else
+					Argon2SetParamsOverride (0, 0, 0, 1);
+#endif
 
 				try
 				{
@@ -398,6 +411,21 @@ namespace VeraCrypt
 		request.UserEnvPATH = Core->GetUserEnvPATH();
 		request.UseDummySudoPassword = Core->GetUseDummySudoPassword();
 		request.AllowInsecureMount = Core->GetAllowInsecureMount();
+
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+		// Snapshot the process-global Argon2 override onto the request so it reaches the (already-forked)
+		// CoreService child that performs mount-time key derivation. Without this, a volume created with
+		// explicit Argon2 params derives a different key at mount and fails to open. (Matches PIM, which
+		// travels inside MountOptions.)
+		{
+			int active = 0; uint32 mem = 0, iters = 0, par = 1;
+			Argon2GetParamsOverride (&active, &mem, &iters, &par);
+			request.Argon2OverrideActive = (active != 0);
+			request.Argon2MemCostKiB  = mem;
+			request.Argon2Iterations  = iters;
+			request.Argon2Parallelism = par;
+		}
+#endif
 
 		if (request.RequiresElevation())
 		{

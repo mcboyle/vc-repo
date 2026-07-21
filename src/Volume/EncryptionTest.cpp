@@ -22,6 +22,9 @@
 #include "EncryptionTest.h"
 #include "Pkcs5Kdf.h"
 #include "VolumeHeader.h"
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+#include "Common/Pkcs5.h"   // Argon2*ParamsOverride: suspend the runtime override during the KAT self-test
+#endif
 
 namespace VeraCrypt
 {
@@ -1220,6 +1223,23 @@ namespace VeraCrypt
 		ConstBufferPtr argon2Salt (argon2SaltData, sizeof (argon2SaltData));
 		Buffer argon2DerivedKey (sizeof (argon2Pim1DerivedKey));
 		Buffer argon2HeaderKey (ARGON2_HEADER_KEYDATA_SIZE);
+
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+		// The Argon2 KATs below fix PIM 1 -> t=3, m=64 MiB, p=1. If the process has a runtime Argon2
+		// parameter override active (CLI --argon2-memory/-iterations/-parallelism), DeriveKey would use
+		// those overridden costs instead and the known-answer would not match. The self-test validates
+		// the *algorithm*, not the user's chosen costs, so snapshot and suspend the override for the
+		// duration of the KAT, then restore it exactly. (A build without the feature is unaffected.)
+		int   savedActive = 0; uint32 savedMem = 0, savedIters = 0, savedPar = 1;
+		Argon2GetParamsOverride (&savedActive, &savedMem, &savedIters, &savedPar);
+		if (savedActive)
+			Argon2SetParamsOverride (0, 0, 0, 1);
+		struct Argon2OverrideRestore {
+			int a; uint32 m, it, p;
+			~Argon2OverrideRestore () { if (a) Argon2SetParamsOverride (a, m, it, p); }
+		} argon2Restore = { savedActive, savedMem, savedIters, savedPar };
+		(void) argon2Restore;   // RAII: restores on every exit path, including the throws below
+#endif
 
 		// PIM 1 maps to Argon2id t=3, m=64 MiB, p=1.
 		if (pkcs5Argon2.DeriveKey (argon2DerivedKey, password, 1, argon2Salt) != 0)

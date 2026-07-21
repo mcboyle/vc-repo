@@ -216,7 +216,23 @@ namespace VeraCrypt
 	{
 		int iterationCount;
 		int memoryCost;
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+		// This is the derivation path used by the Linux/macOS application for BOTH create (VolumeCreator)
+		// and mount (VolumeHeader::Decrypt). Resolve iterations + memory cost through the override-aware
+		// path so an explicit --argon2-memory/-iterations actually shapes the volume key, not just the
+		// self-test. Stock get_argon2_params ignores the override, which made those options no-ops here
+		// (only parallelism leaked through, via Argon2GetParallelism() inside derive_key_argon2), so a
+		// volume created with explicit params could not be reproduced/mounted. Parallelism stays consistent
+		// because derive_key_argon2 reads Argon2GetParallelism() internally.
+		{
+			uint32 it = 0, mc = 0, par = 1;
+			Argon2GetResolvedParams (pim, &it, &mc, &par);   // override when active, else stock PIM formula
+			iterationCount = (int) it;
+			memoryCost     = (int) mc;
+		}
+#else
 		get_argon2_params (pim, &iterationCount, &memoryCost);
+#endif
 
 		ValidateParameters (key, password, salt, iterationCount);
 		return derive_key_argon2 (password.DataPtr(), (int) password.Size(), salt.Get(), (int) salt.Size(), iterationCount, memoryCost, key.Get(), (int) key.Size(), pAbortKeyDerivation);
