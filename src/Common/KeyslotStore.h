@@ -99,6 +99,20 @@ int KeyslotRevoke (const KeyslotStoreCfg *cfg, KeyslotArea *area, int index);
    enumerable without their passphrase, so this returns 0 for KSB_DENIABLE. */
 int KeyslotCount (const KeyslotStoreCfg *cfg, KeyslotArea *area);
 
+#if defined(VC_ENABLE_KEYSLOT_SHRED)
+/* ---- verifiable keyslot shredding (ROI item 41) ----------------------------------------------------
+ * KeyslotRevoke already overwrites the whole slot with fresh random. KeyslotShred adds a verifiable
+ * receipt: it hashes the slot BEFORE, overwrites the entire stride (ciphertext + AF stripes + salt +
+ * tag + pad) with CSPRNG random, reads back what ACTUALLY landed on the medium, and returns an
+ * attestation = SHA-256("VCKSSHRED1" || index || H(before) || H(after)). An auditor can check the two
+ * hashes differ and that `after` is the value now on disk — i.e. the old wrapped key (and every AF
+ * stripe of it) is gone, with a record of it. Honest limit: this is a LOGICAL overwrite; on SSDs /
+ * copy-on-write media the physical block may persist (docs/THREAT-MODEL.md) — the attestation records
+ * the logical erase, it does not defeat wear-levelling. */
+int KeyslotShred (const KeyslotStoreCfg *cfg, KeyslotArea *area, int index,
+                  unsigned char attestation[32]);
+#endif
+
 #if defined(VC_ENABLE_KEYSLOT_POLICY)
 /* ---- per-slot policy (ROI item 15; docs/KEYSLOT-POLICY-DESIGN.md) -----------------------------------
  * Requires cfg->policy == 1 (v2 records). read-only + expiry live in the ENCRYPTED payload

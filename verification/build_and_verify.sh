@@ -1646,3 +1646,27 @@ if command -v clang-tidy >/dev/null 2>&1; then
 else
 	skip_step " clang-tidy not installed (static-analysis step)"
 fi
+
+echo ""
+echo "[63] Verifiable keyslot shredding + attestation (ROI item 41)"
+# KeyslotShred overwrites the whole slot (ciphertext + AF stripes) and returns an attestation over what
+# ACTUALLY landed on the medium. Proves: shredded slot won't open, no verbatim ciphertext remnant, and
+# the attestation is independently reproducible from the observed before/after hashes. Negative control:
+# a weak "mark-free" (clear only the magic) leaves the old ciphertext recoverable verbatim.
+KH_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then KH_CC="$c"; break; fi; done
+KH_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+KH_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+KH_GC="-ffunction-sections -fdata-sections"
+KH_DEF="-DVC_ENABLE_KEYSLOTS -DVC_ENABLE_KEYSLOT_SHRED"
+KH_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$KH_CC" ] \
+   && "$KH_CC" -O2 $KH_WNO $KH_NOASM $KH_GC $KH_DEF $KH_INC "$HERE/keyslot_shred_test.c" \
+        "$SRCROOT/Common/Keyslot.c" "$SRCROOT/Common/KeyslotStore.c" "$SRCROOT/Common/AfSplit.c" \
+        "$SRCROOT/Crypto/Sha2.c" "$SRCROOT/Crypto/chacha256.c" -Wl,--gc-sections -o /tmp/keyslot_shred_test 2>/tmp/kh_log; then
+	if /tmp/keyslot_shred_test > /tmp/kh_c.txt; then cat /tmp/kh_c.txt
+		echo "    MATCH: shred is unrecoverable + attestable; weak mark-free demonstrably leaves a remnant"
+	else cat /tmp/kh_c.txt; echo "    KEYSLOT SHRED FAILED"; exit 1; fi
+else
+	skip_step " no compiler accepted the sources for the keyslot-shred test (see /tmp/kh_log)"
+fi

@@ -342,6 +342,44 @@ int KeyslotRevoke (const KeyslotStoreCfg *cfg, KeyslotArea *area, int index)
 	return area->write (area->ctx, (uint64) index * KEYSLOT_TABLE_STRIDE, rec, sizeof (rec));
 }
 
+#if defined(VC_ENABLE_KEYSLOT_SHRED)
+int KeyslotShred (const KeyslotStoreCfg *cfg, KeyslotArea *area, int index,
+                  unsigned char attestation[32])
+{
+	unsigned char rec[KEYSLOT_TABLE_STRIDE];
+	unsigned char hOld[32], hNew[32];
+	unsigned char msg[10 + 4 + 32 + 32];
+	uint64 off;
+
+	if (index < 0 || (uint64) index >= n_slots (cfg, area))
+		return -1;
+	off = (uint64) index * KEYSLOT_TABLE_STRIDE;
+
+	if (area->read (area->ctx, off, rec, sizeof (rec)) != 0)      /* hash the slot BEFORE */
+		return -1;
+	sha256 (hOld, rec, sizeof (rec));
+
+	cfg->randBytes (rec, sizeof (rec));                            /* overwrite the ENTIRE stride */
+	if (area->write (area->ctx, off, rec, sizeof (rec)) != 0)
+		return -1;
+
+	if (area->read (area->ctx, off, rec, sizeof (rec)) != 0)      /* read back what ACTUALLY landed */
+		return -1;
+	sha256 (hNew, rec, sizeof (rec));
+
+	/* attestation = SHA256("VCKSSHRED1" || index_be32 || H(before) || H(after)) */
+	memcpy (msg, "VCKSSHRED1", 10);
+	msg[10] = (unsigned char) (index >> 24); msg[11] = (unsigned char) (index >> 16);
+	msg[12] = (unsigned char) (index >> 8);  msg[13] = (unsigned char) index;
+	memcpy (msg + 14, hOld, 32);
+	memcpy (msg + 46, hNew, 32);
+	sha256 (attestation, msg, sizeof (msg));
+
+	ks_wipe (rec, sizeof (rec));
+	return 0;
+}
+#endif
+
 int KeyslotCount (const KeyslotStoreCfg *cfg, KeyslotArea *area)
 {
 	unsigned char hdr[4];

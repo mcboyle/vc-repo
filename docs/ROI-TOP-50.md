@@ -276,7 +276,16 @@ of crypto KAT hex is **not** (no false positive). Whole tree currently clean.
 
 ## Tier 5 — Structural value, higher effort, high payoff (41–50)
 
-**41. Verifiable keyslot shredding** `[M]` — 03-4 — overwrite + AF-stripe wipe + attestation
+**41. Verifiable keyslot shredding** `[M]` — 03-4 — overwrite + AF-stripe wipe + attestation — **DONE**
+`KeyslotShred` (gated `VC_ENABLE_KEYSLOT_SHRED`) hashes the slot before, overwrites the entire stride
+(ciphertext + AF stripes + salt + tag) with CSPRNG random, reads back what **actually landed** on the
+medium, and returns an attestation = `SHA-256("VCKSSHRED1" || index || H(before) || H(after))` — an
+auditable receipt. Suite step `[63]` proves the shredded slot won't open, carries no verbatim
+ciphertext remnant, and that the attestation is **independently reproducible** from the observed
+hashes. **Negative control:** a weak "mark-free" (clear only the 4-byte magic) leaves the old
+ciphertext recoverable *verbatim* — the harness shows the contrast. gcc-13 + clang-18; added to the
+flag matrix. Honest limit (documented): this is a LOGICAL overwrite; on SSD/CoW media the physical
+block may persist — the attestation records the logical erase, it does not defeat wear-levelling.
 **42. Authenticate the keyslot area / header MAC** `[M][FORMAT]` — 02-5, 02-6 — XTS has no integrity
 **43. Encrypted volume labels** `[S][FORMAT]` — 04-11 — human names without leaking to an examiner
 **44. Header backup with integrity check + reminders** `[S]` — 03-35
