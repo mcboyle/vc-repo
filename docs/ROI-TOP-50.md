@@ -237,7 +237,14 @@ its own negative control: a known heap overflow compiled under the same flags mu
 silently-inactive sanitizer fails the sweep too. Suite step `[58]` (skips if no gcc libasan) + a CI
 `sanitize` job in `.github/workflows/flag-matrix.yml`. Result: **5/5 harnesses clean** under
 ASan+UBSan; the shipping modules are memory-safe on the exercised paths.
-**34. dudect timing screens for every primitive** `[M]` — 05-27 — not just Shamir and keyslot
+**34. dudect timing screens for every primitive** `[M]` — 05-27 — not just Shamir and keyslot — **DONE**
+Extends the dudect coverage (Shamir GF(2⁸), keyslot path) to the **duress tag compare**, the remaining
+secret-dependent comparison. `verification/duress_dudect_test.c` is a self-validating Welch t-test
+(same framework as `shamir_dudect_test.c`): class 0 = tag pairs differing in the FIRST byte, class 1 =
+differing in the LAST — a leaky early-exit compare separates them, a constant-time one does not. Suite
+step `[59]` asserts the screen **flags** a leaky early-exit reference and **clears** the real
+OR-accumulate `DuressTokenMatch` (contrast, not absolute cycles). Measured: real |t|≈0.3–1.1, leaky
+|t|≈370–414 (~375× contrast) on gcc-13 + clang-18.
 **35. Randomized property tests** `[S]` — 05-25 — zero-length passwords, t=n, duplicate x-coords
 **36. Wycheproof-style edge-case vectors** `[M]` — 05-29
 **37. Static analysis in CI (clang-tidy, CodeQL)** `[M]` — 05-45

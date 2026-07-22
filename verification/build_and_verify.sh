@@ -1574,3 +1574,22 @@ elif [ $? -eq 42 ]; then
 else
 	echo "$out" | sed 's/^/    /'; echo "    SANITIZER SWEEP FAILED"; exit 1
 fi
+
+echo ""
+echo "[59] dudect timing screen: DuressTokenMatch constant-time tag compare (ROI item 34)"
+# Extends the dudect coverage (Shamir GF(2^8) step [41]-era, keyslot path) to the duress tag compare.
+# Self-validating Welch t-test: it MUST flag a leaky early-exit compare and CLEAR the real
+# OR-accumulate DuressTokenMatch (asserting the contrast, not an absolute cycle count).
+DD_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then DD_CC="$c"; break; fi; done
+DD_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+DD_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+DD_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$DD_CC" ] \
+   && "$DD_CC" -O2 $DD_WNO $DD_NOASM -DVC_ENABLE_DURESS $DD_INC "$HERE/duress_dudect_test.c" "$SRCROOT/Common/DuressToken.c" "$SRCROOT/Crypto/Sha2.c" -lm -o /tmp/duress_dudect 2>/tmp/dd_log; then
+	if /tmp/duress_dudect > /tmp/dd_c.txt; then cat /tmp/dd_c.txt
+		echo "    MATCH: dudect flags a leaky tag compare and clears the real constant-time DuressTokenMatch"
+	else cat /tmp/dd_c.txt; echo "    DURESS DUDECT FAILED"; exit 1; fi
+else
+	skip_step " no compiler accepted the sources for the duress dudect screen (see /tmp/dd_log)"
+fi
