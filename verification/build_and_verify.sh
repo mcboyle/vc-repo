@@ -1534,3 +1534,29 @@ if [ -n "$FZ_CC" ] \
 else
 	skip_step " no sanitizer-capable compiler (gcc libasan) available for the keyslot fuzz (see /tmp/fz_log)"
 fi
+
+echo ""
+echo "[57] Deniable-extent geometry fuzz under ASan+UBSan (ROI item 32)"
+# Fuzzes KeyslotAreaBindDeniable with adversarial volume geometry (overlapping/reversed/near-overflow
+# freeStart/freeEnd/hiddenReservedStart) and asserts every ACCEPTED window stays within the free extent
+# and NEVER reaches into the hidden-volume region (the security invariant), plus bounded stdio over a
+# real header-slack window under the sanitizers. Negative control: a clamp that ignores the hidden
+# start yields a window into hidden space, which the invariant check must flag.
+AF_SAN="-fsanitize=address,undefined -fno-sanitize-recover=all -g"
+AF_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+AF_DEF="-DVC_ENABLE_KEYSLOTS"
+AF_CC=""
+for c in gcc-14 gcc-13 gcc cc clang; do
+	command -v "$c" >/dev/null 2>&1 || continue
+	printf 'int main(){return 0;}\n' > /tmp/af_probe.c
+	if "$c" -fsanitize=address,undefined /tmp/af_probe.c -o /tmp/af_probe 2>/dev/null; then AF_CC="$c"; break; fi
+done
+if [ -n "$AF_CC" ] \
+   && "$AF_CC" -O1 $AF_WNO $AF_SAN $AF_DEF $INC "$HERE/areafile_fuzz.c" "$SRCROOT/Common/KeyslotAreaFile.c" -o /tmp/areafile_fuzz 2>/tmp/af_log \
+   && "$AF_CC" -O1 $AF_WNO $AF_SAN -DVC_AREAFILE_NEGCTL $AF_DEF $INC "$HERE/areafile_fuzz.c" "$SRCROOT/Common/KeyslotAreaFile.c" -o /tmp/areafile_fuzz_nc 2>>/tmp/af_log; then
+	if /tmp/areafile_fuzz; then :; else echo "    AREAFILE FUZZ FAILED (deniable window escaped or sanitizer fault)"; exit 1; fi
+	if /tmp/areafile_fuzz_nc; then echo "    MATCH: deniable placement never reaches hidden space under fuzzing; oracle catches a broken clamp ($AF_CC)"
+	else echo "    AREAFILE NEG-CONTROL FAILED (broken clamp not detected)"; exit 1; fi
+else
+	skip_step " no sanitizer-capable compiler (gcc libasan) for the areafile fuzz (see /tmp/af_log)"
+fi

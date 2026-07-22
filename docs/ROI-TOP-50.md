@@ -216,7 +216,19 @@ Suite step `[56]` runs it (40k iterations, no fault) with a negative control: a 
 record-supplied length reads out of bounds and MUST fault under ASan (proving the harness would catch
 a real parser OOB). Needs a sanitizer-capable toolchain (gcc libasan); a clang without compiler-rt is
 skipped. Result: the real parser stays in-bounds on every malformed input.
-**32. Fuzz the volume header parser with a malformed corpus** `[M]` — 05-20
+**32. Fuzz the volume header parser with a malformed corpus** `[M]` — 05-20 — **DONE**
+The fork's header-geometry parser is `KeyslotAreaFile.c`, which turns volume layout into a bounded
+keyslot window. `verification/areafile_fuzz.c` feeds tens of thousands of **adversarial geometries**
+(overlapping / reversed / zero / near-`UINT64_MAX` `freeStart`/`freeEnd`/`hiddenReservedStart`) to the
+real `KeyslotAreaBindDeniable` and asserts every ACCEPTED window stays inside the free extent and —
+the security-critical invariant — **never reaches into the hidden-volume region** (`base+len ≤
+hiddenReservedStart`), with no `base+len` overflow; plus 5k bounded stdio ops over a real header-slack
+window, all under **gcc ASan+UBSan**. Suite step `[57]`, deterministic, with a negative control: a
+clamp that ignores `hiddenReservedStart` yields a window into hidden space and the invariant check
+must flag it (`reason=5`). Result: the deniable placement provably cannot clobber the hidden volume,
+for all fuzzed geometry. (The stock VeraCrypt XTS header `Deserialize` is upstream C++ that decrypts
+before parsing; the fork's attacker-controlled parse surface is the keyslot record parser (item 31)
+and this geometry binder.)
 **33. Sanitizer builds (ASan/UBSan) across the suite** `[M]` — 05-16
 **34. dudect timing screens for every primitive** `[M]` — 05-27 — not just Shamir and keyslot
 **35. Randomized property tests** `[S]` — 05-25 — zero-length passwords, t=n, duplicate x-coords
