@@ -82,6 +82,17 @@ product build can reach — the in-process verification suite cannot, by constru
    existing `.ossse3` (`-mssse3`) object convention, and a same-linkage no-op
    `HKFScrubActiveConfig` fallback under `!VC_ENABLE_HKF`.
 
+   *Guard-complementarity (ROI item 1 follow-up).* The fallback stub alone was necessary but
+   not sufficient: the *real* `HKFScrubActiveConfig` in `HardwareKeyFactor.c` was guarded on
+   `VC_ENABLE_KEYSCRUB` only, while the stub is guarded on `VC_ENABLE_KEYSCRUB && !VC_ENABLE_HKF`.
+   Those are **not** complementary — a `KEYSCRUB`-on/`HKF`-off build compiled *both*, so the
+   symbol was multiply defined (the exact class this section warns about). The real definition
+   is now guarded on `VC_ENABLE_KEYSCRUB && VC_ENABLE_HKF`, the precise complement of the stub:
+   exactly one definition exists whenever `KEYSCRUB` is on, none when it is off. The in-process
+   verification harness reproduced this (step 6 was *silently skipping* on the link failure until
+   the suite gained a coverage line + `--strict` mode); it now builds the HKF path and reports
+   `48/48 steps verified, 0 skipped`. See `patches/harness-strict-mode.patch`.
+
 2. **Self-test contamination** — with an Argon2 parameter override active
    (`--argon2-memory/-iterations`), the startup KAT `EncryptionTest::TestPkcs5` derived its
    fixed PIM-1 vector through the *overridden* costs and threw `TestFailed`, so **every

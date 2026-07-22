@@ -488,7 +488,12 @@ void HKFSetActiveConfig (const HKFConfig *cfg)
 	g_hkfActiveConfig = cfg;
 }
 
-#if defined(VC_ENABLE_KEYSCRUB)
+/* Guarded on KEYSCRUB && HKF so this is the *complement* of the KeyScrub.c fallback stub, which is
+ * guarded on KEYSCRUB && !HKF. Exactly one definition exists when KEYSCRUB is on (this real one when
+ * a hardware/threshold factor is compiled in, the empty stub otherwise), and neither when KEYSCRUB is
+ * off. Without the && HKF here the KEYSCRUB-on/HKF-off build defined the symbol twice (see
+ * docs/REAL-BUILD-VALIDATION.md guard-complementarity). */
+#if defined(VC_ENABLE_KEYSCRUB) && defined(VC_ENABLE_HKF)
 void HKFScrubActiveConfig (void)
 {
 	HKFConfig *cfg = (HKFConfig *) g_hkfActiveConfig;   /* wipe the caller-owned secret storage */
