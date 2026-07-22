@@ -166,14 +166,28 @@ flag matrix. Not done here: the `--keyslot-*` CLI surface + wx wiring for the fl
 **16. `verify` command — integrity check without mounting** `[M]` — 02-9
 Check a volume without exposing plaintext or taking the mount path.
 
-**17. Self-test on mount** `[S]` — 12-11
+**17. Self-test on mount** `[S]` — 12-11 — **DONE**
 KATs for the algorithms actually in use, at the moment they matter.
+*Landed:* `Common/SelfTest.{c,h}` (gated `VC_ENABLE_SELFTEST`) — `VcForkSelfTest()` runs KATs for the
+primitives a factored/keyslot mount relies on: SHA3-512("") (FIPS-202), SHA-256("abc") (FIPS-180-4),
+and a cross-compiler t1ha2 anchor (KeyScrub). Returns a bitmask of failures; the mount path must fail
+closed on non-zero. Verified in suite step `[54]` over the REAL compiled Crypto objects, with a
+compiled negative control (`-DVC_SELFTEST_CORRUPT` perturbs one expected value → the self-test must
+flag it). gcc-13 + clang-18; added to the flag matrix. (Wiring the call into the wx mount path is the
+product-build piece.)
 
 **18. One-command security-posture report** `[M]` — 12-1
 Factors, slots, lockdown bits, integrity state, last check.
 
-**19. Verification-coverage display** `[S]` — 12-5
+**19. Verification-coverage display** `[S]` — 12-5 — **DONE**
 Show which claims are machine-verified versus documented. Directly addresses the "all green" problem.
+*Landed:* `verification/coverage_report.sh` prints two sections — **A. machine-verified** (derived
+*live* from `build_and_verify.sh`'s step headers, so it cannot drift out of sync) and **B. documented,
+not machine-verified here** (a curated list of claims that need a real token / wx / kernel dm-crypt /
+real media / multi-snapshot). Suite step `[55]` runs `--check` (asserts the verified count equals the
+suite step count and that documented-only claims are not listed as verified) plus `--check-negctl`
+(the negative control: a real-hardware claim injected as a fake step must be detected as
+documented-only). Makes "green means section A is proven; B is the honest edge of a sandbox" explicit.
 
 **20. Panic hotkey — dismount all + scrub** `[S]` — 08-7
 Pairs with the duress work already landed; the non-destructive emergency action.

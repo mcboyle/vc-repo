@@ -1464,3 +1464,42 @@ if [ -n "$KPP_CC" ] \
 else
 	skip_step " no compiler accepted the sources for the keyslot-policy test (see /tmp/kpp_log)"
 fi
+
+echo ""
+echo "[54] Self-test on mount: KATs for the fork's crypto primitives (ROI item 17)"
+# Runs the shipping VcForkSelfTest (SHA3-512/SHA-256/t1ha2 KATs) over the REAL compiled Crypto objects;
+# a factored/keyslot mount must call this and fail closed on a non-zero result. Negative control: a
+# second build with -DVC_SELFTEST_CORRUPT perturbs one expected value and the self-test MUST flag it.
+ST_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then ST_CC="$c"; break; fi; done
+ST_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+ST_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+ST_GC="-ffunction-sections -fdata-sections"
+ST_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$ST_CC" ] \
+   && "$ST_CC" -O2 $ST_WNO $ST_NOASM $ST_GC $ST_INC -c "$SRCROOT/Crypto/Sha3.c"  -o /tmp/st_sha3.o 2>/tmp/st_log \
+   && "$ST_CC" -O2 $ST_WNO $ST_NOASM $ST_GC $ST_INC -c "$SRCROOT/Crypto/Sha2.c"  -o /tmp/st_sha2.o 2>>/tmp/st_log \
+   && "$ST_CC" -O2 $ST_WNO $ST_NOASM $ST_GC $ST_INC -c "$SRCROOT/Crypto/t1ha2.c" -o /tmp/st_t1.o   2>>/tmp/st_log \
+   && "$ST_CC" -O2 $ST_WNO $ST_NOASM $ST_GC -DVC_ENABLE_SELFTEST $ST_INC -c "$SRCROOT/Common/SelfTest.c" -o /tmp/st_self.o 2>>/tmp/st_log \
+   && "$ST_CC" -O2 $ST_WNO $ST_NOASM $ST_GC -DVC_ENABLE_SELFTEST -DVC_SELFTEST_CORRUPT $ST_INC -c "$SRCROOT/Common/SelfTest.c" -o /tmp/st_self_c.o 2>>/tmp/st_log \
+   && "$ST_CC" -O2 $ST_WNO -DVC_ENABLE_SELFTEST $ST_INC "$HERE/selftest_test.c" /tmp/st_self.o /tmp/st_sha3.o /tmp/st_sha2.o /tmp/st_t1.o -Wl,--gc-sections -o /tmp/st_norm 2>>/tmp/st_log \
+   && "$ST_CC" -O2 $ST_WNO -DVC_ENABLE_SELFTEST -DVC_SELFTEST_CORRUPT $ST_INC "$HERE/selftest_test.c" /tmp/st_self_c.o /tmp/st_sha3.o /tmp/st_sha2.o /tmp/st_t1.o -Wl,--gc-sections -o /tmp/st_corr 2>>/tmp/st_log; then
+	if /tmp/st_norm; then :; else echo "    SELF-TEST FAILED (real KATs did not pass)"; exit 1; fi
+	if /tmp/st_corr; then echo "    MATCH: fork-primitive KATs pass; negative control (corrupted build) is caught"
+	else echo "    SELF-TEST NEG-CONTROL FAILED (corruption not detected)"; exit 1; fi
+else
+	skip_step " no compiler accepted the sources for the self-test (see /tmp/st_log)"
+fi
+
+echo ""
+echo "[55] Verification-coverage display: machine-verified vs documented (ROI item 19)"
+# coverage_report.sh separates what the suite actually verifies from claims that need real hardware /
+# wx / kernel — directly addressing the "all green" problem. --check asserts the verified list is
+# derived live from the suite (no hand-maintained drift) and that documented-only claims are not
+# listed as verified; --check-negctl is the negative control (an injected real-hardware "step" must be
+# detected as documented-only).
+if "$HERE/coverage_report.sh" --check && "$HERE/coverage_report.sh" --check-negctl; then
+	echo "    MATCH: coverage classifier is live-derived + honest; negative control detects a mislabeled claim"
+else
+	echo "    COVERAGE-DISPLAY CHECK FAILED"; exit 1
+fi
