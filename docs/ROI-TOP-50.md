@@ -286,15 +286,15 @@ hashes. **Negative control:** a weak "mark-free" (clear only the 4-byte magic) l
 ciphertext recoverable *verbatim* — the harness shows the contrast. gcc-13 + clang-18; added to the
 flag matrix. Honest limit (documented): this is a LOGICAL overwrite; on SSD/CoW media the physical
 block may persist — the attestation records the logical erase, it does not defeat wear-levelling.
-**42. Authenticate the keyslot area / header MAC** `[M][FORMAT]` — 02-5, 02-6 — XTS has no integrity
-**43. Encrypted volume labels** `[S][FORMAT]` — 04-11 — human names without leaking to an examiner
+**42. Authenticate the keyslot area / header MAC** `[M][FORMAT]` — 02-5, 02-6 — XTS has no integrity — **DESIGN (awaiting review)** — `docs/TIER5-FORMAT-DESIGN.md §42`. (Note: keyslot *records* are already per-record AEAD-authenticated; this proposes an area-level MAC, VMK-derived, to catch table truncation/reorder/rollback.)
+**43. Encrypted volume labels** `[S][FORMAT]` — 04-11 — human names without leaking to an examiner — **DESIGN (awaiting review)** — `docs/TIER5-FORMAT-DESIGN.md §43` (a padded AEAD label record reusing the keyslot machinery; leaks nothing without the passphrase).
 **44. Header backup with integrity check + reminders** `[S]` — 03-35
 **45. Multi-token OR-set (any of N enrolled works)** `[M]` — 03-18
 **46. PKCS#11 / PIV smartcard factor** `[M][HW]` — 03-11 — VeraCrypt already speaks PKCS#11
 **47. Structured error taxonomy + stable exit codes** `[S]` — 11-6, 16-39
 **48. `--json` machine-readable output** `[S]` — 04-34
 **49. systemd units with hardening directives** `[S]` — 16-12 — `NoNewPrivileges`, `ProtectHome`
-**50. Atomic power-loss-resilient header writes** `[M][FORMAT]` — 06-27
+**50. Atomic power-loss-resilient header writes** `[M][FORMAT]` — 06-27 — **DESIGN (awaiting review)** — `docs/TIER5-FORMAT-DESIGN.md §50` (A/B header pair + generation + commit-tag; torn-write recovery is sandbox-testable, true power-loss is not).
 
 ---
 
