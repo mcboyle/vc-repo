@@ -53,6 +53,19 @@ Returns a bitmask of what was applied. **Hibernation is NOT covered** — it wri
 regardless of `mlock`; users must disable hibernation on machines holding mounted volumes. Verified in
 the harness (step `[6]` `[G]`): after the call, `RLIMIT_CORE==0` and the process is non-dumpable.
 
+### 1c. Swap / hibernation exposure detector (`VcSwapHibernateStatus`) — ROI item 11
+
+`mlock` closes routine swapping but two RAM-to-disk paths remain that it *cannot* close: an **already
+active swap area** (a key paged out before lockdown, or by a sibling process) and **suspend-to-disk
+hibernation** (which snapshots the whole of RAM, mlocked pages included). `VcSwapHibernateStatus`
+detects both — reading `/proc/swaps` for an active area and `/sys/power/state` for a `disk` sleep mode
+— and `KeyScrubManager::Enable` prints a **loud `stderr` warning** for each while volumes are mounted.
+The parse core `VcSwapHibernateStatusFrom(swapsPath, powerStatePath)` is path-parametrized so the
+harness drives it with fixtures. Verified in step `[6]` `[J]`, which is its own **negative control**: a
+no-swap/no-hibernate fixture must report clean (`0`, no crying wolf), an active-swap + suspend-to-disk
+fixture must flag both bits, and a mode literally named `diskless` must **not** be misread as `disk`.
+Best-effort and read-only; on a platform without `/proc`+`/sys` it returns `0` (unknown, not "safe").
+
 ### 2. RAM encryption at rest (`VcKsRamTransform`, mirrors the Windows scheme)
 
 This reproduces VeraCrypt's own Windows RAM-key-encryption construction

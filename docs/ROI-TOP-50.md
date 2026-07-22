@@ -101,9 +101,19 @@ You exposed the parameters; most users will pick badly.
 
 ## Tier 2 — Cheap hardening and activating built capability (11–20)
 
-**11. Swap / hibernate / core-dump lockdown** `[S]` — 02-25, 02-26
+**11. Swap / hibernate / core-dump lockdown** `[S]` — 02-25, 02-26 — **DONE**
 `mlockall`, `RLIMIT_CORE=0`, `PR_SET_DUMPABLE=0`, plus a loud hibernate warning. Scrubbing RAM is
 pointless if the key already reached swap.
+*Landed:* the `mlockall` / `RLIMIT_CORE=0` / `PR_SET_DUMPABLE=0` core was already shipping
+(`VcKeyMemoryLockdown`, harness step 6 `[G]`). Added the missing **loud warning**: `VcSwapHibernateStatus`
+detects an active swap area (`/proc/swaps`) and available suspend-to-disk (`/sys/power/state` has a
+`disk` mode), and `KeyScrubManager::Enable` prints a per-exposure `stderr` warning while volumes are
+mounted. The parse core is path-parametrized (`VcSwapHibernateStatusFrom`) so step 6 `[J]` drives it
+with fixtures — itself the negative control: no-swap/no-hibernate → clean `0`, active-swap +
+suspend-to-disk → both bits, and a `diskless` mode is not misread as `disk`. Verified on gcc-13 +
+clang-18; `KeyScrubEvents.cpp` compiles on g++/clang++. Patch: `patches/swap-hibernate-warning.patch`.
+Not sandbox-testable: the actual warning firing on a real mounted-volume session (the detector and its
+output string are proven; the wx/CLI print path is not built here).
 
 **12. Guard-complementarity lint** `[S]` — 05-12
 A symbol with a fallback stub must have genuinely complementary `#if` guards. A comment claimed this;

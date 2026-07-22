@@ -165,6 +165,39 @@ int main (void)
 		        (bits & VC_LOCKDOWN_MLOCK) ? "applied" : "skipped");
 	}
 
+	/* [J] swap / hibernation exposure detector (ROI item 11). Driven with fixtures so the two states
+	 *     are exercised deterministically — this IS the negative control: a system with no swap and no
+	 *     hibernation must report clean (0), and the detector must NOT cry wolf; a system with an
+	 *     active swap area and suspend-to-disk must report both bits. */
+	{
+		const char *clean_swaps = "/tmp/ks_fix_swaps_clean";
+		const char *swap_swaps  = "/tmp/ks_fix_swaps_active";
+		const char *no_hib      = "/tmp/ks_fix_power_nohib";
+		const char *hib         = "/tmp/ks_fix_power_hib";
+		FILE *f;
+		int clean, exposed, tokfp;
+		f = fopen (clean_swaps, "w"); fputs ("Filename\t\t\t\tType\t\tSize\tUsed\tPriority\n", f); fclose (f);
+		f = fopen (swap_swaps, "w");  fputs ("Filename\t\t\t\tType\t\tSize\tUsed\tPriority\n"
+		                                     "/dev/dm-1                               partition\t8388604\t0\t-2\n", f); fclose (f);
+		f = fopen (no_hib, "w"); fputs ("freeze mem\n", f); fclose (f);
+		f = fopen (hib,    "w"); fputs ("freeze mem disk\n", f); fclose (f);
+
+		clean   = VcSwapHibernateStatusFrom (clean_swaps, no_hib);   /* expect 0 */
+		exposed = VcSwapHibernateStatusFrom (swap_swaps,  hib);      /* expect SWAP_ACTIVE|SUPPORTED */
+		/* token-exactness: a mode literally named "diskless" must NOT be read as "disk" */
+		f = fopen ("/tmp/ks_fix_power_fp", "w"); fputs ("freeze diskless\n", f); fclose (f);
+		tokfp = VcSwapHibernateStatusFrom (NULL, "/tmp/ks_fix_power_fp");   /* expect 0 (no SUPPORTED) */
+
+		printf ("[J] no-swap/no-hibernate fixture reports clean: %s\n", clean == 0 ? "YES" : "NO");
+		printf ("[J] active-swap fixture flags SWAP_ACTIVE: %s\n",
+		        (exposed & VC_HIBERNATE_SWAP_ACTIVE) ? "YES" : "NO");
+		printf ("[J] suspend-to-disk fixture flags SUPPORTED: %s\n",
+		        (exposed & VC_HIBERNATE_SUPPORTED) ? "YES" : "NO");
+		printf ("[J] 'diskless' not misread as hibernation: %s\n",
+		        (tokfp & VC_HIBERNATE_SUPPORTED) ? "NO" : "YES");
+		remove (clean_swaps); remove (swap_swaps); remove (no_hib); remove (hib); remove ("/tmp/ks_fix_power_fp");
+	}
+
 	/* [H] zeroization matrix: VcSecureWipe zeroes every size/alignment and survives -O2 DSE */
 	{
 		static unsigned char pool[300];

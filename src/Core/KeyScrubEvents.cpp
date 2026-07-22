@@ -79,6 +79,21 @@ namespace VeraCrypt
 		if (!Enabled)
 		{
 			VcKeyMemoryLockdown ();   // no swap / no core / no ptrace, before any secret is derived
+
+			// Loud warning for the exposures mlock cannot close (ROI item 11): an active swap area or
+			// suspend-to-disk still pushes key material to persistent storage. Printed once at enable.
+			{
+				int exposure = VcSwapHibernateStatus ();
+				if (exposure & VC_HIBERNATE_SWAP_ACTIVE)
+					fprintf (stderr, "WARNING: an active swap area is present — key material paged out "
+					                 "before mlock (or by another process) can reach unencrypted disk. "
+					                 "Encrypt swap or run `swapoff` while volumes are mounted.\n");
+				if (exposure & VC_HIBERNATE_SUPPORTED)
+					fprintf (stderr, "WARNING: hibernation (suspend-to-disk) is available on this system "
+					                 "— it snapshots ALL of RAM, mlocked pages included, to disk. Disable "
+					                 "hibernation while volumes are mounted (see docs/MEMORY-SCRUB.md).\n");
+			}
+
 			VcKsRamProtectInit (&KeyScrubManager::RandSeed);
 			Enabled = true;
 			IdleTimeoutSeconds = idleTimeoutSeconds;

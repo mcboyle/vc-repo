@@ -61,6 +61,28 @@ void VcSecureWipe (volatile void *pbData, size_t cbData);
  */
 int VcKeyMemoryLockdown (void);
 
+/* ---- swap / hibernation exposure detector ------------------------------------------------ */
+
+/* Bits returned by VcSwapHibernateStatus reporting RAM-to-disk exposure that mlock cannot prevent. */
+#define VC_HIBERNATE_SWAP_ACTIVE  0x01  /* an active swap area exists: paged-out RAM can reach disk */
+#define VC_HIBERNATE_SUPPORTED    0x02  /* kernel advertises suspend-to-disk: hibernation writes ALL
+                                           of RAM (mlocked pages included) to the swap device */
+
+/*
+ * mlockall stops routine swapping, but two things still push key material to disk and it cannot help:
+ * an already-active swap area (a key paged out BEFORE lockdown, or by a sibling process) and
+ * hibernation (suspend-to-disk snapshots the whole of RAM, mlocked pages included). This detector
+ * reports both so the caller can print a loud warning while volumes are mounted. Best-effort and
+ * read-only; on a platform without /proc + /sys it simply returns 0 (unknown, not "safe").
+ * Returns a bitmask of the VC_HIBERNATE_* bits.
+ */
+int VcSwapHibernateStatus (void);
+
+/* Testable core of VcSwapHibernateStatus: parses the given files instead of the real /proc + /sys, so
+ * the verification harness can drive it with fixtures. Pass the real paths for production behaviour.
+ * A NULL path is treated as "file absent" (that bit is not set). */
+int VcSwapHibernateStatusFrom (const char *swapsPath, const char *powerStatePath);
+
 /* ---- scrub registry ---------------------------------------------------------------------- */
 
 /* Maximum number of secret regions tracked at once. Small and fixed: no allocation on the scrub

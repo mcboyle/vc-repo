@@ -14,6 +14,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdio.h>
 #include "Crypto/t1ha.h"
 #include "Crypto/chacha256.h"
 #include "Crypto/chachaRng.h"
@@ -83,6 +84,82 @@ int VcKeyMemoryLockdown (void)
 		applied |= VC_LOCKDOWN_NO_DUMP;      /* blocks ptrace attach / core generation */
 #endif
 	return applied;
+}
+
+/* ================================================================================================
+ *  Swap / hibernation exposure detector  (see KeyScrub.h)
+ * ============================================================================================== */
+
+int VcSwapHibernateStatusFrom (const char *swapsPath, const char *powerStatePath)
+{
+	int flags = 0;
+
+	/* /proc/swaps: a header line ("Filename  Type  Size  Used  Priority") followed by one line per
+	 * active swap area. Any non-empty, non-header data line => swap is active. */
+	if (swapsPath)
+	{
+		FILE *f = fopen (swapsPath, "r");
+		if (f)
+		{
+			char line[512];
+			int lineno = 0;
+			while (fgets (line, (int) sizeof (line), f))
+			{
+				const char *p = line;
+				lineno++;
+				if (lineno == 1)
+					continue;                    /* skip the header row */
+				while (*p == ' ' || *p == '\t')  /* is this line non-blank? */
+					p++;
+				if (*p != '\0' && *p != '\n')
+				{
+					flags |= VC_HIBERNATE_SWAP_ACTIVE;
+					break;
+				}
+			}
+			fclose (f);
+		}
+	}
+
+	/* /sys/power/state lists the supported sleep modes, space-separated (e.g. "freeze mem disk").
+	 * The "disk" token means suspend-to-disk (hibernation) is available. */
+	if (powerStatePath)
+	{
+		FILE *f = fopen (powerStatePath, "r");
+		if (f)
+		{
+			char buf[256];
+			size_t n = fread (buf, 1, sizeof (buf) - 1, f);
+			buf[n] = '\0';
+			fclose (f);
+			{
+				/* token-exact match for "disk" so "diskfoo" would not trip it */
+				const char *s = buf;
+				while (*s)
+				{
+					while (*s == ' ' || *s == '\t' || *s == '\n') s++;
+					if (s[0] == 'd' && s[1] == 'i' && s[2] == 's' && s[3] == 'k'
+					    && (s[4] == '\0' || s[4] == ' ' || s[4] == '\t' || s[4] == '\n'))
+					{
+						flags |= VC_HIBERNATE_SUPPORTED;
+						break;
+					}
+					while (*s && *s != ' ' && *s != '\t' && *s != '\n') s++;
+				}
+			}
+		}
+	}
+
+	return flags;
+}
+
+int VcSwapHibernateStatus (void)
+{
+#if defined(__linux__)
+	return VcSwapHibernateStatusFrom ("/proc/swaps", "/sys/power/state");
+#else
+	return 0;   /* unknown on this platform — reported as 0 (not "safe") */
+#endif
 }
 
 /* ================================================================================================
