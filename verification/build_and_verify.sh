@@ -109,8 +109,27 @@ if "$KS_CC" -O2 $KS_WNO $KS_NOASM $KS_DEF $INC -c "$SRCROOT/Common/KeyScrub.c" -
 	else
 		echo "    MISMATCH"; diff /tmp/ks_c_ref.txt /tmp/ks_py.txt; exit 1
 	fi
-	# all boolean self-checks must report YES
+	# all boolean self-checks must report YES (incl. the [L] present-before/absent-after liveness pairs)
 	if grep -Eq ': NO$' /tmp/ks_c.txt; then echo "    KEYSCRUB SELFTEST FAILED"; exit 1; fi
+	# Negative control (ROI item 2): rebuild the SAME selftest with the wipe disabled and confirm the
+	# liveness checks have teeth — "present before" must stay YES, "absent after" must flip to NO. If
+	# the wipe were a silent no-op in the real build, this is the run that would have caught it.
+	if "$KS_CC" -O2 $KS_WNO $KS_DEF -DVC_NEGCTL_NO_WIPE $INC "$HERE/keyscrub_selftest.c" \
+	     /tmp/ks_keyscrub.o /tmp/ks_hkf.o /tmp/ks_t1ha2.o /tmp/ks_chacha256.o /tmp/ks_chachaRng.o -lpthread -o /tmp/keyscrub_negctl 2>>/tmp/ks_cc.log; then
+		/tmp/keyscrub_negctl > /tmp/ks_neg.txt
+		nc_ok=1
+		grep -q '^\[L1\] secret present before wipe: YES$'   /tmp/ks_neg.txt || nc_ok=0
+		grep -q '^\[L1\] secret absent after wipe: NO$'      /tmp/ks_neg.txt || nc_ok=0
+		grep -q '^\[L2\] HKF secret present before scrub: YES$' /tmp/ks_neg.txt || nc_ok=0
+		grep -q '^\[L2\] HKF secret absent after scrub: NO$'    /tmp/ks_neg.txt || nc_ok=0
+		if [ "$nc_ok" = 1 ]; then
+			echo "    NEG-CONTROL: with the wipe disabled the liveness checks correctly report the secret NOT scrubbed (checks have teeth)"
+		else
+			echo "    NEG-CONTROL FAILED: liveness assertions did not flip when the wipe was disabled — they are vacuous"; cat /tmp/ks_neg.txt; exit 1
+		fi
+	else
+		echo "    NEG-CONTROL build failed (see /tmp/ks_cc.log)"; exit 1
+	fi
 else
 	skip_step " no compiler accepted the stock Crypto sources (see /tmp/ks_cc.log)"
 fi

@@ -14,6 +14,10 @@
  *   [D] the transform is its own inverse (protect then protect == identity) and the protected
  *       buffer does not equal the plaintext (the secret is not left in the clear).
  *   [E] the live store path (RNG-seeded 1 MB area) round-trips a secret and then scrubs it.
+ *   [L] negative-control liveness (ROI item 2): the secret is asserted PRESENT before and ABSENT
+ *       after the wipe, in the same run. Building this TU with -DVC_NEGCTL_NO_WIPE skips the wipe and
+ *       the "absent after" assertions must flip to NO — build_and_verify.sh builds both variants and
+ *       checks the flip, proving a silent no-op wipe would be caught (the checks are not vacuous).
  */
 
 #include <stdio.h>
@@ -191,6 +195,48 @@ int main (void)
 		for (i = 0; i < 32; i++) dirty |= cfg.rawSecret[i];
 		printf ("[F] HKF secret wiped: %s\n", dirty ? "NO" : "YES");
 		printf ("[F] HKF config detached: %s\n", g_hkfActiveConfig == 0 ? "YES" : "NO");
+	}
+
+	/* [L] negative-control liveness (ROI item 2). A zeroization test that only checks "absent after"
+	 *     can pass vacuously — if the buffer was already zero, or the compiler elided it, or the wipe
+	 *     is a silent no-op. Each pair below asserts the secret is PRESENT *before* and ABSENT *after*
+	 *     in the same run, so a wipe that does nothing is caught. Compiling this TU with
+	 *     -DVC_NEGCTL_NO_WIPE skips the wipe: the "present before" lines must stay YES (the input was
+	 *     real) while the "absent after" lines must flip to NO. build_and_verify.sh builds BOTH
+	 *     variants and asserts exactly that flip — proving the checks have teeth. */
+	{
+#if defined(VC_NEGCTL_NO_WIPE)
+		const int wipe_enabled = 0;
+#else
+		const int wipe_enabled = 1;
+#endif
+		/* [L1] VcSecureWipe — read the buffer through a volatile alias so -O2 cannot elide it */
+		{
+			unsigned char s[SECRET_LEN];
+			volatile unsigned char *alias = s;
+			int i, present = 0, absent = 1;
+			fill_secret (s);
+			for (i = 0; i < SECRET_LEN; i++) present |= alias[i];
+			if (wipe_enabled) VcSecureWipe (s, SECRET_LEN);
+			for (i = 0; i < SECRET_LEN; i++) if (alias[i]) absent = 0;
+			printf ("[L1] secret present before wipe: %s\n", present ? "YES" : "NO");
+			printf ("[L1] secret absent after wipe: %s\n", absent ? "YES" : "NO");
+		}
+		/* [L2] HKFScrubActiveConfig — the security-critical path (wipes a reconstructed factor secret) */
+		{
+			static HKFConfig cfg;
+			int i, present = 0, absent = 1;
+			memset (&cfg, 0, sizeof (cfg));
+			cfg.backend = HKF_BACKEND_RAW_SECRET;
+			for (i = 0; i < 32; i++) cfg.rawSecret[i] = (unsigned char) (0xE0 + i);
+			cfg.rawSecretLen = 32;
+			for (i = 0; i < 32; i++) present |= cfg.rawSecret[i];
+			HKFSetActiveConfig (&cfg);
+			if (wipe_enabled) HKFScrubActiveConfig ();
+			for (i = 0; i < 32; i++) if (cfg.rawSecret[i]) absent = 0;
+			printf ("[L2] HKF secret present before scrub: %s\n", present ? "YES" : "NO");
+			printf ("[L2] HKF secret absent after scrub: %s\n", absent ? "YES" : "NO");
+		}
 	}
 
 	return 0;

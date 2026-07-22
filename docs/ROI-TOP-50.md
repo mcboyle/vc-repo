@@ -30,9 +30,19 @@ runs **`48/48 steps verified, 0 skipped`** under `--strict` (exit 0). Negative c
 exit 3. Patch: `patches/harness-strict-mode.patch` (applies `-p1` from repo root). This is also the
 down-payment on item 12 (guard-complementarity) and item 13 (link-time symbol-collision).
 
-**2. Negative controls / zeroization liveness** `[M]` — 05-3, 05-4, 02-30
+**2. Negative controls / zeroization liveness** `[M]` — 05-3, 05-4, 02-30 — **DONE**
 Assert the secret is *present* before the scrub and absent after, in the same run.
 *Done when:* every behavioural test has a paired control that fails if the behaviour is absent.
+*Landed:* `keyscrub_selftest.c` gains an `[L]` block that asserts the secret is PRESENT before and
+ABSENT after the wipe, for both the generic `VcSecureWipe` (`[L1]`) and the security-critical
+`HKFScrubActiveConfig` factor-secret scrub (`[L2]`), reading through a `volatile` alias so `-O2`
+cannot elide it. The teeth are proven mechanically: `build_and_verify.sh` step 6 rebuilds the *same*
+translation unit with `-DVC_NEGCTL_NO_WIPE` (wipe disabled) and asserts the "present before" lines
+stay `YES` while the "absent after" lines flip to `NO` — a silent no-op wipe would now fail the suite.
+The other behavioural tests were audited and already carry their own negative controls: duress
+(`rejects wrong passphrase`, `one-byte difference rejected`), keyslot lifecycle (`wrong passphrase
+rejected`, `revoked A no longer opens`, `B still opens after A revoked`), Shamir (`below threshold
+must be 'no'`, `checksum detects below-threshold garbage`). Verified on GCC and clang.
 
 **3. Flag-matrix + multi-compiler CI** `[M]` — 05-9, 05-10
 The duplicate-symbol defect lived only in the KEYSCRUB-on/HKF-off combination; GCC 12 and 13 diverge.

@@ -1,0 +1,114 @@
+# negative-controls-liveness.patch — zeroization liveness negative control (ROI-TOP-50 item 2)
+#
+# Apply with `git apply -p1` (or `patch -p1`) from the REPOSITORY ROOT. Touches only the fork-only
+# verification/ tree (no stock VeraCrypt file, no src/ change) — the default product build is
+# unaffected.
+#
+# What it does:
+#   * verification/keyscrub_selftest.c: adds an [L] block that asserts the secret is PRESENT before
+#     and ABSENT after the wipe, in the same run, for both VcSecureWipe ([L1]) and the
+#     security-critical HKFScrubActiveConfig factor-secret scrub ([L2]). Reads the buffer through a
+#     volatile alias so -O2 cannot elide it. Guarded by VC_NEGCTL_NO_WIPE: defining it skips the wipe.
+#   * verification/build_and_verify.sh (step 6): rebuilds the SAME TU with -DVC_NEGCTL_NO_WIPE and
+#     asserts the "present before" lines stay YES while the "absent after" lines flip to NO — proving
+#     the liveness checks have teeth (a silent no-op wipe would now fail the suite).
+#
+# Verified: scripts/verify.sh --strict -> "48/48 steps verified, 0 skipped"; the NEG-CONTROL line
+# prints; normal build reports all [L] lines YES, negctl build reports absent-after = NO. GCC + clang.
+#
+diff --git a/verification/build_and_verify.sh b/verification/build_and_verify.sh
+index 8e3e07b..a71a9f4 100755
+--- a/verification/build_and_verify.sh
++++ b/verification/build_and_verify.sh
+@@ -109,8 +109,27 @@ if "$KS_CC" -O2 $KS_WNO $KS_NOASM $KS_DEF $INC -c "$SRCROOT/Common/KeyScrub.c" -
+ 	else
+ 		echo "    MISMATCH"; diff /tmp/ks_c_ref.txt /tmp/ks_py.txt; exit 1
+ 	fi
+-	# all boolean self-checks must report YES
++	# all boolean self-checks must report YES (incl. the [L] present-before/absent-after liveness pairs)
+ 	if grep -Eq ': NO$' /tmp/ks_c.txt; then echo "    KEYSCRUB SELFTEST FAILED"; exit 1; fi
++	# Negative control (ROI item 2): rebuild the SAME selftest with the wipe disabled and confirm the
++	# liveness checks have teeth — "present before" must stay YES, "absent after" must flip to NO. If
++	# the wipe were a silent no-op in the real build, this is the run that would have caught it.
++	if "$KS_CC" -O2 $KS_WNO $KS_DEF -DVC_NEGCTL_NO_WIPE $INC "$HERE/keyscrub_selftest.c" \
++	     /tmp/ks_keyscrub.o /tmp/ks_hkf.o /tmp/ks_t1ha2.o /tmp/ks_chacha256.o /tmp/ks_chachaRng.o -lpthread -o /tmp/keyscrub_negctl 2>>/tmp/ks_cc.log; then
++		/tmp/keyscrub_negctl > /tmp/ks_neg.txt
++		nc_ok=1
++		grep -q '^\[L1\] secret present before wipe: YES$'   /tmp/ks_neg.txt || nc_ok=0
++		grep -q '^\[L1\] secret absent after wipe: NO$'      /tmp/ks_neg.txt || nc_ok=0
++		grep -q '^\[L2\] HKF secret present before scrub: YES$' /tmp/ks_neg.txt || nc_ok=0
++		grep -q '^\[L2\] HKF secret absent after scrub: NO$'    /tmp/ks_neg.txt || nc_ok=0
++		if [ "$nc_ok" = 1 ]; then
++			echo "    NEG-CONTROL: with the wipe disabled the liveness checks correctly report the secret NOT scrubbed (checks have teeth)"
++		else
++			echo "    NEG-CONTROL FAILED: liveness assertions did not flip when the wipe was disabled — they are vacuous"; cat /tmp/ks_neg.txt; exit 1
++		fi
++	else
++		echo "    NEG-CONTROL build failed (see /tmp/ks_cc.log)"; exit 1
++	fi
+ else
+ 	skip_step " no compiler accepted the stock Crypto sources (see /tmp/ks_cc.log)"
+ fi
+diff --git a/verification/keyscrub_selftest.c b/verification/keyscrub_selftest.c
+index b29566e..277f985 100644
+--- a/verification/keyscrub_selftest.c
++++ b/verification/keyscrub_selftest.c
+@@ -14,6 +14,10 @@
+  *   [D] the transform is its own inverse (protect then protect == identity) and the protected
+  *       buffer does not equal the plaintext (the secret is not left in the clear).
+  *   [E] the live store path (RNG-seeded 1 MB area) round-trips a secret and then scrubs it.
++ *   [L] negative-control liveness (ROI item 2): the secret is asserted PRESENT before and ABSENT
++ *       after the wipe, in the same run. Building this TU with -DVC_NEGCTL_NO_WIPE skips the wipe and
++ *       the "absent after" assertions must flip to NO — build_and_verify.sh builds both variants and
++ *       checks the flip, proving a silent no-op wipe would be caught (the checks are not vacuous).
+  */
+ 
+ #include <stdio.h>
+@@ -193,5 +197,47 @@ int main (void)
+ 		printf ("[F] HKF config detached: %s\n", g_hkfActiveConfig == 0 ? "YES" : "NO");
+ 	}
+ 
++	/* [L] negative-control liveness (ROI item 2). A zeroization test that only checks "absent after"
++	 *     can pass vacuously — if the buffer was already zero, or the compiler elided it, or the wipe
++	 *     is a silent no-op. Each pair below asserts the secret is PRESENT *before* and ABSENT *after*
++	 *     in the same run, so a wipe that does nothing is caught. Compiling this TU with
++	 *     -DVC_NEGCTL_NO_WIPE skips the wipe: the "present before" lines must stay YES (the input was
++	 *     real) while the "absent after" lines must flip to NO. build_and_verify.sh builds BOTH
++	 *     variants and asserts exactly that flip — proving the checks have teeth. */
++	{
++#if defined(VC_NEGCTL_NO_WIPE)
++		const int wipe_enabled = 0;
++#else
++		const int wipe_enabled = 1;
++#endif
++		/* [L1] VcSecureWipe — read the buffer through a volatile alias so -O2 cannot elide it */
++		{
++			unsigned char s[SECRET_LEN];
++			volatile unsigned char *alias = s;
++			int i, present = 0, absent = 1;
++			fill_secret (s);
++			for (i = 0; i < SECRET_LEN; i++) present |= alias[i];
++			if (wipe_enabled) VcSecureWipe (s, SECRET_LEN);
++			for (i = 0; i < SECRET_LEN; i++) if (alias[i]) absent = 0;
++			printf ("[L1] secret present before wipe: %s\n", present ? "YES" : "NO");
++			printf ("[L1] secret absent after wipe: %s\n", absent ? "YES" : "NO");
++		}
++		/* [L2] HKFScrubActiveConfig — the security-critical path (wipes a reconstructed factor secret) */
++		{
++			static HKFConfig cfg;
++			int i, present = 0, absent = 1;
++			memset (&cfg, 0, sizeof (cfg));
++			cfg.backend = HKF_BACKEND_RAW_SECRET;
++			for (i = 0; i < 32; i++) cfg.rawSecret[i] = (unsigned char) (0xE0 + i);
++			cfg.rawSecretLen = 32;
++			for (i = 0; i < 32; i++) present |= cfg.rawSecret[i];
++			HKFSetActiveConfig (&cfg);
++			if (wipe_enabled) HKFScrubActiveConfig ();
++			for (i = 0; i < 32; i++) if (cfg.rawSecret[i]) absent = 0;
++			printf ("[L2] HKF secret present before scrub: %s\n", present ? "YES" : "NO");
++			printf ("[L2] HKF secret absent after scrub: %s\n", absent ? "YES" : "NO");
++		}
++	}
++
+ 	return 0;
+ }
