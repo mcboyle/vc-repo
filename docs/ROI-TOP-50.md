@@ -44,9 +44,20 @@ The other behavioural tests were audited and already carry their own negative co
 rejected`, `revoked A no longer opens`, `B still opens after A revoked`), Shamir (`below threshold
 must be 'no'`, `checksum detects below-threshold garbage`). Verified on GCC and clang.
 
-**3. Flag-matrix + multi-compiler CI** `[M]` — 05-9, 05-10
+**3. Flag-matrix + multi-compiler CI** `[M]` — 05-9, 05-10 — **DONE**
 The duplicate-symbol defect lived only in the KEYSCRUB-on/HKF-off combination; GCC 12 and 13 diverge.
 *Done when:* CI builds every pairwise `VC_ENABLE_*` combination on GCC 12/13/14 + clang.
+*Landed:* `verification/flag_matrix.sh` sweeps every pairwise combination of the 9 `VC_ENABLE_*`
+flags (none, each single, each pair, all-on = 47 configs) across every compiler on the host: it
+compiles all 11 fork `Common` modules per config and partial-links them with `ld -r`, which fails on a
+multiply-defined symbol but tolerates undefined externals — isolating the symbol-collision class with
+no wxWidgets/full-crypto link needed. It carries its own negative control (`VC_MATRIX_NEGCTL=1`
+re-injects the historical broken `HKFScrubActiveConfig` guard and asserts the matrix flags the
+KEYSCRUB-only cell). `.github/workflows/flag-matrix.yml` runs it under **GCC 12, 13, 14 and clang**
+(plus a strict-coverage run of the full suite). *In this sandbox only gcc-13 + clang-18 are installed,
+so the local run covered 2 distinct compilers — `94/94 cells clean` — and the report names exactly
+which versions it ran; GCC 12/14 coverage is the CI job's, not claimed locally.* Subsumes item 13
+(link-time symbol-collision check).
 
 **4. Fix remaining `static VC_INLINE` sites** `[S]` — 05-11
 `t1ha_selfcheck.c` and `jitterentropy-base-user.h` still carry it; GCC 13+ rejects it.

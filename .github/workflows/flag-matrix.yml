@@ -1,0 +1,57 @@
+# Pairwise feature-flag × multi-compiler build matrix (ROI-TOP-50 item 3).
+#
+# Runs verification/flag_matrix.sh under GCC 12, 13, 14 and clang. The script compiles every fork
+# Common module for every pairwise VC_ENABLE_* combination and partial-links them (`ld -r`), failing
+# on any duplicate/undefined symbol — the class of defect (HKFScrubActiveConfig double-definition in
+# the KEYSCRUB-on/HKF-off cell) that neither the all-on product build nor the default stock build hits.
+#
+# It also runs the script's own negative control (VC_MATRIX_NEGCTL=1), which re-injects the historical
+# broken guard and asserts the matrix flags it — so a matrix that has silently stopped detecting
+# collisions fails CI too.
+name: flag-matrix
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  matrix:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler:
+          - { pkg: gcc-12, cc: gcc-12 }
+          - { pkg: gcc-13, cc: gcc-13 }
+          - { pkg: gcc-14, cc: gcc-14 }
+          - { pkg: clang,  cc: clang  }
+    name: ${{ matrix.compiler.cc }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ${{ matrix.compiler.pkg }} + binutils
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends ${{ matrix.compiler.pkg }} binutils
+          ${{ matrix.compiler.cc }} --version
+
+      # The script auto-discovers compilers on PATH; pin PATH to just this job's compiler by making it
+      # the only gcc/clang the discovery loop will find is fine — it de-dupes by family+version anyway.
+      - name: Pairwise flag matrix (negative control first)
+        run: |
+          cd verification
+          VC_MATRIX_NEGCTL=1 ./flag_matrix.sh
+          ./flag_matrix.sh
+
+  # Confirms the full self-contained crypto suite passes under strict coverage on the CI image too
+  # (any silently-skipped step fails the job). Complements the flag matrix above.
+  strict-verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: sudo apt-get update -y && sudo apt-get install -y --no-install-recommends clang gcc python3 binutils
+      - name: Verification suite (strict)
+        run: ./scripts/verify.sh --strict
