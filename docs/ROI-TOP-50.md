@@ -207,7 +207,15 @@ Pairs with the duress work already landed; the non-destructive emergency action.
 
 ## Tier 4 — Assurance depth and supply chain (31–40)
 
-**31. Fuzz keyslot record parsing** `[M]` — 05-19
+**31. Fuzz keyslot record parsing** `[M]` — 05-19 — **DONE**
+`verification/keyslot_fuzz.c` feeds tens of thousands of malformed / random / half-structured
+`KeyslotArea`s and randomized in-bounds configs to the REAL `KeyslotOpen` / `KeyslotOpenAt` /
+`KeyslotCount` / `KeyslotRevoke` (+ the policy variants), built under **gcc ASan+UBSan** — the
+sanitizers are the oracle for any OOB / UB / crash. Deterministic (fixed-seed xorshift, reproducible).
+Suite step `[56]` runs it (40k iterations, no fault) with a negative control: a parser that trusts a
+record-supplied length reads out of bounds and MUST fault under ASan (proving the harness would catch
+a real parser OOB). Needs a sanitizer-capable toolchain (gcc libasan); a clang without compiler-rt is
+skipped. Result: the real parser stays in-bounds on every malformed input.
 **32. Fuzz the volume header parser with a malformed corpus** `[M]` — 05-20
 **33. Sanitizer builds (ASan/UBSan) across the suite** `[M]` — 05-16
 **34. dudect timing screens for every primitive** `[M]` — 05-27 — not just Shamir and keyslot

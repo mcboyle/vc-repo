@@ -1503,3 +1503,34 @@ if "$HERE/coverage_report.sh" --check && "$HERE/coverage_report.sh" --check-negc
 else
 	echo "    COVERAGE-DISPLAY CHECK FAILED"; exit 1
 fi
+
+echo ""
+echo "[56] Keyslot parser fuzz under ASan+UBSan (ROI item 31)"
+# Feeds thousands of malformed/random KeyslotAreas + randomized in-bounds configs to the REAL
+# KeyslotOpen/OpenAt/Count/Revoke (+ policy variants); ASan/UBSan are the oracle for any OOB / UB.
+# Needs a sanitizer-capable toolchain (gcc ships libasan; a clang without compiler-rt is skipped).
+# Negative control: a parser that trusts a record-supplied length reads OOB and MUST fault under ASan.
+FZ_SAN="-fsanitize=address,undefined -fno-sanitize-recover=all -g"
+FZ_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+FZ_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+FZ_DEF="-DVC_ENABLE_KEYSLOTS -DVC_ENABLE_KEYSLOT_POLICY"
+FZ_INC="$INC -I$SRCROOT/Crypto"
+FZ_SRC="$SRCROOT/Common/Keyslot.c $SRCROOT/Common/KeyslotStore.c $SRCROOT/Common/AfSplit.c $SRCROOT/Crypto/Sha2.c $SRCROOT/Crypto/chacha256.c"
+FZ_CC=""
+for c in gcc-14 gcc-13 gcc cc clang; do
+	command -v "$c" >/dev/null 2>&1 || continue
+	printf 'int main(){return 0;}\n' > /tmp/fz_probe.c
+	if "$c" -fsanitize=address,undefined /tmp/fz_probe.c -o /tmp/fz_probe 2>/dev/null; then FZ_CC="$c"; break; fi
+done
+if [ -n "$FZ_CC" ] \
+   && "$FZ_CC" -O1 $FZ_WNO $FZ_NOASM $FZ_SAN $FZ_DEF $FZ_INC "$HERE/keyslot_fuzz.c" $FZ_SRC -o /tmp/keyslot_fuzz 2>/tmp/fz_log \
+   && "$FZ_CC" -O1 $FZ_WNO $FZ_NOASM $FZ_SAN -DVC_FUZZ_NEGCTL $FZ_DEF $FZ_INC "$HERE/keyslot_fuzz.c" $FZ_SRC -o /tmp/keyslot_fuzz_nc 2>>/tmp/fz_log; then
+	if /tmp/keyslot_fuzz; then :; else echo "    KEYSLOT FUZZ FAILED (sanitizer fault on real parser)"; exit 1; fi
+	if /tmp/keyslot_fuzz_nc >/tmp/fz_nc.out 2>&1; then
+		echo "    NEG-CONTROL FAILED: the deliberately OOB parser did not fault under ASan"; cat /tmp/fz_nc.out; exit 1
+	else
+		echo "    MATCH: real keyslot parser survives fuzzing clean; ASan proven to catch an OOB parser ($FZ_CC)"
+	fi
+else
+	skip_step " no sanitizer-capable compiler (gcc libasan) available for the keyslot fuzz (see /tmp/fz_log)"
+fi
