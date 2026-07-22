@@ -1338,3 +1338,57 @@ if "$NT_CC" -O2 $NT_WNO $NT_NOASM $NT_GC $NT_INC -c "$SRCROOT/Crypto/Sha2.c" -o 
 else
 	skip_step " no compiler accepted the stock Crypto sources (see /tmp/nt_log)"
 fi
+
+echo ""
+echo "[50] Guard-complementarity lint: multiply-defined external symbols have disjoint #if guards"
+# ROI item 12. Pure static analysis (python only, never skips). Enforces mechanically what a comment
+# once merely claimed: a symbol defined in two .c files under feature guards must have COMPLEMENTARY
+# guards, or some flag combination link-collides (the HKFScrubActiveConfig class). The --self-test is
+# the negative control: it re-injects the historical broken guard and asserts the lint flags it while
+# the real tree stays clean.
+if python3 "$HERE/guard_lint.py"; then
+	if python3 "$HERE/guard_lint.py" --self-test; then
+		echo "    MATCH: guard-complementarity holds tree-wide; lint proven to flag a reintroduced collision"
+	else
+		echo "    GUARD-LINT SELF-TEST FAILED (the lint no longer detects a known collision)"; exit 1
+	fi
+else
+	echo "    GUARD-LINT FAILED: a multiply-defined external symbol has overlapping guards"; exit 1
+fi
+
+echo ""
+echo "[51] Link-time symbol-collision check: KEYSCRUB x HKF combos link with no duplicate symbol"
+# ROI item 13 (fast, always-on companion to the exhaustive flag_matrix.sh / CI). Compiles the two
+# modules that share the HKFScrubActiveConfig symbol across all four KEYSCRUB x HKF combinations and
+# partial-links them (`ld -r`, which fails on a multiply-defined symbol). The negative control
+# re-injects the historical broken guard and asserts the KEYSCRUB-only combo collides.
+SC_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then SC_CC="$c"; break; fi; done
+SC_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+SC_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+sc_combo() { # $1..$n = -D flags ; compiles both modules + ld -r ; echo OK/COLLIDE
+	local src="$1"; shift
+	"$SC_CC" -O0 $SC_WNO $SC_NOASM "$@" $INC -c "$SRCROOT/Common/KeyScrub.c" -o /tmp/sc_ks.o 2>/dev/null || { echo BUILDFAIL; return; }
+	"$SC_CC" -O0 $SC_WNO $SC_NOASM "$@" $INC -x c -c "$src" -o /tmp/sc_hkf.o 2>/dev/null || { echo BUILDFAIL; return; }
+	if ld -r /tmp/sc_ks.o /tmp/sc_hkf.o -o /tmp/sc_all.o 2>/dev/null; then echo OK; else echo COLLIDE; fi
+}
+if [ -n "$SC_CC" ] && command -v ld >/dev/null 2>&1; then
+	REALHKF="$SRCROOT/Common/HardwareKeyFactor.c"
+	BROKENHKF="/tmp/sc_broken_hkf.c"
+	sed 's/#if defined(VC_ENABLE_KEYSCRUB) && defined(VC_ENABLE_HKF)/#if defined(VC_ENABLE_KEYSCRUB)/' "$REALHKF" > "$BROKENHKF"
+	r_none=$(sc_combo "$REALHKF")
+	r_ks=$(sc_combo   "$REALHKF" -DVC_ENABLE_KEYSCRUB)
+	r_hkf=$(sc_combo  "$REALHKF" -DVC_ENABLE_HKF)
+	r_both=$(sc_combo "$REALHKF" -DVC_ENABLE_KEYSCRUB -DVC_ENABLE_HKF)
+	b_ks=$(sc_combo   "$BROKENHKF" -DVC_ENABLE_KEYSCRUB)   # negative control: MUST collide
+	echo "    combos (real):  none=$r_none  KEYSCRUB=$r_ks  HKF=$r_hkf  both=$r_both"
+	echo "    negative control (broken guard, KEYSCRUB-only): $b_ks"
+	if [ "$r_none" = OK ] && [ "$r_ks" = OK ] && [ "$r_hkf" = OK ] && [ "$r_both" = OK ] && [ "$b_ks" = COLLIDE ]; then
+		echo "    MATCH: all real KEYSCRUB x HKF combos link cleanly; broken guard proven to collide"
+	else
+		echo "    SYMBOL-COLLISION CHECK FAILED (real=$r_none/$r_ks/$r_hkf/$r_both negctl=$b_ks)"; exit 1
+	fi
+	rm -f "$BROKENHKF"
+else
+	skip_step " no compiler or ld available for the symbol-collision check"
+fi

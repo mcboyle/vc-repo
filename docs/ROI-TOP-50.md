@@ -115,12 +115,25 @@ clang-18; `KeyScrubEvents.cpp` compiles on g++/clang++. Patch: `patches/swap-hib
 Not sandbox-testable: the actual warning firing on a real mounted-volume session (the detector and its
 output string are proven; the wx/CLI print path is not built here).
 
-**12. Guard-complementarity lint** `[S]` — 05-12
+**12. Guard-complementarity lint** `[S]` — 05-12 — **DONE**
 A symbol with a fallback stub must have genuinely complementary `#if` guards. A comment claimed this;
 the code did not have it.
+*Landed:* `verification/guard_lint.py` — pure static analysis (python, no compile). It scans the fork
+`.c`/`.cpp` files for **external-linkage** function definitions (skips `static` / `VC_INLINE` /
+`inline`), tracks each definition's `#if/#ifdef/#ifndef/#else/#elif/#endif` guard stack, and for any
+symbol defined in ≥2 places SAT-checks (brute-force over the guard macros) whether some flag
+assignment makes two guards **both** true — i.e. a link collision. Wired as suite step `[50]`; the
+`--self-test` negative control re-injects the historical broken `HardwareKeyFactor.c` guard and
+asserts the lint flags `HKFScrubActiveConfig` while the real tree stays clean. Real tree: OK.
 
-**13. Link-time symbol-collision check** `[S]` — 05-15
+**13. Link-time symbol-collision check** `[S]` — 05-15 — **DONE**
 Catches the duplicate-definition class across all feature combinations.
+*Landed:* the exhaustive version already shipped as item 3 (`flag_matrix.sh` partial-links every
+pairwise `VC_ENABLE_*` combo with `ld -r`, in CI on GCC 12/13/14 + clang). Item 13 adds a **fast,
+always-on** companion as suite step `[51]`: it compiles the two modules sharing `HKFScrubActiveConfig`
+across all four `KEYSCRUB × HKF` combinations and `ld -r`-links each, with a negative control that
+re-injects the broken guard and asserts the `KEYSCRUB`-only combo collides. Verified: all real combos
+link clean; broken guard collides.
 
 **14. Log-redaction test that greps for secrets** `[S]` — 12-24
 Prove no key material reaches any log, mechanically rather than by review.
