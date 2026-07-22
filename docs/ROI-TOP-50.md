@@ -229,7 +229,14 @@ must flag it (`reason=5`). Result: the deniable placement provably cannot clobbe
 for all fuzzed geometry. (The stock VeraCrypt XTS header `Deserialize` is upstream C++ that decrypts
 before parsing; the fork's attacker-controlled parse surface is the keyslot record parser (item 31)
 and this geometry binder.)
-**33. Sanitizer builds (ASan/UBSan) across the suite** `[M]` — 05-16
+**33. Sanitizer builds (ASan/UBSan) across the suite** `[M]` — 05-16 — **DONE**
+`verification/sanitize.sh` rebuilds the behavioural harnesses (keyslot lifecycle, per-slot policy,
+KeyScrub, duress, Shamir) under **gcc ASan+UBSan** with the full feature set and runs them — extending
+sanitizer coverage beyond the two fuzz targets (31/32) to the modules those harnesses drive. It carries
+its own negative control: a known heap overflow compiled under the same flags must be caught, so a
+silently-inactive sanitizer fails the sweep too. Suite step `[58]` (skips if no gcc libasan) + a CI
+`sanitize` job in `.github/workflows/flag-matrix.yml`. Result: **5/5 harnesses clean** under
+ASan+UBSan; the shipping modules are memory-safe on the exercised paths.
 **34. dudect timing screens for every primitive** `[M]` — 05-27 — not just Shamir and keyslot
 **35. Randomized property tests** `[S]` — 05-25 — zero-length passwords, t=n, duplicate x-coords
 **36. Wycheproof-style edge-case vectors** `[M]` — 05-29

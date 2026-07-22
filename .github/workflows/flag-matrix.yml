@@ -73,3 +73,14 @@ jobs:
         run: sudo apt-get update -y && sudo apt-get install -y --no-install-recommends clang gcc python3 binutils
       - name: Verification suite (strict)
         run: ./scripts/verify.sh --strict
+
+  # ROI item 33: ASan+UBSan across the behavioural harnesses (gcc ships libasan). The fuzzers (items
+  # 31/32, suite steps 56/57) also run under sanitizers as part of the strict-verify job above.
+  sanitize:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain (gcc libasan)
+        run: sudo apt-get update -y && sudo apt-get install -y --no-install-recommends gcc python3 libasan8 libubsan1
+      - name: Sanitizer sweep (ASan+UBSan)
+        run: ./verification/sanitize.sh

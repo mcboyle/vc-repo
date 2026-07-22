@@ -1560,3 +1560,17 @@ if [ -n "$AF_CC" ] \
 else
 	skip_step " no sanitizer-capable compiler (gcc libasan) for the areafile fuzz (see /tmp/af_log)"
 fi
+
+echo ""
+echo "[58] Sanitizer sweep: behavioural harnesses under ASan+UBSan (ROI item 33)"
+# Extends ASan+UBSan coverage (items 31/32 sanitize the parsers) across the keyslot lifecycle, per-slot
+# policy, KeyScrub, duress, and Shamir harnesses. sanitize.sh includes its own negative control (a
+# heap overflow must be caught, so an inactive sanitizer also fails). Skips if no gcc libasan.
+if out="$("$HERE/sanitize.sh" 2>&1)"; then
+	echo "$out" | sed 's/^/    /'
+	echo "    MATCH: behavioural harnesses clean under ASan+UBSan (sanitizer proven active)"
+elif [ $? -eq 42 ]; then
+	skip_step " no sanitizer-capable compiler (gcc libasan) for the sanitizer sweep"
+else
+	echo "$out" | sed 's/^/    /'; echo "    SANITIZER SWEEP FAILED"; exit 1
+fi
