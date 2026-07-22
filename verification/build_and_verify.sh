@@ -18,8 +18,14 @@ skip_step() { printf '    SKIP:%s\n' "$1"; STEP_SKIP=$((STEP_SKIP + 1)); }
 verify_summary() {
 	rc=$?
 	echo ""
+	# Honesty guard: a non-zero exit means a step hit a MISMATCH/FAILED or the suite aborted (set -e)
+	# BEFORE reaching the end. In that case we must NOT print a reassuring "N/N verified" line — the
+	# counts are meaningless because the run did not complete. Report the failure plainly instead.
+	if [ "$rc" -ne 0 ]; then
+		echo "=== FAILED (exit $rc): suite did not complete all $STEP_TOTAL steps; coverage is unreliable ==="
+		exit "$rc"
+	fi
 	echo "=== coverage: $((STEP_TOTAL - STEP_SKIP))/$STEP_TOTAL steps verified, $STEP_SKIP skipped ==="
-	if [ "$rc" -ne 0 ]; then exit "$rc"; fi          # a genuine MISMATCH/FAILED already set the code
 	if [ "$STRICT" = 1 ] && [ "$STEP_SKIP" -gt 0 ]; then
 		echo "STRICT: $STEP_SKIP of $STEP_TOTAL step(s) skipped (harness/toolchain incomplete) -> FAIL"
 		exit 3
@@ -1391,4 +1397,37 @@ if [ -n "$SC_CC" ] && command -v ld >/dev/null 2>&1; then
 	rm -f "$BROKENHKF"
 else
 	skip_step " no compiler or ld available for the symbol-collision check"
+fi
+
+echo ""
+echo "[52] Log-redaction: secrets loaded into config never appear in the diagnostic/verbose surface"
+# ROI item 14. Drives the real HKF integration (HKFApplyIfConfigured) with DISTINCTIVE sentinel secrets
+# in the config (reconstructed factor secret + FIDO2 PIN), then emits the verbose config summary a
+# --verbose/debug mode would print, and greps ALL output for the sentinels — a clean build must leak
+# none. The -DVC_LOGLEAK build is the negative control: the summary dumps the PIN + secret, and the
+# grep MUST find them (proving the check has teeth; a real redaction regression looks identical).
+LR_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then LR_CC="$c"; break; fi; done
+LR_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+LR_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+LR_DEF="-DVC_ENABLE_HKF -DVC_ENABLE_KEYSCRUB"
+if [ -n "$LR_CC" ] \
+   && "$LR_CC" -O2 $LR_WNO $LR_NOASM $LR_DEF $INC -c "$SRCROOT/Common/HardwareKeyFactor.c" -o /tmp/lr_hkf.o 2>/tmp/lr_log \
+   && "$LR_CC" -O2 $LR_WNO $LR_DEF $INC "$HERE/log_redaction_test.c" /tmp/lr_hkf.o -o /tmp/lr_norm 2>>/tmp/lr_log \
+   && "$LR_CC" -O2 $LR_WNO $LR_DEF -DVC_LOGLEAK $INC "$HERE/log_redaction_test.c" /tmp/lr_hkf.o -o /tmp/lr_leak 2>>/tmp/lr_log; then
+	/tmp/lr_norm > /tmp/lr_norm.txt
+	/tmp/lr_leak > /tmp/lr_leak.txt
+	PIN="REDACT_SENTINEL_PIN_7c1f9a2b"
+	RAWHEX="$(python3 -c "print('REDACT_SENTINEL_RAW_4e8d1c60'.encode().hex())")"
+	norm_pin=$(grep -c "$PIN" /tmp/lr_norm.txt || true); norm_hex=$(grep -c "$RAWHEX" /tmp/lr_norm.txt || true)
+	leak_pin=$(grep -c "$PIN" /tmp/lr_leak.txt || true); leak_hex=$(grep -c "$RAWHEX" /tmp/lr_leak.txt || true)
+	echo "    clean build:   pin-sentinel=$norm_pin  secret-hex=$norm_hex   (must be 0/0)"
+	echo "    LOGLEAK build: pin-sentinel=$leak_pin  secret-hex=$leak_hex   (negative control, must be >=1/>=1)"
+	if [ "$norm_pin" -eq 0 ] && [ "$norm_hex" -eq 0 ] && [ "$leak_pin" -ge 1 ] && [ "$leak_hex" -ge 1 ]; then
+		echo "    MATCH: no secret reaches the diagnostic surface; grep proven to catch a real leak"
+	else
+		echo "    LOG-REDACTION FAILED (clean=$norm_pin/$norm_hex leak=$leak_pin/$leak_hex)"; exit 1
+	fi
+else
+	skip_step " no compiler accepted the sources for the log-redaction test (see /tmp/lr_log)"
 fi

@@ -135,8 +135,17 @@ across all four `KEYSCRUB × HKF` combinations and `ld -r`-links each, with a ne
 re-injects the broken guard and asserts the `KEYSCRUB`-only combo collides. Verified: all real combos
 link clean; broken guard collides.
 
-**14. Log-redaction test that greps for secrets** `[S]` — 12-24
+**14. Log-redaction test that greps for secrets** `[S]` — 12-24 — **DONE**
 Prove no key material reaches any log, mechanically rather than by review.
+*Landed:* `verification/log_redaction_test.c` loads distinctive sentinel secrets (the reconstructed
+factor secret and the FIDO2 PIN) into an `HKFConfig`, drives the real integration path
+(`HKFApplyIfConfigured`), then emits the verbose config summary a `--verbose`/debug mode would print.
+Suite step `[52]` greps ALL output for the sentinels: a clean build must leak **none** (the summary
+prints `raw secret length` and `fido pin = [set, redacted]`, never the bytes). The `-DVC_LOGLEAK`
+build is the negative control — the summary dumps the PIN and the secret hex, and the grep must find
+both, proving a real redaction regression would be caught. Verified on gcc-13 + clang-18: clean
+`0/0`, leak `≥1/≥1`. Scope note: covers the config/secret diagnostic surface; the wx/CLI logging
+paths are not built in this sandbox.
 
 **15. Per-slot policy flags (read-only, max-attempts, expiry)** `[M][FORMAT]` — 03-2
 Cheap fields in a record you already wrap; converts behaviour into configuration.
