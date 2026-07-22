@@ -84,3 +84,22 @@ jobs:
         run: sudo apt-get update -y && sudo apt-get install -y --no-install-recommends gcc python3 libasan8 libubsan1
       - name: Sanitizer sweep (ASan+UBSan)
         run: ./verification/sanitize.sh
+
+  # ROI item 38: block credentials from landing in the tree (also enforced pre-commit via .githooks).
+  secrets-scan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Secrets scan (self-test then full tree)
+        run: ./scripts/secrets-scan.sh --self-test && ./scripts/secrets-scan.sh
+
+  # ROI item 37: clang-tidy over the fork's Common modules (curated high-signal checks, .clang-tidy).
+  # CodeQL runs in the separate codeql.yml workflow.
+  clang-tidy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-tidy
+        run: sudo apt-get update -y && sudo apt-get install -y --no-install-recommends clang-tidy
+      - name: clang-tidy (fork modules)
+        run: ./scripts/clang-tidy-fork.sh

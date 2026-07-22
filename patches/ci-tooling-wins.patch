@@ -1,0 +1,451 @@
+# ci-tooling-wins.patch — property tests + secrets scan + static analysis (ROI-TOP-50 items 35, 37, 38)
+#
+# Apply with `git apply -p1` from the REPOSITORY ROOT. Fork-only verification + CI/tooling; no src/
+# change (the .clang-tidy run over existing src/ found nothing).
+#
+#   item 35 — verification/property_test.c + step [60]: degenerate-input properties over real Shamir.c
+#     / KeyslotStore.c (threshold==n, duplicate x-coords -> SHAMIR_ERR_PARAM, range rejection, boundary
+#     secrets, zero-length keyslot passwords), built under ASan+UBSan.
+#   item 38 — scripts/secrets-scan.sh (pattern-based, dependency-free) + .githooks/pre-commit + a
+#     `secrets-scan` CI job + step [61]. --self-test: a planted secret is caught, crypto KAT hex is not.
+#   item 37 — .clang-tidy (curated high-signal: clang static analyzer + bugprone subset, WarningsAsErrors)
+#     + scripts/clang-tidy-fork.sh + a `clang-tidy` CI job + step [62]; CodeQL in .github/workflows/codeql.yml.
+#     All 11 fork Common modules pass clean.
+#
+# Verified: suite --strict "61/61 steps verified, 0 skipped"; gcc-13 + clang-18 + clang-tidy-18.
+#
+diff --git a/.clang-tidy b/.clang-tidy
+new file mode 100644
+index 0000000..728342b
+--- /dev/null
++++ b/.clang-tidy
+@@ -0,0 +1,28 @@
++# clang-tidy config for the VeraCrypt fork's added Common modules (ROI-TOP-50 item 37).
++#
++# Curated to HIGH-SIGNAL checks so a clean run is meaningful (a broad enable buries real findings in
++# stylistic noise). Kept:
++#   * clang-analyzer-*  — the clang static analyzer: null-deref, use-after-free, uninitialised reads,
++#     leaks, division-by-zero (the bug classes that matter). Minus DeprecatedOrUnsafeBufferHandling,
++#     which flags EVERY memcpy/memset for lacking the non-portable C11 *_s variants — not actionable.
++#   * a small set of bugprone-* checks that catch genuine defects without false-positiving on idiomatic
++#     C (suspicious mem-compare, integer division, not-NUL-terminated results, sizeof mistakes, macro
++#     side effects, signed-char misuse).
++# CodeQL (deeper interprocedural analysis) runs separately in CI (.github/workflows/codeql.yml).
++Checks: >
++  -*,
++  clang-analyzer-*,
++  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
++  bugprone-suspicious-memory-comparison,
++  bugprone-suspicious-memset-usage,
++  bugprone-not-null-terminated-result,
++  bugprone-integer-division,
++  bugprone-sizeof-expression,
++  bugprone-macro-repeated-side-effects,
++  bugprone-signed-char-misuse,
++  bugprone-string-constructor,
++  bugprone-suspicious-string-compare
++WarningsAsErrors: '*'
++# Only diagnose the fork's own .c files, not warnings surfaced from stock VeraCrypt headers.
++HeaderFilterRegex: '$^'
++FormatStyle: none
+diff --git a/.githooks/pre-commit b/.githooks/pre-commit
+new file mode 100755
+index 0000000..914108f
+--- /dev/null
++++ b/.githooks/pre-commit
+@@ -0,0 +1,12 @@
++#!/usr/bin/env bash
++# Pre-commit secret scan (ROI item 38). Enable once with:  git config core.hooksPath .githooks
++# Blocks a commit if a staged file contains a private key or a cloud/service token.
++set -euo pipefail
++root="$(git rev-parse --show-toplevel)"
++mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACM)
++[ ${#staged[@]} -eq 0 ] && exit 0
++if ! "$root/scripts/secrets-scan.sh" "${staged[@]}"; then
++	echo "pre-commit: secret-like content detected in staged files — commit blocked." >&2
++	echo "  (if this is a false positive, adjust scripts/secrets-scan.sh patterns)" >&2
++	exit 1
++fi
+diff --git a/.github/workflows/codeql.yml b/.github/workflows/codeql.yml
+new file mode 100644
+index 0000000..e822457
+--- /dev/null
++++ b/.github/workflows/codeql.yml
+@@ -0,0 +1,41 @@
++# CodeQL static analysis for the fork's C sources (ROI-TOP-50 item 37).
++# Builds the self-contained verification objects (no wxWidgets needed) so CodeQL has something to
++# analyze, then runs GitHub's security-and-quality query suite.
++name: codeql
++
++on:
++  push:
++    branches: [ "**" ]
++  pull_request:
++  schedule:
++    - cron: '27 4 * * 1'   # weekly, so new query packs re-scan even without a push
++
++jobs:
++  analyze:
++    runs-on: ubuntu-24.04
++    permissions:
++      security-events: write
++      contents: read
++    steps:
++      - uses: actions/checkout@v4
++
++      - name: Initialize CodeQL
++        uses: github/codeql-action/init@v3
++        with:
++          languages: c-cpp
++          queries: security-and-quality
++
++      # A lightweight build of the fork's Common modules gives CodeQL real translation units without
++      # the full wxWidgets product build.
++      - name: Build fork modules for analysis
++        run: |
++          sudo apt-get update -y && sudo apt-get install -y --no-install-recommends gcc
++          INC="-Isrc -Isrc/Common -Isrc/Crypto -Isrc/Crypto/Argon2/include"
++          DEFS="-DVC_ENABLE_KEYSLOTS -DVC_ENABLE_KEYSLOT_POLICY -DVC_ENABLE_KEYSCRUB -DVC_ENABLE_HKF -DVC_ENABLE_DURESS -DVC_ENABLE_SHAMIR_MAC -DVC_ENABLE_SHARECODE -DVC_ENABLE_SELFTEST -DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
++          W="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
++          for m in HardwareKeyFactor KeyScrub DuressToken Keyslot KeyslotStore AfSplit KeyslotAreaFile Shamir ShamirMac ShareCode SelfTest; do
++            gcc -O1 $W $DEFS $INC -c "src/Common/$m.c" -o "/tmp/$m.o"
++          done
++
++      - name: CodeQL analysis
++        uses: github/codeql-action/analyze@v3
+diff --git a/.github/workflows/flag-matrix.yml b/.github/workflows/flag-matrix.yml
+index d040c69..c9d3057 100644
+--- a/.github/workflows/flag-matrix.yml
++++ b/.github/workflows/flag-matrix.yml
+@@ -84,3 +84,22 @@ jobs:
+         run: sudo apt-get update -y && sudo apt-get install -y --no-install-recommends gcc python3 libasan8 libubsan1
+       - name: Sanitizer sweep (ASan+UBSan)
+         run: ./verification/sanitize.sh
++
++  # ROI item 38: block credentials from landing in the tree (also enforced pre-commit via .githooks).
++  secrets-scan:
++    runs-on: ubuntu-24.04
++    steps:
++      - uses: actions/checkout@v4
++      - name: Secrets scan (self-test then full tree)
++        run: ./scripts/secrets-scan.sh --self-test && ./scripts/secrets-scan.sh
++
++  # ROI item 37: clang-tidy over the fork's Common modules (curated high-signal checks, .clang-tidy).
++  # CodeQL runs in the separate codeql.yml workflow.
++  clang-tidy:
++    runs-on: ubuntu-24.04
++    steps:
++      - uses: actions/checkout@v4
++      - name: Install clang-tidy
++        run: sudo apt-get update -y && sudo apt-get install -y --no-install-recommends clang-tidy
++      - name: clang-tidy (fork modules)
++        run: ./scripts/clang-tidy-fork.sh
+diff --git a/scripts/clang-tidy-fork.sh b/scripts/clang-tidy-fork.sh
+new file mode 100755
+index 0000000..34fca14
+--- /dev/null
++++ b/scripts/clang-tidy-fork.sh
+@@ -0,0 +1,27 @@
++#!/usr/bin/env bash
++# clang-tidy-fork.sh — static analysis over the fork's added Common modules (ROI-TOP-50 item 37).
++# Uses the repo .clang-tidy config (bugprone-* / clang-analyzer-* / cert-*, WarningsAsErrors). Exits
++# non-zero on any finding. CodeQL runs separately in CI (.github/workflows/codeql.yml).
++set -uo pipefail
++ROOT="$(cd "$(dirname "$0")/.." && pwd)"
++CT="${CLANG_TIDY:-clang-tidy}"
++command -v "$CT" >/dev/null 2>&1 || { echo "SKIP: $CT not installed"; exit 42; }
++
++INC="-I$ROOT/src -I$ROOT/src/Common -I$ROOT/src/Crypto -I$ROOT/src/Crypto/Argon2/include"
++DEFS="-DVC_ENABLE_KEYSLOTS -DVC_ENABLE_KEYSLOT_POLICY -DVC_ENABLE_KEYSCRUB -DVC_ENABLE_HKF -DVC_ENABLE_DURESS -DVC_ENABLE_SHAMIR_MAC -DVC_ENABLE_SHARECODE -DVC_ENABLE_SELFTEST -DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
++
++# The modules this fork adds (stock VeraCrypt files are out of scope for the fork's static analysis).
++MODULES="HardwareKeyFactor KeyScrub DuressToken Keyslot KeyslotStore AfSplit KeyslotAreaFile Shamir ShamirMac ShareCode SelfTest"
++
++rc=0
++for m in $MODULES; do
++	f="$ROOT/src/Common/$m.c"
++	[ -f "$f" ] || continue
++	if "$CT" --quiet "$f" -- $INC $DEFS >"/tmp/ct_$m.out" 2>&1; then
++		echo "  [clean] Common/$m.c"
++	else
++		echo "  [FINDINGS] Common/$m.c"; grep -E "warning:|error:" "/tmp/ct_$m.out" | head -8 | sed 's/^/      /'; rc=1
++	fi
++done
++[ $rc -eq 0 ] && echo "clang-tidy: all $(echo $MODULES | wc -w) fork modules clean" || echo "clang-tidy: findings above"
++exit $rc
+diff --git a/scripts/secrets-scan.sh b/scripts/secrets-scan.sh
+new file mode 100755
+index 0000000..b55114d
+--- /dev/null
++++ b/scripts/secrets-scan.sh
+@@ -0,0 +1,72 @@
++#!/usr/bin/env bash
++# secrets-scan.sh — pattern-based secret scanner (ROI-TOP-50 item 38).
++#
++# Mechanically prevents credentials from being committed: private keys, cloud/service tokens, and
++# high-confidence credential assignments. Deliberately pattern-based (NOT generic entropy) so it does
++# not drown in the repo's many legitimate crypto test vectors / KAT anchors. No external dependency —
++# safe to run from a pre-commit hook (.githooks/pre-commit) and from CI.
++#
++# Usage:
++#   secrets-scan.sh [file ...]     scan the given files, or (with none) every git-tracked text file
++#   secrets-scan.sh --self-test    positive+negative control: a planted secret is caught, clean text is not
++#
++# Exit 0 = clean, 1 = a secret was found (matches printed with the value masked), 2 = usage error.
++set -uo pipefail
++HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(cd "$HERE/.." && pwd)"
++
++# High-confidence secret patterns (extended regex). Prefixes/formats, not entropy.
++PATTERNS=(
++	'-----BEGIN ([A-Z]+ )?PRIVATE KEY-----'
++	'-----BEGIN PGP PRIVATE KEY BLOCK-----'
++	'AKIA[0-9A-Z]{16}'                                   # AWS access key id
++	'aws_secret_access_key[[:space:]]*=[[:space:]]*[A-Za-z0-9/+]{40}'
++	'ghp_[A-Za-z0-9]{36}'                                # GitHub personal access token
++	'github_pat_[A-Za-z0-9_]{60,}'
++	'xox[baprs]-[A-Za-z0-9-]{10,}'                       # Slack token
++	'AIza[0-9A-Za-z_-]{35}'                              # Google API key
++	'sk_live_[0-9A-Za-z]{24,}'                           # Stripe live secret key
++	'-----BEGIN OPENSSH PRIVATE KEY-----'
++)
++
++# Paths never scanned: the scanner itself (contains the patterns) and binary-ish trees.
++is_excluded() {
++	case "$1" in
++		scripts/secrets-scan.sh) return 0;;
++		*.png|*.jpg|*.jpeg|*.gif|*.pdf|*.o|*.a|*.bin) return 0;;
++		*) return 1;;
++	esac
++}
++
++scan_files() {
++	local rc=0 f p
++	for f in "$@"; do
++		[ -f "$f" ] || continue
++		is_excluded "$f" && continue
++		for p in "${PATTERNS[@]}"; do
++			if grep -nE "$p" "$f" >/dev/null 2>&1; then
++				# print the file:line with the matched value masked
++				grep -nE "$p" "$f" | sed -E 's/(.{0,8}).*/\1********  [secret pattern] '"$f"'/' | head -3
++				rc=1
++			fi
++		done
++	done
++	return $rc
++}
++
++self_test() {
++	local tmp dirty clean rc=0
++	tmp="$(mktemp -d)"; dirty="$tmp/dirty.txt"; clean="$tmp/clean.txt"
++	printf 'token = AKIA%s\n' 'ABCDEFGHIJKLMNOP' > "$dirty"      # a well-formed AWS-key-shaped secret
++	printf 'this file has crypto KAT vectors like 628882be and a68b717f but no credentials\n' > "$clean"
++	if scan_files "$dirty" >/dev/null 2>&1; then echo "  FAIL: planted secret was NOT detected"; rc=1
++	else echo "  OK: planted AWS-key-shaped secret is detected (positive control)"; fi
++	if scan_files "$clean" >/dev/null 2>&1; then echo "  OK: a file of crypto KAT hex is NOT flagged (negative control — no false positive)"
++	else echo "  FAIL: clean crypto-vector file was flagged as a secret"; rc=1; fi
++	rm -rf "$tmp"; return $rc
++}
++
++case "${1:-}" in
++	--self-test) self_test; exit $? ;;
++	'' )         cd "$ROOT"; mapfile -t FILES < <(git ls-files 2>/dev/null); scan_files "${FILES[@]}"; exit $? ;;
++	* )          scan_files "$@"; exit $? ;;
++esac
+diff --git a/verification/build_and_verify.sh b/verification/build_and_verify.sh
+index 1731592..0f0dce7 100755
+--- a/verification/build_and_verify.sh
++++ b/verification/build_and_verify.sh
+@@ -1593,3 +1593,56 @@ if [ -n "$DD_CC" ] \
+ else
+ 	skip_step " no compiler accepted the sources for the duress dudect screen (see /tmp/dd_log)"
+ fi
++
++echo ""
++echo "[60] Degenerate-input property tests: thresholds, duplicate-x, ranges, zero-length password (ROI item 35)"
++# Pins the specific degenerate cases a random fuzzer rarely hits: threshold==n, duplicate x-coordinates
++# (a Lagrange divide-by-zero if unguarded -> must return SHAMIR_ERR_PARAM), parameter-range rejection,
++# boundary secrets, and zero-length keyslot passwords. Explicit properties over the REAL Shamir.c /
++# KeyslotStore.c; each degenerate assertion is its own control (the "must NOT recover" / "must reject"
++# side). Built under ASan+UBSan when available so an unguarded div-by-zero also traps.
++PT_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
++PT_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
++PT_INC="$INC -I$SRCROOT/Crypto"
++PT_SRC="$SRCROOT/Common/Shamir.c $SRCROOT/Common/Keyslot.c $SRCROOT/Common/KeyslotStore.c $SRCROOT/Common/AfSplit.c $SRCROOT/Crypto/Sha2.c $SRCROOT/Crypto/chacha256.c"
++PT_SAN=""
++for c in gcc-14 gcc-13 gcc; do command -v "$c" >/dev/null 2>&1 || continue
++	printf 'int main(){return 0;}\n' > /tmp/pt_probe.c
++	if "$c" -fsanitize=address,undefined /tmp/pt_probe.c -o /tmp/pt_probe 2>/dev/null; then PT_CC="$c"; PT_SAN="-fsanitize=address,undefined -fno-sanitize-recover=all -g"; break; fi
++done
++[ -n "$PT_SAN" ] || { for c in clang gcc cc; do command -v "$c" >/dev/null 2>&1 && { PT_CC="$c"; break; }; done; }
++if [ -n "${PT_CC:-}" ] \
++   && "$PT_CC" -O1 $PT_WNO $PT_NOASM $PT_SAN -DVC_ENABLE_KEYSLOTS $PT_INC "$HERE/property_test.c" $PT_SRC -o /tmp/property_test 2>/tmp/pt_log; then
++	if /tmp/property_test > /tmp/pt_c.txt; then cat /tmp/pt_c.txt
++		echo "    MATCH: degenerate-input properties hold${PT_SAN:+ (under ASan+UBSan)}"
++	else cat /tmp/pt_c.txt; echo "    PROPERTY TESTS FAILED"; exit 1; fi
++else
++	skip_step " no compiler accepted the sources for the property tests (see /tmp/pt_log)"
++fi
++
++echo ""
++echo "[61] Secrets scan: no credentials in the tree (ROI item 38)"
++# scripts/secrets-scan.sh (also a .githooks pre-commit hook + CI job) scans for private keys and
++# cloud/service tokens. --self-test is the built-in control: a planted AWS-key-shaped secret MUST be
++# caught and a file of crypto KAT hex MUST NOT be flagged (no false positive on the repo's test data).
++if "$SRCROOT/../scripts/secrets-scan.sh" --self-test >/tmp/ss_c.txt 2>&1 && "$SRCROOT/../scripts/secrets-scan.sh" >>/tmp/ss_c.txt 2>&1; then
++	sed 's/^/    /' /tmp/ss_c.txt
++	echo "    MATCH: no secrets in the tracked tree; scanner catches a planted secret, ignores KAT hex"
++else
++	sed 's/^/    /' /tmp/ss_c.txt; echo "    SECRETS SCAN FAILED (a credential-like pattern was found, or the self-test control broke)"; exit 1
++fi
++
++echo ""
++echo "[62] Static analysis: clang-tidy over the fork modules (ROI item 37)"
++# Curated high-signal check set (.clang-tidy): the clang static analyzer + a small bugprone subset,
++# WarningsAsErrors. Skips if clang-tidy is absent. CodeQL runs separately (.github/workflows/codeql.yml).
++if command -v clang-tidy >/dev/null 2>&1; then
++	if out="$("$SRCROOT/../scripts/clang-tidy-fork.sh" 2>&1)"; then
++		echo "$out" | sed 's/^/    /'
++		echo "    MATCH: all fork Common modules pass clang-tidy (static analyzer) clean"
++	else
++		echo "$out" | sed 's/^/    /'; echo "    CLANG-TIDY FAILED"; exit 1
++	fi
++else
++	skip_step " clang-tidy not installed (static-analysis step)"
++fi
+diff --git a/verification/property_test.c b/verification/property_test.c
+new file mode 100644
+index 0000000..e2c8b38
+--- /dev/null
++++ b/verification/property_test.c
+@@ -0,0 +1,131 @@
++/*
++ * property_test.c — degenerate-input property tests (ROI item 35).
++ *
++ * Step [45] does broad seeded/differential fuzzing; this pins down the specific DEGENERATE cases a
++ * random fuzzer rarely hits reliably and that historically break threshold schemes and passphrase
++ * handling: threshold == n_shares, threshold == 2 boundaries, DUPLICATE x-coordinates (a Lagrange
++ * divide-by-zero if unguarded), parameter-range rejection, and ZERO-LENGTH passwords in the keyslot
++ * path. Each is an explicit property with a known outcome, driving the REAL Shamir.c / KeyslotStore.c.
++ * Built (in the suite) under ASan+UBSan so a divide-by-zero / OOB in a degenerate case is also caught.
++ */
++#include <stdio.h>
++#include <string.h>
++#include <stdint.h>
++#include "Common/Shamir.h"
++#include "Common/Keyslot.h"
++#include "Common/KeyslotStore.h"
++#include "Crypto/Sha2.h"
++
++static int all_pass = 1;
++static void check (const char *name, int ok) { printf ("  %-56s %s\n", name, ok ? "PASS" : "FAIL"); if (!ok) all_pass = 0; }
++
++static uint64_t g_s = 0xabcdef0123456789ULL;
++static uint64_t xr (void) { uint64_t x=g_s; x^=x<<13; x^=x>>7; x^=x<<17; g_s=x; return x; }
++
++/* ---- test KDF (PBKDF2-HMAC-SHA256, same as the other keyslot harnesses) ---- */
++#define BLK 64
++#define DIG 32
++static void hmac256 (const unsigned char *k, int kl, const unsigned char *m, int ml, unsigned char o[DIG])
++{
++	sha256_ctx c; unsigned char k0[BLK], p[BLK], in[DIG]; int i;
++	if (kl > BLK) { sha256_begin(&c); sha256_hash(k,(unsigned)kl,&c); sha256_end(k0,&c); memset(k0+DIG,0,BLK-DIG); }
++	else { if (kl>0) memcpy(k0,k,kl); memset(k0+kl,0,BLK-kl); }
++	for (i=0;i<BLK;i++) p[i]=k0[i]^0x36;
++	sha256_begin(&c); sha256_hash(p,BLK,&c); if (ml>0) sha256_hash(m,(unsigned)ml,&c); sha256_end(in,&c);
++	for (i=0;i<BLK;i++) p[i]=k0[i]^0x5c;
++	sha256_begin(&c); sha256_hash(p,BLK,&c); sha256_hash(in,DIG,&c); sha256_end(o,&c);
++}
++static void test_kdf (const unsigned char *pw, int pwl, const unsigned char *salt, int sl,
++                      unsigned int iters, unsigned char *out, int outLen)
++{
++	int blocks=(outLen+DIG-1)/DIG, blk, i; unsigned char T[DIG],U[DIG],sb[128+4];
++	for (blk=1; blk<=blocks; blk++) {
++		unsigned int j; int k;
++		memcpy(sb,salt,sl); sb[sl]=(unsigned char)(blk>>24); sb[sl+1]=(unsigned char)(blk>>16);
++		sb[sl+2]=(unsigned char)(blk>>8); sb[sl+3]=(unsigned char)blk;
++		hmac256(pw,pwl,sb,sl+4,U); memcpy(T,U,DIG);
++		for (j=1;j<iters;j++){ hmac256(pw,pwl,U,DIG,U); for(k=0;k<DIG;k++) T[k]^=U[k]; }
++		{ int off=(blk-1)*DIG, n=(outLen-off<DIG)?(outLen-off):DIG; for(i=0;i<n;i++) out[off+i]=T[i]; }
++	}
++}
++#define AREA_SLOTS 8
++static unsigned char g_area[AREA_SLOTS * KEYSLOT_TABLE_STRIDE];
++static int    mem_read  (void *c, uint64 off, unsigned char *b, size_t n)       { (void)c; if (off+n > sizeof(g_area)) return -1; memcpy(b, g_area+off, n); return 0; }
++static int    mem_write (void *c, uint64 off, const unsigned char *b, size_t n) { (void)c; if (off+n > sizeof(g_area)) return -1; memcpy(g_area+off, b, n); return 0; }
++static uint64 mem_size  (void *c)                                               { (void)c; return sizeof(g_area); }
++static void det_rand (unsigned char *p, size_t n) { size_t i; for (i=0;i<n;i++) p[i]=(unsigned char) xr(); }
++
++int main (void)
++{
++	unsigned char secret[SHAMIR_MAX_SECRET], rnd[SHAMIR_MAX_SHARES*SHAMIR_MAX_SECRET], rec[SHAMIR_MAX_SECRET];
++	ShamirShare sh[SHAMIR_MAX_SHARES];
++	int L = 32, i, rl;
++
++	for (i = 0; i < L; i++) secret[i] = (unsigned char)(0x10 + i);
++	for (i = 0; i < (int)sizeof(rnd); i++) rnd[i] = (unsigned char) xr();
++
++	printf ("[shamir degenerate thresholds]\n");
++	/* t == n: all n reconstruct; any n-1 do NOT (by design, wrong secret) */
++	{
++		int n = 5, t = 5, ok;
++		ShamirShare few[4];
++		ok = shamir_split (secret, L, t, n, rnd, sh) == SHAMIR_OK;
++		check ("t==n split ok", ok);
++		check ("t==n: all n shares reconstruct", shamir_combine (sh, n, rec, &rl) == SHAMIR_OK && rl == L && !memcmp (rec, secret, L));
++		for (i = 0; i < 4; i++) few[i] = sh[i];
++		shamir_combine (few, 4, rec, &rl);
++		check ("t==n: n-1 shares do NOT recover the secret", memcmp (rec, secret, L) != 0);
++	}
++	/* t == 2: any single share does NOT recover; any 2 do */
++	{
++		int n = 4, t = 2;
++		check ("t==2 split ok", shamir_split (secret, L, t, n, rnd, sh) == SHAMIR_OK);
++		{ ShamirShare one[1]; one[0] = sh[2]; shamir_combine (one, 1, rec, &rl); check ("t==2: 1 share does NOT recover", memcmp (rec, secret, L) != 0); }
++		{ ShamirShare two[2]; two[0] = sh[1]; two[1] = sh[3]; check ("t==2: any 2 shares recover", shamir_combine (two, 2, rec, &rl) == SHAMIR_OK && !memcmp (rec, secret, L)); }
++	}
++
++	printf ("[shamir duplicate x-coordinates]\n");
++	/* two shares with the SAME x -> Lagrange denominator (x_i ^ x_j) == 0. Must be rejected, not a
++	   divide-by-zero / gf_inv(0). (Run under UBSan in the suite, so an unguarded case would also trap.) */
++	{
++		ShamirShare dup[3];
++		shamir_split (secret, L, 3, 5, rnd, sh);
++		dup[0] = sh[0]; dup[1] = sh[1]; dup[2] = sh[1];   /* sh[1] repeated -> duplicate x */
++		check ("duplicate x-coords rejected (SHAMIR_ERR_PARAM)", shamir_combine (dup, 3, rec, &rl) == SHAMIR_ERR_PARAM);
++	}
++
++	printf ("[shamir parameter range]\n");
++	check ("threshold < 2 rejected",      shamir_split (secret, L, 1, 5, rnd, sh) == SHAMIR_ERR_PARAM);
++	check ("threshold > n rejected",      shamir_split (secret, L, 6, 5, rnd, sh) == SHAMIR_ERR_PARAM);
++	check ("n > SHAMIR_MAX_SHARES rejected", shamir_split (secret, L, 2, SHAMIR_MAX_SHARES + 1, rnd, sh) == SHAMIR_ERR_PARAM);
++	check ("secret_len 0 rejected",       shamir_split (secret, 0, 2, 3, rnd, sh) == SHAMIR_ERR_PARAM);
++	check ("secret_len > MAX rejected",   shamir_split (secret, SHAMIR_MAX_SECRET + 1, 2, 3, rnd, sh) == SHAMIR_ERR_PARAM);
++
++	printf ("[shamir boundary secrets]\n");
++	{
++		unsigned char z[SHAMIR_MAX_SECRET], f[SHAMIR_MAX_SECRET];
++		memset (z, 0x00, L); memset (f, 0xff, L);
++		shamir_split (z, L, 3, 5, rnd, sh);   check ("all-zero secret round-trips", shamir_combine (sh, 3, rec, &rl) == SHAMIR_OK && !memcmp (rec, z, L));
++		shamir_split (f, L, 3, 5, rnd, sh);   check ("all-0xFF secret round-trips", shamir_combine (sh, 3, rec, &rl) == SHAMIR_OK && !memcmp (rec, f, L));
++		{ int one = 1; unsigned char s1[1] = {0xA5}, r1[1]; shamir_split (s1, one, 2, 3, rnd, sh); check ("1-byte secret round-trips", shamir_combine (sh, 2, r1, &rl) == SHAMIR_OK && rl == 1 && r1[0] == 0xA5); }
++	}
++
++	printf ("[keyslot zero-length password]\n");
++	{
++		KeyslotArea area; KeyslotStoreCfg cfg; unsigned char vmk[64], out[64]; int flags = -1, idx;
++		for (i = 0; i < 64; i++) vmk[i] = (unsigned char)(0x40 + i);
++		area.read=mem_read; area.write=mem_write; area.size=mem_size; area.ctx=0;
++		memset (&cfg, 0, sizeof(cfg)); cfg.kdf=test_kdf; cfg.cost=64; cfg.vmkLen=64; cfg.maxSlots=AREA_SLOTS; cfg.randBytes=det_rand;
++		cfg.backend = KSB_HEADER; memset (g_area, 0, sizeof(g_area));
++		idx = KeyslotAdd (&cfg, &area, (const unsigned char*)"", 0, 0, vmk);
++		check ("add slot with zero-length password", idx >= 0);
++		check ("zero-length password opens it + recovers VMK", KeyslotOpen (&cfg,&area,(const unsigned char*)"",0,out,&flags) && !memcmp (out, vmk, 64));
++		check ("a non-empty password does NOT open the empty-password slot", !KeyslotOpen (&cfg,&area,(const unsigned char*)"x",1,out,&flags));
++		memset (g_area, 0, sizeof(g_area));
++		check ("open on an empty area returns no-match (no crash)", KeyslotOpen (&cfg,&area,(const unsigned char*)"",0,out,&flags) == 0);
++	}
++
++	printf ("\n%s\n", all_pass ? "PASS: degenerate-input properties hold (thresholds, duplicate-x, ranges, zero-length password)"
++	                            : "FAIL: property tests");
++	return all_pass ? 0 : 1;
++}

@@ -1,0 +1,28 @@
+# clang-tidy config for the VeraCrypt fork's added Common modules (ROI-TOP-50 item 37).
+#
+# Curated to HIGH-SIGNAL checks so a clean run is meaningful (a broad enable buries real findings in
+# stylistic noise). Kept:
+#   * clang-analyzer-*  — the clang static analyzer: null-deref, use-after-free, uninitialised reads,
+#     leaks, division-by-zero (the bug classes that matter). Minus DeprecatedOrUnsafeBufferHandling,
+#     which flags EVERY memcpy/memset for lacking the non-portable C11 *_s variants — not actionable.
+#   * a small set of bugprone-* checks that catch genuine defects without false-positiving on idiomatic
+#     C (suspicious mem-compare, integer division, not-NUL-terminated results, sizeof mistakes, macro
+#     side effects, signed-char misuse).
+# CodeQL (deeper interprocedural analysis) runs separately in CI (.github/workflows/codeql.yml).
+Checks: >
+  -*,
+  clang-analyzer-*,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  bugprone-suspicious-memory-comparison,
+  bugprone-suspicious-memset-usage,
+  bugprone-not-null-terminated-result,
+  bugprone-integer-division,
+  bugprone-sizeof-expression,
+  bugprone-macro-repeated-side-effects,
+  bugprone-signed-char-misuse,
+  bugprone-string-constructor,
+  bugprone-suspicious-string-compare
+WarningsAsErrors: '*'
+# Only diagnose the fork's own .c files, not warnings surfaced from stock VeraCrypt headers.
+HeaderFilterRegex: '$^'
+FormatStyle: none

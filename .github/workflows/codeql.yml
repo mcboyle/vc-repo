@@ -1,0 +1,41 @@
+# CodeQL static analysis for the fork's C sources (ROI-TOP-50 item 37).
+# Builds the self-contained verification objects (no wxWidgets needed) so CodeQL has something to
+# analyze, then runs GitHub's security-and-quality query suite.
+name: codeql
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+  schedule:
+    - cron: '27 4 * * 1'   # weekly, so new query packs re-scan even without a push
+
+jobs:
+  analyze:
+    runs-on: ubuntu-24.04
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: c-cpp
+          queries: security-and-quality
+
+      # A lightweight build of the fork's Common modules gives CodeQL real translation units without
+      # the full wxWidgets product build.
+      - name: Build fork modules for analysis
+        run: |
+          sudo apt-get update -y && sudo apt-get install -y --no-install-recommends gcc
+          INC="-Isrc -Isrc/Common -Isrc/Crypto -Isrc/Crypto/Argon2/include"
+          DEFS="-DVC_ENABLE_KEYSLOTS -DVC_ENABLE_KEYSLOT_POLICY -DVC_ENABLE_KEYSCRUB -DVC_ENABLE_HKF -DVC_ENABLE_DURESS -DVC_ENABLE_SHAMIR_MAC -DVC_ENABLE_SHARECODE -DVC_ENABLE_SELFTEST -DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+          W="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+          for m in HardwareKeyFactor KeyScrub DuressToken Keyslot KeyslotStore AfSplit KeyslotAreaFile Shamir ShamirMac ShareCode SelfTest; do
+            gcc -O1 $W $DEFS $INC -c "src/Common/$m.c" -o "/tmp/$m.o"
+          done
+
+      - name: CodeQL analysis
+        uses: github/codeql-action/analyze@v3

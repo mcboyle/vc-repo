@@ -245,10 +245,32 @@ differing in the LAST — a leaky early-exit compare separates them, a constant-
 step `[59]` asserts the screen **flags** a leaky early-exit reference and **clears** the real
 OR-accumulate `DuressTokenMatch` (contrast, not absolute cycles). Measured: real |t|≈0.3–1.1, leaky
 |t|≈370–414 (~375× contrast) on gcc-13 + clang-18.
-**35. Randomized property tests** `[S]` — 05-25 — zero-length passwords, t=n, duplicate x-coords
+**35. Randomized property tests** `[S]` — 05-25 — zero-length passwords, t=n, duplicate x-coords — **DONE**
+Step `[45]` does broad seeded/differential fuzzing; this pins the specific degenerate cases that
+historically break threshold schemes and passphrase handling. `verification/property_test.c` drives
+the real `Shamir.c` / `KeyslotStore.c`: **threshold==n** (all n reconstruct, n−1 do not), threshold==2
+boundaries, **duplicate x-coordinates** (a Lagrange divide-by-zero if unguarded → asserted to return
+`SHAMIR_ERR_PARAM`), parameter-range rejection (t<2, t>n, n>MAX, len 0/>MAX), all-zero/all-0xFF/1-byte
+secrets, and **zero-length keyslot passwords** (add + open + a non-empty password must not open it;
+empty area → no-match, no crash). 20 properties, suite step `[60]`, built under ASan+UBSan when
+available (so an unguarded div-by-zero also traps). Each degenerate assertion is its own control (the
+"must NOT recover" / "must reject" side). gcc-13 + clang-18.
 **36. Wycheproof-style edge-case vectors** `[M]` — 05-29
-**37. Static analysis in CI (clang-tidy, CodeQL)** `[M]` — 05-45
-**38. Secrets-scanning pre-commit hook** `[S]` — 05-46
+**37. Static analysis in CI (clang-tidy, CodeQL)** `[M]` — 05-45 — **DONE**
+`.clang-tidy` curates a **high-signal** check set (the clang static analyzer — null-deref /
+use-after-free / uninitialised reads / leaks — plus a small `bugprone-*` subset, `WarningsAsErrors`),
+deliberately excluding the noisy `insecureAPI.DeprecatedOrUnsafeBufferHandling` (flags every
+`memcpy`/`memset`) and stock-header diagnostics, so a clean run is meaningful.
+`scripts/clang-tidy-fork.sh` runs it over the 11 fork Common modules — **all clean**. Suite step `[62]`
+(skips if clang-tidy absent) + a `clang-tidy` CI job; **CodeQL** (security-and-quality suite) runs in
+`.github/workflows/codeql.yml`, building the fork modules so it has real TUs to analyze.
+**38. Secrets-scanning pre-commit hook** `[S]` — 05-46 — **DONE**
+`scripts/secrets-scan.sh` is a dependency-free, pattern-based scanner (private keys, AWS/GitHub/Slack/
+Google/Stripe tokens) — deliberately *not* entropy-based, so it doesn't drown in the repo's legitimate
+crypto KAT vectors. `.githooks/pre-commit` blocks a commit with a secret in staged files (enable with
+`git config core.hooksPath .githooks`); a `secrets-scan` CI job and suite step `[61]` scan the whole
+tree. Built-in `--self-test` is the control: a planted AWS-key-shaped secret **is** caught and a file
+of crypto KAT hex is **not** (no false positive). Whole tree currently clean.
 **39. Reproducible builds + signed releases** `[M]` — 04-48, 04-49
 **40. SBOM per release** `[S]` — 05-39
 

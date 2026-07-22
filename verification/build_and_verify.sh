@@ -1593,3 +1593,56 @@ if [ -n "$DD_CC" ] \
 else
 	skip_step " no compiler accepted the sources for the duress dudect screen (see /tmp/dd_log)"
 fi
+
+echo ""
+echo "[60] Degenerate-input property tests: thresholds, duplicate-x, ranges, zero-length password (ROI item 35)"
+# Pins the specific degenerate cases a random fuzzer rarely hits: threshold==n, duplicate x-coordinates
+# (a Lagrange divide-by-zero if unguarded -> must return SHAMIR_ERR_PARAM), parameter-range rejection,
+# boundary secrets, and zero-length keyslot passwords. Explicit properties over the REAL Shamir.c /
+# KeyslotStore.c; each degenerate assertion is its own control (the "must NOT recover" / "must reject"
+# side). Built under ASan+UBSan when available so an unguarded div-by-zero also traps.
+PT_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+PT_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+PT_INC="$INC -I$SRCROOT/Crypto"
+PT_SRC="$SRCROOT/Common/Shamir.c $SRCROOT/Common/Keyslot.c $SRCROOT/Common/KeyslotStore.c $SRCROOT/Common/AfSplit.c $SRCROOT/Crypto/Sha2.c $SRCROOT/Crypto/chacha256.c"
+PT_SAN=""
+for c in gcc-14 gcc-13 gcc; do command -v "$c" >/dev/null 2>&1 || continue
+	printf 'int main(){return 0;}\n' > /tmp/pt_probe.c
+	if "$c" -fsanitize=address,undefined /tmp/pt_probe.c -o /tmp/pt_probe 2>/dev/null; then PT_CC="$c"; PT_SAN="-fsanitize=address,undefined -fno-sanitize-recover=all -g"; break; fi
+done
+[ -n "$PT_SAN" ] || { for c in clang gcc cc; do command -v "$c" >/dev/null 2>&1 && { PT_CC="$c"; break; }; done; }
+if [ -n "${PT_CC:-}" ] \
+   && "$PT_CC" -O1 $PT_WNO $PT_NOASM $PT_SAN -DVC_ENABLE_KEYSLOTS $PT_INC "$HERE/property_test.c" $PT_SRC -o /tmp/property_test 2>/tmp/pt_log; then
+	if /tmp/property_test > /tmp/pt_c.txt; then cat /tmp/pt_c.txt
+		echo "    MATCH: degenerate-input properties hold${PT_SAN:+ (under ASan+UBSan)}"
+	else cat /tmp/pt_c.txt; echo "    PROPERTY TESTS FAILED"; exit 1; fi
+else
+	skip_step " no compiler accepted the sources for the property tests (see /tmp/pt_log)"
+fi
+
+echo ""
+echo "[61] Secrets scan: no credentials in the tree (ROI item 38)"
+# scripts/secrets-scan.sh (also a .githooks pre-commit hook + CI job) scans for private keys and
+# cloud/service tokens. --self-test is the built-in control: a planted AWS-key-shaped secret MUST be
+# caught and a file of crypto KAT hex MUST NOT be flagged (no false positive on the repo's test data).
+if "$SRCROOT/../scripts/secrets-scan.sh" --self-test >/tmp/ss_c.txt 2>&1 && "$SRCROOT/../scripts/secrets-scan.sh" >>/tmp/ss_c.txt 2>&1; then
+	sed 's/^/    /' /tmp/ss_c.txt
+	echo "    MATCH: no secrets in the tracked tree; scanner catches a planted secret, ignores KAT hex"
+else
+	sed 's/^/    /' /tmp/ss_c.txt; echo "    SECRETS SCAN FAILED (a credential-like pattern was found, or the self-test control broke)"; exit 1
+fi
+
+echo ""
+echo "[62] Static analysis: clang-tidy over the fork modules (ROI item 37)"
+# Curated high-signal check set (.clang-tidy): the clang static analyzer + a small bugprone subset,
+# WarningsAsErrors. Skips if clang-tidy is absent. CodeQL runs separately (.github/workflows/codeql.yml).
+if command -v clang-tidy >/dev/null 2>&1; then
+	if out="$("$SRCROOT/../scripts/clang-tidy-fork.sh" 2>&1)"; then
+		echo "$out" | sed 's/^/    /'
+		echo "    MATCH: all fork Common modules pass clang-tidy (static analyzer) clean"
+	else
+		echo "$out" | sed 's/^/    /'; echo "    CLANG-TIDY FAILED"; exit 1
+	fi
+else
+	skip_step " clang-tidy not installed (static-analysis step)"
+fi
