@@ -22,8 +22,8 @@ if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
   {
     echo "export VC_SRC=\"$PROJECT_DIR/src\""
     echo "export VC_VERIFY=\"$PROJECT_DIR/verification\""
-    # default: compile the verification harnesses with clang (gcc rejects Crypto/chacha256.c's
-    # duplicate 'static'); the suite already prefers clang, this just mirrors it for ad-hoc builds.
+    # default: compile the verification harnesses with clang (the suite prefers it); gcc also works now
+    # that the redundant `static VC_INLINE` in Crypto/chacha256.c + chachaRng.c is removed.
     echo "export CC=\"\${CC:-clang}\""
   } >> "$CLAUDE_ENV_FILE" 2>/dev/null || true
 fi

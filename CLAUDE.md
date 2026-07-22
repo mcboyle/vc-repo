@@ -96,7 +96,10 @@ cd src && make CC=clang CXX=clang++ HKF=1            # or HKF_SIMULATOR=1 / YUBI
 The make knobs are wired (top-level `Makefile` + `Core/Core.make`): `HKF=1` compiles
 `HardwareKeyFactor.o` + `Shamir.o` and exposes the `--hkf-*` CLI; `YUBIKEY=1`/`FIDO2=1` add the
 backend + `-lykpers-1`/`-lfido2`; `HKF_SIMULATOR=1` adds the software token (testing only — never
-ship). Use clang (gcc rejects stock `Crypto/chacha256.c`), and **`make clean` when changing feature
+ship). Either compiler works — `Crypto/chacha256.c` + `chachaRng.c` had a redundant `static VC_INLINE`
+(VC_INLINE already expands to `static inline` on GCC → "duplicate 'static'") that made them clang-only
+where a feature build pulls them in; that redundant `static` is now removed, so **gcc and clang both
+build the full feature set**. Still **`make clean` when changing feature
 flags** — make does not rebuild objects on `-D` changes, and a mixed binary silently drops hooks
 (see docs/REAL-BUILD-VALIDATION.md). Windows: add the sources to `Common.vcxproj` manually.
 

@@ -57,7 +57,8 @@ if command -v make >/dev/null 2>&1; then
   if [ -x "$VC" ]; then
     ok "veracrypt binary present ($VC) — using it (pass a path as arg 1 to override)"
   else
-    # clang is required in practice: gcc hard-errors on stock Crypto/chacha256.c ("duplicate static").
+    # clang is the default; gcc also works now (the redundant `static VC_INLINE` in chacha256.c +
+    # chachaRng.c that made gcc hard-error with "duplicate 'static'" has been removed).
     # HKF_SIMULATOR (not just HKF) so the simulator round-trip below can run — testing only, never ship.
     VCC=""; command -v clang >/dev/null 2>&1 && VCC="CC=clang CXX=clang++"
     FLAGS="NOGUI=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 ARGON2PARAMS=1 BALLOON=1 SHAMIRMAC=1 SHARECODE=1 HKF_SIMULATOR=1"
