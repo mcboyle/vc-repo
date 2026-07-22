@@ -291,7 +291,8 @@ block may persist — the attestation records the logical erase, it does not def
 **44. Header backup with integrity check + reminders** `[S]` — 03-35
 **45. Multi-token OR-set (any of N enrolled works)** `[M]` — 03-18
 **46. PKCS#11 / PIV smartcard factor** `[M][HW]` — 03-11 — VeraCrypt already speaks PKCS#11
-**47. Structured error taxonomy + stable exit codes** `[S]` — 11-6, 16-39
+**47. Structured error taxonomy + stable exit codes** `[S]` — 11-6, 16-39 — **DONE**
+`Common/VcStatus.{c,h}` (gated `VC_ENABLE_STATUS`) defines a stable enum of outcomes (ok / param / io / wrong_password / factor_missing / slot_expired / slot_locked / duress / tampered / unsupported / internal), each with a fixed process **exit code**, a machine token (`VcStatusName`, for `--json`), and a human string (`VcStatusString`). Exit codes are a committed contract. Suite step `[64]` verifies completeness, distinct non-zero error codes, unique names, and safe out-of-range fallback, and diffs the name→exit-code table byte-for-byte against `status_reference.py` (the independent pin) — a renumber breaks the diff, which is the stability guarantee's negative control. gcc-13 + clang-18; in the flag matrix.
 **48. `--json` machine-readable output** `[S]` — 04-34
 **49. systemd units with hardening directives** `[S]` — 16-12 — `NoNewPrivileges`, `ProtectHome`
 **50. Atomic power-loss-resilient header writes** `[M][FORMAT]` — 06-27 — **DESIGN (awaiting review)** — `docs/TIER5-FORMAT-DESIGN.md §50` (A/B header pair + generation + commit-tag; torn-write recovery is sandbox-testable, true power-loss is not).

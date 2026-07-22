@@ -36,10 +36,10 @@ WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unuse
 NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
 
 # Fork Common modules that carry gated symbols (the surface where a partial combo can collide).
-MODULES="HardwareKeyFactor KeyScrub DuressToken Keyslot KeyslotStore AfSplit KeyslotAreaFile Shamir ShamirMac ShareCode SelfTest Pkcs5"
+MODULES="HardwareKeyFactor KeyScrub DuressToken Keyslot KeyslotStore AfSplit KeyslotAreaFile Shamir ShamirMac ShareCode SelfTest VcStatus Pkcs5"
 # Independent feature flags to sweep. (Backend flags YUBIKEY/FIDO2/SIMULATOR need external libs and
 # are covered by the real build; HKF_SALT_BIND rides on HKF.)
-FLAGS="VC_ENABLE_KEYSCRUB VC_ENABLE_HKF VC_ENABLE_DURESS VC_ENABLE_KEYSLOTS VC_ENABLE_KEYSLOT_POLICY VC_ENABLE_SHAMIR_MAC VC_ENABLE_SHARECODE VC_ENABLE_HKF_SALT_BIND VC_ENABLE_ARGON2_PARAMS VC_ENABLE_BALLOON_KDF VC_ENABLE_SELFTEST VC_ENABLE_KEYSLOT_SHRED"
+FLAGS="VC_ENABLE_KEYSCRUB VC_ENABLE_HKF VC_ENABLE_DURESS VC_ENABLE_KEYSLOTS VC_ENABLE_KEYSLOT_POLICY VC_ENABLE_SHAMIR_MAC VC_ENABLE_SHARECODE VC_ENABLE_HKF_SALT_BIND VC_ENABLE_ARGON2_PARAMS VC_ENABLE_BALLOON_KDF VC_ENABLE_SELFTEST VC_ENABLE_KEYSLOT_SHRED VC_ENABLE_STATUS"
 
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 

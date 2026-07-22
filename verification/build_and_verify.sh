@@ -1670,3 +1670,23 @@ if [ -n "$KH_CC" ] \
 else
 	skip_step " no compiler accepted the sources for the keyslot-shred test (see /tmp/kh_log)"
 fi
+
+echo ""
+echo "[64] Error taxonomy + stable exit codes (ROI item 47)"
+# Verifies the scriptable contract over the real VcStatus.c: every status has a name + description +
+# exit code, error exit codes are distinct and non-zero, names are unique, out-of-range falls back
+# safely. The REF lines (name -> exit code) are diffed byte-for-byte against status_reference.py, which
+# independently pins the contract — a renumber breaks the diff (the stability guarantee's teeth).
+SS_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then SS_CC="$c"; break; fi; done
+if [ -n "$SS_CC" ] && "$SS_CC" -O2 -Wno-implicit-function-declaration -DVC_ENABLE_STATUS $INC "$HERE/status_test.c" "$SRCROOT/Common/VcStatus.c" -o /tmp/status_test 2>/tmp/ss_log; then
+	if /tmp/status_test > /tmp/ss_c.txt; then grep -v '^REF' /tmp/ss_c.txt
+		python3 "$HERE/status_reference.py" > /tmp/ss_py.txt
+		grep '^REF' /tmp/ss_c.txt > /tmp/ss_c_ref.txt
+		if diff -q /tmp/ss_c_ref.txt /tmp/ss_py.txt >/dev/null; then
+			echo "    MATCH: exit-code contract (real VcStatus.c) == independent python pin"
+		else echo "    MISMATCH"; diff /tmp/ss_c_ref.txt /tmp/ss_py.txt; exit 1; fi
+	else grep -v '^REF' /tmp/ss_c.txt; echo "    STATUS TAXONOMY FAILED"; exit 1; fi
+else
+	skip_step " no compiler accepted the sources for the status taxonomy test (see /tmp/ss_log)"
+fi
