@@ -1431,3 +1431,36 @@ if [ -n "$LR_CC" ] \
 else
 	skip_step " no compiler accepted the sources for the log-redaction test (see /tmp/lr_log)"
 fi
+
+echo ""
+echo "[53] Per-slot policy: read-only + expiry + max-attempts over real KeyslotStore.c (ROI item 15)"
+# Behavioural test of the shipping VC_ENABLE_KEYSLOT_POLICY code (KeyslotAddPolicy / KeyslotOpenPolicy
+# / KeyslotOpenAtPolicy), each policy with a negative control, plus a v1-legacy byte-compat check and
+# the honest rollback-limitation demo. Layer 1: keyslot_policy_reference.py independently computes the
+# v2 payload layout (flags||expiryUnix_be||vmk), diffed byte-for-byte against the REF lines.
+KPP_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then KPP_CC="$c"; break; fi; done
+KPP_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+KPP_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+KPP_GC="-ffunction-sections -fdata-sections"
+KPP_DEF="-DVC_ENABLE_KEYSLOTS -DVC_ENABLE_KEYSLOT_POLICY"
+KPP_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$KPP_CC" ] \
+   && "$KPP_CC" -O2 $KPP_WNO $KPP_NOASM $KPP_GC $KPP_DEF $KPP_INC -c "$SRCROOT/Common/Keyslot.c"      -o /tmp/kpp_ks.o    2>/tmp/kpp_log \
+   && "$KPP_CC" -O2 $KPP_WNO $KPP_NOASM $KPP_GC $KPP_DEF $KPP_INC -c "$SRCROOT/Common/KeyslotStore.c" -o /tmp/kpp_store.o 2>>/tmp/kpp_log \
+   && "$KPP_CC" -O2 $KPP_WNO $KPP_NOASM $KPP_GC $KPP_DEF $KPP_INC -c "$SRCROOT/Common/AfSplit.c"      -o /tmp/kpp_af.o    2>>/tmp/kpp_log \
+   && "$KPP_CC" -O2 $KPP_WNO $KPP_NOASM $KPP_GC $KPP_INC -c "$SRCROOT/Crypto/Sha2.c"     -o /tmp/kpp_sha.o 2>>/tmp/kpp_log \
+   && "$KPP_CC" -O2 $KPP_WNO $KPP_NOASM $KPP_GC $KPP_INC -c "$SRCROOT/Crypto/chacha256.c" -o /tmp/kpp_cc.o 2>>/tmp/kpp_log \
+   && "$KPP_CC" -O2 $KPP_WNO $KPP_DEF $KPP_INC "$HERE/keyslot_policy_test.c" \
+        /tmp/kpp_ks.o /tmp/kpp_store.o /tmp/kpp_af.o /tmp/kpp_sha.o /tmp/kpp_cc.o -Wl,--gc-sections -o /tmp/keyslot_policy_test 2>>/tmp/kpp_log; then
+	if /tmp/keyslot_policy_test > /tmp/kpp_c.txt; then cat /tmp/kpp_c.txt; else cat /tmp/kpp_c.txt; echo "    KEYSLOT POLICY FAILED"; exit 1; fi
+	python3 "$HERE/keyslot_policy_reference.py" > /tmp/kpp_py.txt
+	grep '^REF' /tmp/kpp_c.txt > /tmp/kpp_c_ref.txt
+	if diff -q /tmp/kpp_c_ref.txt /tmp/kpp_py.txt >/dev/null; then
+		echo "    MATCH: v2 payload layout (real KeyslotStore object) == independent python reference"
+	else
+		echo "    MISMATCH"; diff /tmp/kpp_c_ref.txt /tmp/kpp_py.txt; exit 1
+	fi
+else
+	skip_step " no compiler accepted the sources for the keyslot-policy test (see /tmp/kpp_log)"
+fi

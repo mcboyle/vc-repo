@@ -147,16 +147,21 @@ both, proving a real redaction regression would be caught. Verified on gcc-13 + 
 `0/0`, leak `≥1/≥1`. Scope note: covers the config/secret diagnostic surface; the wx/CLI logging
 paths are not built in this sandbox.
 
-**15. Per-slot policy flags (read-only, max-attempts, expiry)** `[M][FORMAT]` — 03-2 — **DESIGN (awaiting review)**
+**15. Per-slot policy flags (read-only, max-attempts, expiry)** `[M][FORMAT]` — 03-2 — **DONE** (design `docs/KEYSLOT-POLICY-DESIGN.md`)
 Cheap fields in a record you already wrap; converts behaviour into configuration.
-*Proposal:* `docs/KEYSLOT-POLICY-DESIGN.md`. Splits cleanly: **read-only + expiry** are static and go
-in the *encrypted* v2 payload (`flags[1] || expiryUnix[8] || vmk`), record-versioned so legacy v1
-records open byte-identically; **max-attempts** is fundamentally different (needs a write per failed
-attempt, cannot be re-wrapped without the passphrase, lives in cleartext metadata, and is
-rollback-defeatable without a TPM/secure-element counter). Recommendation: ship read-only + expiry +
-an honestly-caveated max-attempts (labeled backends only, not the constant-time mount path), defer
-rollback-resistant lockout to a `[HW]` follow-up. **No code until the format + the two open questions
-in the proposal are approved.**
+*Landed* (approved design, gated behind `VC_ENABLE_KEYSLOT_POLICY` on top of `VC_ENABLE_KEYSLOTS`):
+`KeyslotStore.c` gains `KeyslotAddPolicy` / `KeyslotOpenPolicy` / `KeyslotOpenAtPolicy`.
+**read-only** is an encrypted flag bit (`KEYSLOT_FLAG_READONLY`); **expiry** is 8 big-endian bytes in
+the v2 encrypted payload (`flags[1] || expiryUnix[8] || vmk`) — authenticated and hidden — enforced
+**silently** at the constant-time mount path (an expired slot behaves exactly like a wrong
+passphrase, no oracle). **max-attempts** is a cleartext pad counter on the admin path only (locks after
+N failed opens, resets on success); as designed it is **rollback-defeatable** without a TPM counter,
+which the harness *demonstrates* rather than hides. Legacy v1 records (`policy=0`) open byte-identically;
+deniable backend stays v1. Verified two ways (step `[53]`): behavioural test of the real compiled module
+with a **negative control per policy** (read-write lacks the RO bit; never-expiring slot opens in the far
+future; a correct open before lockout resets the counter) + a v1 byte-compat check + the rollback demo,
+and a byte-for-byte payload-layout diff vs `keyslot_policy_reference.py`. gcc-13 + clang-18, added to the
+flag matrix. Not done here: the `--keyslot-*` CLI surface + wx wiring for the flags (product build).
 
 **16. `verify` command — integrity check without mounting** `[M]` — 02-9
 Check a volume without exposing plaintext or taking the mount path.

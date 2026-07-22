@@ -59,6 +59,14 @@ typedef struct KeyslotStoreCfg
 	                                                       Public parameter like 'cost': the open path
 	                                                       sizes its fixed per-slot work from it, never
 	                                                       from record bytes. Bounded by the stride. */
+#if defined(VC_ENABLE_KEYSLOT_POLICY)
+	int            policy;                               /* 0 = v1 legacy payload (flags[1]||vmk), opens
+	                                                       byte-identically; 1 = v2 policy payload
+	                                                       (flags[1]||expiryUnix[8]||vmk). Table-level like
+	                                                       'cost'/'afStripes'; per-slot policy still varies
+	                                                       (each v2 slot carries its own flags + expiry).
+	                                                       docs/KEYSLOT-POLICY-DESIGN.md. */
+#endif
 } KeyslotStoreCfg;
 
 /* Fixed on-medium stride of one labeled table slot (KSB_HEADER / KSB_SIDECAR). */
@@ -90,6 +98,41 @@ int KeyslotRevoke (const KeyslotStoreCfg *cfg, KeyslotArea *area, int index);
 /* Count occupied labeled table slots (KSB_HEADER / KSB_SIDECAR). Deniable slots are, by design, not
    enumerable without their passphrase, so this returns 0 for KSB_DENIABLE. */
 int KeyslotCount (const KeyslotStoreCfg *cfg, KeyslotArea *area);
+
+#if defined(VC_ENABLE_KEYSLOT_POLICY)
+/* ---- per-slot policy (ROI item 15; docs/KEYSLOT-POLICY-DESIGN.md) -----------------------------------
+ * Requires cfg->policy == 1 (v2 records). read-only + expiry live in the ENCRYPTED payload
+ * (authenticated, hidden); max-attempts is a CLEARTEXT pad counter — necessarily cleartext so lockout
+ * can be enforced without the key, and therefore rollback-defeatable (restoring an old table copy
+ * resets it). Not offered on the deniable backend (no cleartext metadata by design). */
+
+#define KEYSLOT_LOCKED (-2)   /* KeyslotOpenAtPolicy: slot is locked out (attempts >= maxAttempts) */
+
+/* Add a v2 policy slot. 'flags' may set KEYSLOT_FLAG_DURESS / KEYSLOT_FLAG_READONLY. 'expiryUnix' is a
+   Unix time after which the slot stops opening (0 = never). 'maxAttempts' locks the slot after that many
+   failed admin opens (0 = unlimited). Returns the slot index (>=0) or -1. Labeled backends only. */
+int KeyslotAddPolicy (const KeyslotStoreCfg *cfg, KeyslotArea *area,
+                      const unsigned char *pass, int passLen, int flags,
+                      const unsigned char *vmk, uint64 expiryUnix, int maxAttempts);
+
+/* Constant-time mount open with expiry enforcement. Identical to KeyslotOpen, but a matched slot whose
+   expiry != 0 and expiry < nowUnix is rejected SILENTLY (returns 0, as if the passphrase were wrong —
+   no expiry oracle). On success returns 1, fills vmkOut, *flagsOut (incl. the read-only bit), and
+   *expiryOut if non-NULL. Pass nowUnix = 0 to disable the expiry check. */
+int KeyslotOpenPolicy (const KeyslotStoreCfg *cfg, KeyslotArea *area,
+                       const unsigned char *pass, int passLen, uint64 nowUnix,
+                       unsigned char *vmkOut, int *flagsOut, uint64 *expiryOut);
+
+/* Admin indexed open with lockout (rotate/list path; reveals per-index success). Reads the cleartext
+   attempt counter first: if maxAttempts>0 and attempts>=maxAttempts, returns KEYSLOT_LOCKED without
+   trying. Otherwise unwraps; on failure increments the counter (write-back) and returns 0; on success
+   resets it to 0, enforces expiry silently (returns 0 if expired), and returns 1. Labeled backends
+   only. Reports *attemptsOut / *maxAttemptsOut (cleartext) if non-NULL. */
+int KeyslotOpenAtPolicy (const KeyslotStoreCfg *cfg, KeyslotArea *area, int index,
+                         const unsigned char *pass, int passLen, uint64 nowUnix,
+                         unsigned char *vmkOut, int *flagsOut,
+                         int *attemptsOut, int *maxAttemptsOut);
+#endif /* VC_ENABLE_KEYSLOT_POLICY */
 
 #if defined(__cplusplus)
 }

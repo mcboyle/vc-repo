@@ -38,7 +38,8 @@ extern "C" {
 #define KEYSLOT_VMK_MAX   512   /* max wrapped payload (a VeraCrypt header plaintext fits) */
 
 /* slot flags */
-#define KEYSLOT_FLAG_DURESS 0x01   /* opening this slot means "run the safe duress action", not mount */
+#define KEYSLOT_FLAG_DURESS   0x01   /* opening this slot means "run the safe duress action", not mount */
+#define KEYSLOT_FLAG_READONLY 0x02   /* (VC_ENABLE_KEYSLOT_POLICY) this slot may only mount read-only */
 
 /* Derive KEYSLOT_DK_SIZE bytes from a passphrase+salt. 'cost' is KDF-specific (PBKDF2 iterations or
    an Argon2 parameter index). The product binds this to the in-tree derive_key_sha512. */
