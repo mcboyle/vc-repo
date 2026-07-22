@@ -59,9 +59,20 @@ so the local run covered 2 distinct compilers — `94/94 cells clean` — and th
 which versions it ran; GCC 12/14 coverage is the CI job's, not claimed locally.* Subsumes item 13
 (link-time symbol-collision check).
 
-**4. Fix remaining `static VC_INLINE` sites** `[S]` — 05-11
+**4. Fix remaining `static VC_INLINE` sites** `[S]` — 05-11 — **DONE**
 `t1ha_selfcheck.c` and `jitterentropy-base-user.h` still carry it; GCC 13+ rejects it.
 *Done when:* a clean build on GCC 14 with no `duplicate 'static'` errors.
+*Landed:* both remaining sites fixed — `VC_INLINE` already expands to `static inline …` on GCC, so
+`static VC_INLINE` is `static static inline` → `duplicate 'static'`. `t1ha_selfcheck.c:55` genuinely
+failed to compile on GCC (confirmed: gcc-13 `error: duplicate 'static'`); it is now clean.
+`jitterentropy-base-user.h:71` is Windows-guarded (GCC never reaches it — its two sibling
+`jent_get_nstime` definitions already use bare `VC_INLINE`), fixed for consistency; single-TU header
+so no MSVC linkage change. A grep confirms **zero** `static VC_INLINE` sites remain tree-wide.
+`.github/workflows/flag-matrix.yml` gains an idiom-guard step that compiles the four historically
+affected files (`t1ha_selfcheck.c`, `chacha256.c`, `chachaRng.c` at `-O2`; `jitterentropy-base.c` at
+`-O0`) under **GCC 12/13/14 + clang** and greps for any regression. Verified locally on gcc-13 +
+clang-18 (both PASS); GCC 12/14 is the CI job's. Patch: `patches/static-inline-idiom.patch` (the two
+`src/Crypto` hunks apply onto stock 1.26.29).
 
 **5. Dry-run test-mount before committing data** `[S]` — 03-44
 Prove the password + factor combination works *before* any data is written.

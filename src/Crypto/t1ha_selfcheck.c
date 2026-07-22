@@ -52,7 +52,10 @@ const uint8_t t1ha_test_pattern[64] = {
     'e',  'f',  'g',  'h',  'i',  'j',  'k',  'l',  'm',  'n',  'o',
     'p',  'q',  'r',  's',  't',  'u',  'v',  'w',  'x'};
 
-static VC_INLINE int probe(uint64_t (*hash)(const void *, size_t, uint64_t),
+/* VC_INLINE already expands to `static inline ...` on GCC (Crypto/config.h), so a leading `static`
+ * here makes `static static inline` -> GCC 13+ hard-errors "duplicate 'static'". Drop the redundant
+ * keyword (matches the fix already applied to chacha256.c / chachaRng.c). */
+VC_INLINE int probe(uint64_t (*hash)(const void *, size_t, uint64_t),
                            const uint64_t reference, const void *data,
                            unsigned len, uint64_t seed) {
   const uint64_t actual = hash(data, len, seed);

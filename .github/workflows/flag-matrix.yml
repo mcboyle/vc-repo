@@ -45,6 +45,24 @@ jobs:
           VC_MATRIX_NEGCTL=1 ./flag_matrix.sh
           ./flag_matrix.sh
 
+      # ROI item 4: the `static VC_INLINE` idiom expands to `static static inline` on GCC and is
+      # rejected by GCC 13+ ("duplicate 'static'"). Compile the files that historically carried it so
+      # every compiler in the matrix — including GCC 14 — guards against a regression. jitterentropy
+      # requires -O0 by design (an intentional #error otherwise).
+      - name: Guard the static-VC_INLINE idiom (GCC 12/13/14 + clang)
+        run: |
+          CC='${{ matrix.compiler.cc }}'
+          INC="-Isrc -Isrc/Common -Isrc/Crypto"
+          W="-Wno-implicit-function-declaration"
+          set -e
+          for f in Crypto/t1ha_selfcheck.c Crypto/chacha256.c Crypto/chachaRng.c; do
+            echo "  $CC -O2 src/$f"; $CC -O2 $W $INC -c "src/$f" -o /tmp/idiom.o
+          done
+          echo "  $CC -O0 src/Crypto/jitterentropy-base.c"
+          $CC -O0 $W $INC -c src/Crypto/jitterentropy-base.c -o /tmp/jeb.o
+          if grep -rn 'static VC_INLINE' src/ ; then echo 'regression: static VC_INLINE reintroduced'; exit 1; fi
+          echo "no 'static VC_INLINE' sites; idiom-sensitive files compile under $CC"
+
   # Confirms the full self-contained crypto suite passes under strict coverage on the CI image too
   # (any silently-skipped step fails the job). Complements the flag matrix above.
   strict-verify:
