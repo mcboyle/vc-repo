@@ -103,3 +103,14 @@ jobs:
         run: sudo apt-get update -y && sudo apt-get install -y --no-install-recommends clang-tidy
       - name: clang-tidy (fork modules)
         run: ./scripts/clang-tidy-fork.sh
+
+  # R17 / A3: blessed-module guard — a NEW GF-arithmetic / constant-time-compare / conditional-select
+  # definition outside the documented allowlist fails the build. This is the mechanism that would have
+  # caught the original gf_dot branch defect automatically (a second implementation of an idea already
+  # done right elsewhere). Needs only git (from checkout); no toolchain.
+  ct-primitive-guard:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Constant-time primitive guard (self-test then full tree)
+        run: ./scripts/ct-primitive-guard.sh --self-test && ./scripts/ct-primitive-guard.sh
