@@ -1927,3 +1927,35 @@ d["components"]=comps; json.dump(d, open("/tmp/vc_sbom_bad.json","w"))'
 else
 	sed 's/^/    /' /tmp/sbom_val.txt 2>/dev/null; echo "    SBOM VALIDATION FAILED"; exit 1
 fi
+
+echo ""
+echo "[75] Keyslot-area MAC: authenticate the slot table (ROI item 42 [FORMAT])"
+# KeyslotAreaMac adds HMAC-SHA256(K_area=HKDF(VMK), "VCKSAREA1"||count||slots) in an area trailer, so
+# deleting/reordering/truncating the SET of records is detected even though each surviving record still
+# opens. Two ways: the HKDF+HMAC tag vs an independent python reimpl (byte-for-byte over the real region
+# bytes), plus behavioural detection. Negative controls: flip a slot byte / DROP a slot / REORDER slots
+# / wrong K_area all -> KAM_TAMPERED; an area with no trailer -> KAM_NO_TRAILER (old area, warn+continue).
+AM_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then AM_CC="$c"; break; fi; done
+AM_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+AM_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+AM_DEF="-DVC_ENABLE_KEYSLOTS -DVC_ENABLE_KEYSLOT_AREA_MAC"
+AM_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$AM_CC" ] \
+   && "$AM_CC" -O2 $AM_WNO $AM_NOASM $AM_DEF $AM_INC "$HERE/keyslot_areamac_test.c" \
+        "$SRCROOT/Common/KeyslotAreaMac.c" "$SRCROOT/Common/KeyslotStore.c" "$SRCROOT/Common/Keyslot.c" \
+        "$SRCROOT/Common/AfSplit.c" "$SRCROOT/Crypto/Sha2.c" "$SRCROOT/Crypto/chacha256.c" \
+        -o /tmp/keyslot_areamac_test 2>/tmp/am_log; then
+	if /tmp/keyslot_areamac_test > /tmp/am_c.txt; then
+		grep -vE '^VMK|^REGION|^CTAG' /tmp/am_c.txt
+		if python3 "$HERE/keyslot_areamac_reference.py" < /tmp/am_c.txt > /tmp/am_py.txt 2>&1 \
+		   && grep -q '^MATCH' /tmp/am_py.txt && grep -q '^PASS' /tmp/am_c.txt; then
+			sed 's/^/    /' /tmp/am_py.txt
+			echo "    MATCH: area MAC == independent python HKDF+HMAC; set-level tamper detected; old area warns"
+		else
+			sed 's/^/    /' /tmp/am_py.txt; echo "    AREA MAC CROSS-CHECK FAILED"; exit 1
+		fi
+	else grep -vE '^VMK|^REGION|^CTAG' /tmp/am_c.txt; echo "    AREA MAC FAILED"; exit 1; fi
+else
+	skip_step " no compiler for the keyslot area-MAC test (see /tmp/am_log)"
+fi

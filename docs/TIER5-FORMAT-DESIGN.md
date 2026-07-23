@@ -8,6 +8,12 @@ layout, so per the project rule they are proposed here first. All three would be
 
 ## Item 42 — Authenticate the keyslot area / header MAC `[M][FORMAT]`
 
+> **BUILT (reviewed & approved 2026-07-23):** option **A** (VMK-derived `K_area`), **warn-and-continue**
+> on old unauthenticated areas. Implemented in `Common/KeyslotAreaMac.{c,h}` (gated
+> `VC_ENABLE_KEYSLOT_AREA_MAC`); verified at suite step `[75]` (`keyslot_areamac_test.c` +
+> `keyslot_areamac_reference.py`). Items 43 and 50 below remain design-only. The C++ mount-path call
+> and header-slack/sidecar trailer placement are the remaining real-build wiring.
+
 ### What is already authenticated (important)
 
 Each keyslot **record** is already an AEAD: `KeyslotWrap` produces a 32-byte tag over the wrapped
