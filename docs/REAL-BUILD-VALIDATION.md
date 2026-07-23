@@ -292,3 +292,9 @@ Acceptance items to run on a real build for the Rank-1 wiring:
    `VC_ENABLE_HKF_MIX_V2`.
 5. YubiKey/FIDO2: the try loop performs **one** token round-trip per mount attempt, not two (compute the
    response once, mix v2 then v1 over the same bytes).
+6. **Key hygiene (Windows-build acceptance item):** every return path out of the `ReadVolumeHeaderWithAbort`
+   v2 wrapper burns `hkfResp` — including the `HKFComputeActiveResponse` failure exit (a backend may write
+   response bytes and *then* fail on a short/truncated token) and the no-factor early return. Verified in
+   the sandbox only by inspection (3 returns, each immediately preceded by `burn (hkfResp, sizeof hkfResp)`)
+   plus an isolated-TU gcc+clang syntax check against the real `Common/HardwareKeyFactor.h`; the file itself
+   is Windows-only (see above), so a compiled/ASan confirmation is a Windows-driver-build item.

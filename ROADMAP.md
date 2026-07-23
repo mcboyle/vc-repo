@@ -114,6 +114,49 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
    zeroes every size/alignment and survives `-O2`. Hibernation writes all of RAM to disk and is **not**
    covered — documented in `docs/MEMORY-SCRUB.md`. Gated `-DVC_ENABLE_KEYSCRUB`.
    `patches/keyscrub-lockdown.patch`.
+15. **HKF mix v2 (HKDF-SHA256) — Rank-1 remediation of the CRC-32 keyfile-pool seam** — replaces the
+   v1 CRC pool combine with `HKDF-SHA256(IKM = password‖response, info = "VeraCrypt/HKF/mix/v2", L=128)`,
+   a PRF that preserves entropy for any response length (the v1 pool is only provably injective for
+   ≤32-byte inputs; a 33–64-byte raw Shamir secret wrapped it). No on-disk format change — the mix only
+   changes the value fed to PBKDF2/Argon2. Gated `-DVC_ENABLE_HKF_MIX_V2`; default and `VC_ENABLE_HKF`-only
+   builds stay byte-for-byte stock. `docs/HKF-MIX-V2-SPEC.md`, `docs/CRC-SEAM-ADDENDUM.md` §7.
+   - **Primitive + mount-time version-try loop** — suite step `[80]`, the v2 mixed password diffed
+     byte-for-byte against an independent Python HKDF (anchor `78b0e7e5…`); wrong response opens neither
+     version; v1≠v2; 1-bit response flip avalanches ~half the v2 output (PRF diffusion).
+   - **Wired at all five derivation call sites** — C path (`Volumes.c` mount wrapper + `CreateVolumeHeader…`
+     create) and C++ path (`VolumeHeader::Decrypt` + both `VolumeCreator.cpp` sites, via
+     `HardwareKeyFactorMix.h`). New volumes enroll under v2; mount tries v2 then falls back to v1 for a
+     legacy volume. Seam proven in suite step `[81]` over the real `HardwareKeyFactor.o`: **compute-once**
+     (one backend query across both version attempts — no double token round-trip), v2-first/v1-fallback,
+     wrong-factor-opens-neither, **cross-path byte-identity** (C create path == the C++ overload), and
+     no-factor pass-through; the v2-enrolled key cross-checked against the independent Python HKDF.
+     New seam helpers `HKFComputeActiveResponse` / `HKFApplyIfConfiguredVer` in `HardwareKeyFactor.{c,h}`.
+   - **Honest ceiling.** The behavioural header round-trip (create a volume, then mount it through the real
+     KDF/cipher pipeline) links the whole mount/create stack and is **real-build-only**; and the C-path
+     edits (`Common/Volumes.c`) build only under the **Windows driver toolchain** — that file is Windows-only
+     (in no Linux `.make`, uses `<io.h>`/`WORD`/`TC_EVENT`), so on Linux the mount/create runs entirely
+     through the C++ path. Acceptance items in `docs/REAL-BUILD-VALIDATION.md`.
+   `patches/hkf-mix-v2.patch`, `patches/hkf-mixv2-wiring.patch`.
+
+---
+
+## Post-R27 dispositions — items 91/96/97/98
+
+R27 Rank-1 (HKF mix v2) has landed (primitive PR #4, wiring PR #5), which releases the holds that project
+planning had parked on several `ROI-51-100` items pending that analysis. The ranked `ROI-51-100.md`
+backlog that tracks these items lives in the handoff package and is **not committed to this repo** (only
+`docs/ROI-TOP-50.md` is in-tree), so this section records the dispositions here so a session reading the
+repo alone is not misled. Full rationale is in `docs/CRC-SEAM-ADDENDUM.md` §7.
+
+| Item | Disposition | Note |
+|---|---|---|
+| **91 — slot AND-composition** `[FORMAT]` | **UNBLOCKED** | Keyslot policy; unrelated to the password-derivation seam. The R27 hold is released; the `[FORMAT]` design review still stands. Not started this session. |
+| **98 — KMAC256 keyslot-area auth** `[FORMAT]` | **UNBLOCKED** | Authenticates the keyslot area, not the derivation input. R27 hold released; `[FORMAT]` review still stands. Not started this session. |
+| **97 — cSHAKE domain-separated KDF labels** | **SUBSUMED — do not build** | Rank-1's HKDF-Expand `info` label `"VeraCrypt/HKF/mix/v2"` already provides the domain separation. See `docs/HKF-MIX-V2-SPEC.md` and `CRC-SEAM-ADDENDUM.md` §7. Building it separately would be duplicated work. |
+| **96 — two-stage derivation (cheap factor pre-check)** | **Design against v2, not the current seam** | Still not started; out of scope for this session. When taken up, design it on top of the v2 HKDF mix rather than the legacy CRC pool. |
+
+Being "unblocked" means only that the R27 hold is released — the `[FORMAT]` tags on 91 and 98 stay, so
+the on-disk format design review is **not** waived.
 
 ---
 

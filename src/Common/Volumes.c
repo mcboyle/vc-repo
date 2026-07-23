@@ -845,12 +845,19 @@ int ReadVolumeHeaderWithAbort (BOOL bBoot, unsigned char *encryptedHeader, Passw
 	const unsigned char *salt = encryptedHeader + HEADER_SALT_OFFSET;
 
 	if (HKFComputeActiveResponse (salt, PKCS5_SALT_SIZE, hkfResp, &hkfRespLen) != HKF_OK)
+	{
+		/* a backend may write response bytes and then fail (short/truncated token response), so burn
+		   before this abort too — every exit from this wrapper wipes hkfResp. */
+		burn (hkfResp, sizeof (hkfResp));
 		return ERR_KEY_DERIVATION_FAILED;   /* configured-but-missing/failed token aborts the mount */
+	}
 
 	if (hkfRespLen == 0)
 	{
 		/* no factor configured: a single stock pass (version is irrelevant with an empty response) */
-		return ReadVolumeHeaderWithAbortImpl (bBoot, encryptedHeader, password, selected_pkcs5_prf, pim, retInfo, retHeaderCryptoInfo, pAbortKeyDerivation, pUserAbort, hkfResp, 0, HKF_MIX_V2);
+		status = ReadVolumeHeaderWithAbortImpl (bBoot, encryptedHeader, password, selected_pkcs5_prf, pim, retInfo, retHeaderCryptoInfo, pAbortKeyDerivation, pUserAbort, hkfResp, 0, HKF_MIX_V2);
+		burn (hkfResp, sizeof (hkfResp));
+		return status;
 	}
 
 	/* factor configured: v2 first, then v1 for a legacy volume — same response, no second token hit */
