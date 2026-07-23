@@ -2153,3 +2153,32 @@ if [ -n "$WW_CC" ] \
 else
 	skip_step " no compiler for the hkf mix-v2 wiring test (see /tmp/ww_log)"
 fi
+
+echo ""
+echo "[82] HCTR2 gf_dot constant-time dudect screen (branch-free POLYVAL; research batch-2 C1)"
+# gf_dot's operands are both secret (POLYVAL key h=AES_k(0^128) + key/message accumulator), so the
+# original two data-dependent `if`s were a timing/branch channel that leaks h and defeats HCTR2's SPRP.
+# gf_dot is now branch-free via arithmetic masks — the SAME pattern Shamir.c uses (step [41]). This is
+# a self-validating dudect (Welch t) screen over the REAL gf_dot vs a deliberately-branchy leaky copy:
+# it must FLAG the leaky one and CLEAR the real one (contrast-based verdict, stable across machines).
+GD_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then GD_CC="$c"; break; fi; done
+GD_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+GD_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+GD_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$GD_CC" ] \
+   && "$GD_CC" -O2 $GD_WNO $GD_NOASM $GD_INC -c "$SRCROOT/Crypto/Aescrypt.c" -o /tmp/gd_aescrypt.o 2>/tmp/gd_log \
+   && "$GD_CC" -O2 $GD_WNO $GD_NOASM $GD_INC -c "$SRCROOT/Crypto/Aeskey.c"   -o /tmp/gd_aeskey.o 2>>/tmp/gd_log \
+   && "$GD_CC" -O2 $GD_WNO $GD_NOASM $GD_INC -c "$SRCROOT/Crypto/Aestab.c"   -o /tmp/gd_aestab.o 2>>/tmp/gd_log \
+   && "$GD_CC" -O2 $GD_WNO $GD_NOASM $GD_INC "$HERE/hctr2_dudect_test.c" /tmp/gd_aescrypt.o /tmp/gd_aeskey.o /tmp/gd_aestab.o -lm -o /tmp/hctr2_dudect 2>>/tmp/gd_log; then
+	if /tmp/hctr2_dudect > /tmp/gd_out.txt; then
+		grep -E 'agree on|dudect max|screen (flags|clears)|contrast' /tmp/gd_out.txt
+		if grep -q '^HCTR2 GF_DOT DUDECT SCREEN PASSED$' /tmp/gd_out.txt; then
+			echo "    SCREEN: real gf_dot cleared, leaky flagged (contrast-based; mirrors Shamir.c step [41])"
+		else
+			echo "    GF_DOT DUDECT SCREEN FAILED"; exit 1
+		fi
+	else grep -E 'agree on|dudect max|screen' /tmp/gd_out.txt; echo "    GF_DOT DUDECT SCREEN FAILED (leak flagged on real impl or clean impl flagged)"; exit 1; fi
+else
+	skip_step " no compiler for the hctr2 gf_dot dudect screen (see /tmp/gd_log)"
+fi
