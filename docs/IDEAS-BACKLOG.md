@@ -195,11 +195,21 @@ bits and produce controlled plaintext garbage without detection. Every item here
 
 ## G. Deniability
 
-- **Free-space chaff** `[M] [RESEARCH]` — continuously write indistinguishable random data into unused
-  space so that hidden-volume writes are not distinguishable from background churn. A cheaper
-  approximation of ORAM against the multi-snapshot attack. *This is padding/uniformization of free
-  space — a technical countermeasure. It is not, and must not become, synthesis of a false record of
-  human activity (see Scope boundary).*
+- **Free-space chaff** `[RESEARCH]` — continuously write indistinguishable random data into unused
+  space to raise the noise floor over hidden-volume writes. **Do not build this expecting deniability
+  against the multi-snapshot attack — research shows it does not defeat it.** The two-snapshot attack
+  (Fredrickson, Barker & Long, *A Multiple Snapshot Attack on Deniable Storage Systems*, MASCOTS 2021,
+  arXiv:2110.04618) runs a classifier over the distribution of *consecutive changed-block run-lengths*
+  ("change chains") and detects hidden volumes ≥ 0.75 GB at recall ≈ 1.0, FPR ≈ 0.003–0.004. Uniform
+  random chaff produces mostly **isolated single-block changes** — exactly the singleton signal the
+  classifier keys on — whereas real filesystem activity produces longer runs, so chaff does not remove
+  the distinguisher; it only raises the noise floor. The only construction class with a *formal*
+  multi-snapshot guarantee is write-only ORAM (§ below / `verification/oram_poc.c`), and that remains a
+  gated-off research artifact (paper/PoC only, ~10–14× SSD write amplification that is itself an anomaly,
+  and a mandatory continuous public-write "cloak"). At most, chaff is a padding/uniformization measure
+  worth considering for reasons *other* than multi-snapshot deniability. *It is padding/uniformization
+  of free space — a technical countermeasure. It is not, and must not become, synthesis of a false
+  record of human activity (see Scope boundary).*
 - **Decoy-fragments by default** `[M]` — write hidden-volume-creation-shaped artifacts on *every*
   volume so their presence proves nothing. Partial answer to the SSD remnant tell.
 - **Steganographic filesystem** `[L] [RESEARCH]` — Anderson–Needham–Shamir / StegFS lineage; stronger
