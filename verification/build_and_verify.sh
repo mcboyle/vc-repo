@@ -1893,3 +1893,37 @@ if [ -n "$KV_CC" ] \
 else
 	skip_step " no compiler for the offline verify test (see /tmp/kv_log)"
 fi
+
+echo ""
+echo "[73] Reproducible build check (ROI item 39)"
+# reproducible_build.sh compiles every fork Common module TWICE with normalized flags
+# (SOURCE_DATE_EPOCH, -ffile-prefix-map, -g0) and requires byte-identical objects, scans the fork's
+# own sources for __DATE__/__TIME__ constructs, and (negative control) shows an unnormalized build
+# from a different path differs while -ffile-prefix-map makes it identical.
+if "$HERE/reproducible_build.sh" | sed 's/^/    /'; then
+	echo "    MATCH: fork objects build byte-identically; timestamp scan clean; normalization proven"
+else
+	echo "    REPRODUCIBLE BUILD CHECK FAILED"; exit 1
+fi
+
+echo ""
+echo "[74] SBOM generation + coverage validation (ROI item 40)"
+# sbom.py emits a CycloneDX 1.5 SBOM covering the fork's gated modules + external deps, then validates
+# well-formedness and that EVERY fork module present in the tree is covered (so the SBOM can't drift).
+# Negative control: an SBOM with a component removed must FAIL validation.
+if python3 "$HERE/sbom.py" generate > /tmp/vc_sbom.json 2>/tmp/sbom_gen.log \
+   && python3 -c 'import json,sys; d=json.load(open("/tmp/vc_sbom.json")); assert d["bomFormat"]=="CycloneDX"' 2>/dev/null \
+   && python3 "$HERE/sbom.py" validate /tmp/vc_sbom.json > /tmp/sbom_val.txt 2>&1; then
+	sed 's/^/    /' /tmp/sbom_val.txt
+	python3 -c 'import json; d=json.load(open("/tmp/vc_sbom.json"));
+comps=[c for c in d["components"] if c["name"]!="HeaderBackup"];
+d["components"]=comps; json.dump(d, open("/tmp/vc_sbom_bad.json","w"))'
+	if python3 "$HERE/sbom.py" validate --negctl /tmp/vc_sbom_bad.json > /tmp/sbom_nc.txt 2>&1; then
+		sed 's/^/    /' /tmp/sbom_nc.txt
+		echo "    MATCH: SBOM is well-formed + covers every fork module; a component-dropped SBOM is rejected"
+	else
+		sed 's/^/    /' /tmp/sbom_nc.txt; echo "    SBOM NEGATIVE CONTROL FAILED"; exit 1
+	fi
+else
+	sed 's/^/    /' /tmp/sbom_val.txt 2>/dev/null; echo "    SBOM VALIDATION FAILED"; exit 1
+fi

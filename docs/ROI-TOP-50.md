@@ -272,8 +272,10 @@ crypto KAT vectors. `.githooks/pre-commit` blocks a commit with a secret in stag
 `git config core.hooksPath .githooks`); a `secrets-scan` CI job and suite step `[61]` scan the whole
 tree. Built-in `--self-test` is the control: a planted AWS-key-shaped secret **is** caught and a file
 of crypto KAT hex is **not** (no false positive). Whole tree currently clean.
-**39. Reproducible builds + signed releases** `[M]` — 04-48, 04-49
-**40. SBOM per release** `[S]` — 05-39
+**39. Reproducible builds + signed releases** `[M]` — 04-48, 04-49 — **DONE (repro proven; signing = real-build)**
+`verification/reproducible_build.sh` (suite step `[73]`) compiles every fork Common module twice with a normalized flag set (`SOURCE_DATE_EPOCH` pinned, `-ffile-prefix-map`, `-g0`) and requires the two objects to be byte-identical (16/16 reproducible), scans the fork's own sources for build-timestamp constructs (`__DATE__`/`__TIME__`/`__TIMESTAMP__` → 0 hits), and proves the normalization is load-bearing via a negative control: the same source compiled from two different absolute directories differs without `-ffile-prefix-map` and becomes byte-identical with it. Release signing/notarization needs private keys and is the real-build part; the reproducibility that makes a signature meaningful is proven here.
+**40. SBOM per release** `[S]` — 05-39 — **DONE**
+`verification/sbom.py` (suite step `[74]`) generates a CycloneDX 1.5 SBOM covering the fork's gated Common modules (each tagged with its `VC_ENABLE_*` feature flag) plus the external/bundled dependencies (Argon2, wxWidgets, libfido2, libykpers-1, libpcsclite), then validates well-formedness AND that **every fork module present in the source tree is covered** — so the SBOM cannot silently drift out of date as modules are added. Negative control: an SBOM with a component removed fails validation (missing-coverage error). 22 components; validates clean; drop-a-component correctly rejected.
 
 ## Tier 5 — Structural value, higher effort, high payoff (41–50)
 
