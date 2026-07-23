@@ -14,7 +14,9 @@
 
 #include "Tcdefs.h"
 
-#if defined(VC_ENABLE_HEADER_BACKUP)
+/* Operates over the keyslot machinery's KeyslotArea, so it needs VC_ENABLE_KEYSLOTS too
+ * (the KeyslotArea type is itself gated behind it). A HEADER_BACKUP-only build is a no-op. */
+#if defined(VC_ENABLE_HEADER_BACKUP) && defined(VC_ENABLE_KEYSLOTS)
 
 #include "KeyslotStore.h"   /* KeyslotArea */
 #include <stddef.h>
@@ -43,6 +45,6 @@ int HeaderBackupRestore (const unsigned char *blob, size_t len, KeyslotArea *are
 }
 #endif
 
-#endif /* VC_ENABLE_HEADER_BACKUP */
+#endif /* VC_ENABLE_HEADER_BACKUP && VC_ENABLE_KEYSLOTS */
 
 #endif /* TC_HEADER_Common_HeaderBackup */

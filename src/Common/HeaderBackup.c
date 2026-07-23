@@ -3,7 +3,7 @@
  */
 #include "HeaderBackup.h"
 
-#if defined(VC_ENABLE_HEADER_BACKUP)
+#if defined(VC_ENABLE_HEADER_BACKUP) && defined(VC_ENABLE_KEYSLOTS)
 
 #include <string.h>
 #include "Crypto/Sha2.h"
@@ -66,4 +66,4 @@ int HeaderBackupRestore (const unsigned char *blob, size_t len, KeyslotArea *are
 	return HB_OK;
 }
 
-#endif /* VC_ENABLE_HEADER_BACKUP */
+#endif /* VC_ENABLE_HEADER_BACKUP && VC_ENABLE_KEYSLOTS */
