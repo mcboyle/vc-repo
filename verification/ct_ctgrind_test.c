@@ -16,8 +16,9 @@
  * count. Built WITHOUT valgrind it still runs (the client requests are no-ops) and just self-checks
  * functional agreement, so the suite step degrades to a skip when valgrind is absent.
  *
- * Includes the real static primitives (Shamir.c gf_mul/gf_inv; a copy of the masked gf_dot that is kept
- * byte-identical to verification/hctr2_poc.c) — same include technique as the dudect harnesses.
+ * Includes the REAL static primitives from their shipping/PoC sources — Shamir.c (gf_mul/gf_inv) and
+ * hctr2_poc.c (gf_dot, via HCTR2_NO_MAIN) — the same include technique the dudect harnesses use
+ * (hctr2_dudect_test.c), so the check tracks the real gf_dot and cannot silently validate a stale copy.
  */
 #include <stdio.h>
 #include <string.h>
@@ -34,29 +35,11 @@
 
 #include "Shamir.c"   /* real static gf_mul / gf_inv (branchless, masked) */
 
-/* ---- masked gf_dot: kept byte-identical to verification/hctr2_poc.c ---- */
-typedef struct { uint64_t w[4]; } u256;
-static void gf_dot (const uint64_t a[2], const uint64_t b[2], uint64_t out[2]) {
-	u256 c; int i, limb; memset (&c, 0, sizeof c);
-	for (i = 0; i < 128; i++) {
-		uint64_t m = 0ULL - ((a[i >> 6] >> (i & 63)) & 1ULL);
-		int w = i >> 6, s = i & 63;
-		c.w[w]     ^= (b[0] << s) & m;
-		c.w[w + 1] ^= (((s ? (b[0] >> (64 - s)) : 0) ^ (b[1] << s)) & m);
-		c.w[w + 2] ^= ((s ? (b[1] >> (64 - s)) : 0) & m);
-	}
-	for (i = 0; i < 128; i++) {
-		uint64_t r = 0ULL - (c.w[0] & 1ULL);
-		c.w[0] ^= 1ULL & r;
-		c.w[1] ^= (((1ULL << 57) | (1ULL << 62) | (1ULL << 63)) & r);
-		c.w[2] ^= 1ULL & r;
-		for (limb = 0; limb < 3; limb++) c.w[limb] = (c.w[limb] >> 1) | (c.w[limb + 1] << 63);
-		c.w[3] >>= 1;
-	}
-	out[0] = c.w[0]; out[1] = c.w[1];
-}
+#define HCTR2_NO_MAIN
+#include "hctr2_poc.c"   /* real static gf_dot (+ u256) — same technique as hctr2_dudect_test.c; needs
+                            the AES objects linked (Aescrypt/Aeskey/Aestab.o — see ct_ctgrind_check.sh) */
 
-/* ---- deliberately-branchy leaky copies (secret-dependent control flow) ---- */
+/* ---- deliberately-branchy leaky copies (secret-dependent control flow); u256 comes from hctr2_poc.c ---- */
 static unsigned char gf_mul_leaky (unsigned char a, unsigned char b) {
 	unsigned char p = 0;
 	while (b) { if (b & 1) p ^= a;                       /* branch on secret b */

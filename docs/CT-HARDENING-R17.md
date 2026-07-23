@@ -27,7 +27,10 @@ fixed-count loops, leaving zero conditional jumps.
 **(b) ctgrind / valgrind-memcheck white-box check** (`verification/ct_ctgrind_test.c`,
 `ct_ctgrind_check.sh`). The secret operands are marked *undefined* (`VALGRIND_MAKE_MEM_UNDEFINED`); under
 memcheck, any branch or memory index on a secret-derived bit raises "Conditional jump or move depends on
-uninitialised value." Result over the **real** masked `gf_dot` + Shamir `gf_mul`/`gf_inv`:
+uninitialised value." Both subjects are the **real** primitives, reached by `#include`, not a hand-copy:
+`gf_mul`/`gf_inv` from `src/Common/Shamir.c` and `gf_dot` from `verification/hctr2_poc.c` (via
+`HCTR2_NO_MAIN`, the same include technique as `hctr2_dudect_test.c`) — so the check cannot silently
+validate a stale copy if `gf_dot` is edited. Result:
 
 | opt level | gcc | clang |
 |---|---|---|
@@ -35,12 +38,19 @@ uninitialised value." Result over the **real** masked `gf_dot` + Shamir `gf_mul`
 | `-O3` | 0 errors | 0 errors |
 | `-O2 -flto` | 0 errors | 0 errors |
 
-The check is **self-validating**: the same poisoning over a deliberately-branchy leaky copy raises 3–9
-errors at every level, so a 0 on the real code is a real signal, not a silent no-op. **Conclusion: the
-masking is not reintroduced as a branch at the optimization levels the suite builds with, on either
-compiler.** This does *not* rule out microarchitectural leakage that survives branch-free code (data-cache
-banking, execution-port contention, variable-latency instructions) — memcheck and dudect are both blind
-to that; see Q3/Q4.
+The check is **self-validating**: the same poisoning over a deliberately-branchy leaky copy (kept local to
+the harness) raises 3–9 errors at every level, so a 0 on the real code is a real signal, not a silent
+no-op. **Conclusion: the masking is not reintroduced as a branch at the optimization levels the suite
+builds with, on either compiler.** This does *not* rule out microarchitectural leakage that survives
+branch-free code (data-cache banking, execution-port contention, variable-latency instructions) —
+memcheck and dudect are both blind to that; see Q3/Q4.
+
+**Provenance — single environment.** The numbers above are one measurement: **one machine, one valgrind
+version (3.22.0), one container**. The self-validating leaky control is what makes a 0 trustworthy (the
+tool demonstrably catches a real leak in the same run), but this is not a cross-platform or
+cross-toolchain survey. This doc exists to be checked against an external R17 report; overstating a
+single-environment result would defeat that purpose. Re-run `verification/ct_ctgrind_check.sh` on another
+host/valgrind to widen it.
 
 ## Q2 — finding the *next* instance of "a second implementation of an idea done right elsewhere"
 
