@@ -140,6 +140,26 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
 
 ---
 
+## Post-R27 dispositions — items 91/96/97/98
+
+R27 Rank-1 (HKF mix v2) has landed (primitive PR #4, wiring PR #5), which releases the holds that project
+planning had parked on several `ROI-51-100` items pending that analysis. The ranked `ROI-51-100.md`
+backlog that tracks these items lives in the handoff package and is **not committed to this repo** (only
+`docs/ROI-TOP-50.md` is in-tree), so this section records the dispositions here so a session reading the
+repo alone is not misled. Full rationale is in `docs/CRC-SEAM-ADDENDUM.md` §7.
+
+| Item | Disposition | Note |
+|---|---|---|
+| **91 — slot AND-composition** `[FORMAT]` | **UNBLOCKED** | Keyslot policy; unrelated to the password-derivation seam. The R27 hold is released; the `[FORMAT]` design review still stands. Not started this session. |
+| **98 — KMAC256 keyslot-area auth** `[FORMAT]` | **UNBLOCKED** | Authenticates the keyslot area, not the derivation input. R27 hold released; `[FORMAT]` review still stands. Not started this session. |
+| **97 — cSHAKE domain-separated KDF labels** | **SUBSUMED — do not build** | Rank-1's HKDF-Expand `info` label `"VeraCrypt/HKF/mix/v2"` already provides the domain separation. See `docs/HKF-MIX-V2-SPEC.md` and `CRC-SEAM-ADDENDUM.md` §7. Building it separately would be duplicated work. |
+| **96 — two-stage derivation (cheap factor pre-check)** | **Design against v2, not the current seam** | Still not started; out of scope for this session. When taken up, design it on top of the v2 HKDF mix rather than the legacy CRC pool. |
+
+Being "unblocked" means only that the R27 hold is released — the `[FORMAT]` tags on 91 and 98 stay, so
+the on-disk format design review is **not** waived.
+
+---
+
 ## DESIGN — specced, not yet built
 
 - **Multiple independent keyslots** (like LUKS2's 8+) — **core built & verified; CLI/mount integration
