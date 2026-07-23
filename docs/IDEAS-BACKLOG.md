@@ -161,7 +161,13 @@ bits and produce controlled plaintext garbage without detection. Every item here
   which is the standard objection to TPM-based FDE.
 - **Information dispersal (Rabin IDA) across devices** `[L] [RESEARCH]` — split the *ciphertext*, not
   just the key, so seizing one device yields nothing reconstructable. Complements Shamir (which splits
-  the key) and is a genuinely different guarantee.
+  the key), but the guarantee is **weaker than the information-theoretic key split already shipped, and
+  in tension with deniability** — do not over-value it. Rabin IDA alone gives no secrecy; the
+  secrecy-adding variant (**AONT-RS**) is only **computational, in the random-oracle model, and leaks
+  for small ciphertexts** (Chen et al., "Secure and Efficient Data Dispersal…", AFRICACRYPT 2017),
+  whereas the shipped Shamir split is information-theoretic. It also **conflicts with deniability**:
+  distributing recognizable shards across devices is itself evidence that a split secret exists. Treat as
+  a genuinely *different* mechanism (ciphertext availability across devices), not a stronger one.
 - **Online master-key re-encryption** `[L] [FORMAT]` — LUKS2-style, for true post-compromise recovery
   without a full restore cycle.
 - **PKCS#11 / PIV smartcard as a fourth HKF backend** `[M] [HW]` — VeraCrypt already speaks PKCS#11

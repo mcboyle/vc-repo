@@ -276,3 +276,28 @@ Remaining, real-build only (needs the kernel / real media):
 - **Deniable-backend multi-snapshot robustness** must be validated on real media (same caveat class as
   hidden volumes, `docs/THREAT-MODEL.md`): a before/after image diff reveals that *a* slot-sized region
   changed, though not its contents (step `[37]` asserts this bound honestly).
+
+## 10. Design backlog (documented here; NOT implemented) — record versioning & naming
+
+Two `[FORMAT]`-adjacent design items a future session should carry (design only; do not implement without
+a format review):
+
+- **Record format-version + checksum + anti-relocation field.** Keyslot records currently carry no
+  explicit format-version byte, no self-checksum, and no anti-relocation binding — integrity rests on
+  the wrap MAC and KDF-parameter validation at read time. A robust on-disk format should add, mirroring
+  **LUKS2's `csum` / `csum_alg`** (per-metadata-object checksum with a named algorithm): (1) a
+  **format-version** byte so the reader can reject/upgrade unknown layouts instead of misparsing; (2) a
+  **checksum** over the record so silent corruption is caught before the MAC path; and (3) an
+  **anti-relocation** field binding the record to its slot index / area offset so a valid record cannot
+  be copied to another slot (the same index-binding idea as the per-sector auth tag,
+  `docs/PERSECTOR-AUTH-SPEC.md`). These change the on-disk record, so they are a format decision, not a
+  drop-in.
+- **Backup-header table mirroring** — already flagged in §9 as real-build-remaining; tracked here too so
+  the restore-path work (mirror the primary slack table into the backup-header group) is not lost.
+
+**Naming precision (do not "fix" by renaming).** `KSB_SIDECAR` is a **keyslot sidecar**, not a "detached
+header": it keeps **slot 0 in-volume** (the native VeraCrypt header stays on the data device), and only
+the *extra* slot table lives in the sidecar file. The LUKS2 contrast worth documenting is that a **true
+detached header** leaves the data device with **no signature at all** — a stronger deniability posture,
+and a different feature. Do not relabel `KSB_SIDECAR` as a detached header; if a real detached-header
+mode is ever wanted, it is a separate backend.

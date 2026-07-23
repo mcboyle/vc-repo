@@ -64,6 +64,11 @@ wrong key and wrong tweak each change the output.
   parameter binding (step `[23]`); new volumes only. The per-sector tweak is the sector index. Where
   Adiantum and HCTR2 are both built, mode choice is a per-volume parameter — the spec pair
   (`docs/ADIANTUM-SPEC.md`) discusses pick-per-platform.
+- **Fallback for hardware without AES acceleration is Adiantum — not LEA.** On ARM / entry-level targets
+  with no AES instructions, HCTR2's AES-XCTR + POLYVAL are slow; the recommended compile-time alternative
+  is **Adiantum** (ChaCha12 + NH + Poly1305, fast without AES hardware), which already has a proven PoC
+  (`verification/adiantum_poc.c`, step `[24]`). Do not reach for LEA or another lightweight block cipher
+  as the no-AES fallback — Adiantum is the vetted, already-in-tree choice.
 - **Performance path is real hardware.** This PoC's bit-by-bit GF(2¹²⁸) and table AES establish
   correctness only; a shipping build uses AES-NI + PCLMULQDQ (the kernel's implementation is the
   reference) and must be constant-time. Benchmarking Adiantum vs HCTR2 vs XTS on target hardware is the
