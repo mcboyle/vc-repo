@@ -78,14 +78,29 @@ the current tree:
   instruction leaks, needs many samples, and is noisy in a shared VM (Q4).
 - **ctgrind / ct-verif / dataflow tools** are *white-box*: they pinpoint the leaking branch/index and give
   a deterministic pass/fail, but only for the leakage they model (control flow + memory addressing), and
-  need the secret annotated. This scaffold **adds ctgrind** (`ct_ctgrind_test.c`) as the complementary
-  tool — it found nothing on the real code, which is the useful confirming result.
+  need the secret annotated. This scaffold **adds ctgrind** (`ct_ctgrind_test.c`): it confirms the masked
+  field arithmetic + the keyslot compare are clean, and — pointed at the table AES fallback — localizes a
+  real leak (see the A1 section below), which is exactly the white-box value dudect cannot give.
 - **Realistic cost in a privilege-free container:** ctgrind = valgrind + `<valgrind/memcheck.h>`, no
-  special privileges, but valgrind is not guaranteed present and runs ~10–50× slower — so it is kept as an
-  **on-demand check** (`ct_ctgrind_check.sh`), deliberately *not* a hard `--strict` step (a valgrind-absent
-  container would otherwise turn into a strict failure). Formal tools (ct-verif/Binsec/haybale) prove more
-  but cost real integration effort and are out of scope for a container gate. This is itself an answer to
-  the brief's cost question: dudect stays the always-on gate; ctgrind is the on-demand deepener.
+  special privileges, but valgrind is not guaranteed present and runs ~10–50× slower. Formal tools
+  (ct-verif/Binsec/haybale) prove more but cost real integration effort and are out of scope for a
+  container gate.
+
+### The two senses of "gate" — reconciled (do not "fix" this later)
+
+R17 says *"promote ctgrind/TIMECOP to your primary constant-time gate"*; this project keeps **dudect** as
+the `--strict` step. **These are not in conflict — they answer different questions under one word:**
+
+- **Which tool runs in `--strict`:** **dudect.** valgrind is not guaranteed present in a privilege-free
+  container, and wiring it into the always-on gate would turn its absence into a failure or a silent skip.
+  Given this project's history with silent skips, that is the right call. This composition is **settled and
+  is not being reversed** — ctgrind stays the on-demand check (`ct_ctgrind_check.sh`).
+- **Which tool's verdict is *authoritative for the claim*:** **ctgrind.** Taint-tracking is
+  environment-independent and localizes the leak; dudect measures wall-clock timing in a shared VM and
+  proves the least (Q4). So the project's constant-time *claims* rest on the **ctgrind** result, with the
+  dudect screen cited as always-on corroboration — R17 endorses this distinction as "correct and
+  important." "Primary gate" (R17) = *authoritative verdict*; "always-on gate" (this repo) = *what runs in
+  `--strict`*. Both statements stand.
 
 ## Q4 — what does a passing dudect screen justify about a real deployment?
 
@@ -99,10 +114,62 @@ behaviour on specific target hardware is not claimed and would need on-device me
 (not absolute) dudect criterion the screens use is what keeps the CI verdict stable across machines; it
 does not extend the claim to the user's machine.
 
+## A1 — the table AES fallback measured under ctgrind (a positive finding)
+
+The masked field arithmetic is proven clean; the **cipher underneath was unexamined**. `src/Crypto/Aestab.c`
+is Brian Gladman's table-based AES (the `ft_tab`/`fl_tab`/`it_tab` class), and `src/Common/Crypto.c` runs
+it on any machine without AES-NI **and** whenever a user disables hardware encryption
+(`HasAESNI() && !HwEncryptionDisabled`). Table-driven AES indexes memory with key/plaintext-derived data
+by construction — the *original* cache-timing target (Bernstein 2005; Osvik–Shamir–Tromer 2006; MemJam,
+CT-RSA 2018). `ct_ctgrind_test.c` now makes it a **subject**: poison the key (key schedule + round tables)
+and, separately, the plaintext, through the real `Aescrypt.c` + `Aeskey.c` + `Aestab.c`.
+
+**Result — positive, as expected.** memcheck flags secret-dependent memory addressing at every level:
+
+| opt level | gcc | clang | flagged functions |
+|---|---|---|---|
+| `-O2` | 408 | 408 | `aes_encrypt`, `aes_decrypt`, `aes_encrypt_key256`, `aes_decrypt_key256` |
+| `-O3` | 408 | 1000+ | same |
+| `-O2 -flto` | 408 | 408 | same (LTO inlines into `main`) |
+
+A **positive result is the finding, not a harness failure** — ctgrind is supposed to flag table AES. The
+value is converting "presumably leaky" into *measured, localized, quantified*: hundreds of distinct
+secret-dependent table accesses, confined to the four AES functions, on both compilers at every level.
+The masked primitives and `KeyslotConstTimeEqual` in the same binary stay at **0** — so this is a property
+of the AES fallback, not of the harness.
+
+**The honest consequence (belongs in the doc regardless of how it reads):** **the constant-time claims
+this project makes apply to its field arithmetic (`gf_mul`/`gf_inv`/`gf_dot`) and keyslot logic
+(`KeyslotConstTimeEqual`), NOT to the table-based AES fallback (`Aescrypt.c`/`Aestab.c`).** On hardware
+with AES-NI the shipping path uses the hardware instructions (constant-time by the CPU) and the table path
+does not run; but on a machine without AES-NI, or with hardware encryption disabled, the table path is
+cache-timing-vulnerable. This directly bears on **HCTR2 promotion into `src/`**: HCTR2 is AES-based, so it
+inherits this on the no-AES-NI path — the clean `gf_dot` result says nothing about the cipher underneath.
+
+**Not fixed here, deliberately.** No AES source was modified (this session measures). R17 is explicit:
+*do not build a bespoke bitsliced AES* — the S-box circuit is easy to get subtly wrong; if replacement is
+ever warranted the answer is adopting a vetted constant-time implementation (BearSSL `aes_ct`,
+BoringSSL/RustCrypto lineage), a separate and larger decision. **Other AES sources noted:**
+`src/Crypto/AesSmall.c` is a byte-oriented AES ("only 8-bit byte operations") — smaller footprint but a
+256-byte S-box indexed by secret data is still a cache-timing surface, not a table-free win;
+`src/Crypto/Aes_hw_armv8.c` is the ARMv8 hardware path (`arm_neon.h` crypto extension), constant-time by
+hardware and not exercised in this x86 container.
+
 ## For the R17 report
 
 Treat the above as the baseline. "This project's existing convention is adequate, here is the evidence"
-is an acceptable conclusion (the brief says so) — and the measured ctgrind result is evidence for it. The
-open questions the report can still add value on: microarchitectural leakage that survives branch-free
-code (which neither dudect nor ctgrind here covers), and whether any *other* current site carries the
-duplicate-divergence defect (Q2's sweep is a method, not a finished audit).
+is an acceptable conclusion for the *field arithmetic and keyslot logic* (the brief says so) — the measured
+ctgrind result is evidence for it — but the **table AES fallback is measurably not constant-time**, and
+that qualifier now travels with every constant-time claim in the tree. Open questions the report can still
+add value on: microarchitectural leakage that survives branch-free code (which neither dudect nor ctgrind
+here covers), the AES-fallback decision (accept-and-document vs adopt a vetted `aes_ct`), and whether any
+*other* current site carries the duplicate-divergence defect (Q2's sweep is a method, not a finished audit;
+A3's blessed-module guard now enforces it going forward).
+
+## Environment ceiling (stated plainly)
+
+Every measurement here is **one container, one valgrind version (3.22.0), gcc + clang, x86-64** — the
+triples available in this sandbox. R17's Stage 2 asks for the ctgrind sweep across *every release target
+triple* (ARM, the AES-NI vs no-AES-NI split on real silicon, each shipped compiler); **that is not this
+session** and remains an open gap. The self-validating controls (leak caught; masked primitives clean;
+AES flagged) make the single-environment verdict trustworthy, but not a cross-triple survey.
