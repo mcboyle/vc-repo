@@ -1,0 +1,66 @@
+diff --git a/src/Common/HardwareKeyFactor.c b/src/Common/HardwareKeyFactor.c
+index 91c3c95..d8dccb1 100644
+--- a/src/Common/HardwareKeyFactor.c
++++ b/src/Common/HardwareKeyFactor.c
+@@ -8,6 +8,9 @@
+ 
+ #include "HardwareKeyFactor.h"
+ #include <string.h>
++#if defined(VC_ENABLE_HKF_LEN_CONDITION)
++#include "Crypto/Sha2.h"   /* sha256() for response length conditioning (CRC-seam addendum §6) */
++#endif
+ 
+ /* ------------------------------------------------------------------ *
+  *  CRC-32 (standard, polynomial 0xEDB88320) — identical to Common/Crc *
+@@ -423,9 +426,9 @@ static void hkf_saltbind_hmac_sha256 (const unsigned char *key, int keyLen,
+  *  Dispatcher                                                         *
+  * ================================================================== */
+ 
+-int HKFComputeResponse (const HKFConfig *cfg,
+-                        const unsigned char *challenge, int challenge_len,
+-                        unsigned char *response_out, int *response_len_out)
++static int hkf_dispatch_response (const HKFConfig *cfg,
++                                  const unsigned char *challenge, int challenge_len,
++                                  unsigned char *response_out, int *response_len_out)
+ {
+ 	if (!cfg || !challenge || challenge_len <= 0 || !response_out || !response_len_out)
+ 		return HKF_ERR_CONFIG;
+@@ -477,6 +480,38 @@ int HKFComputeResponse (const HKFConfig *cfg,
+ 	}
+ }
+ 
++/*
++ * Public entry: dispatch to the backend, then (optionally) length-condition the response.
++ *
++ * Length conditioning (VC_ENABLE_HKF_LEN_CONDITION — CRC keyfile-pool seam addendum §6). The pool mix
++ * writes 4 pool bytes per input byte into a 128-byte pool, so wrap-around — and the additive folding
++ * that leaves injectivity unproven — begins at 33 input bytes. Every hardware backend stays <= 32 bytes
++ * (YubiKey HMAC-SHA1 = 20, FIDO2 hmac-secret = 32), and so does a salt-bound RAW_SECRET (HMAC-SHA256 =
++ * 32); but a raw Shamir-reconstructed RAW_SECRET may be 33..64 bytes (HKF_MAX_RESPONSE = 64) and would
++ * wrap. Conditioning anything > 32 bytes to sha256()->32 keeps EVERY backend inside the proven-injective
++ * regime structurally, not incidentally. It is a NO-OP for all <= 32-byte responses (hardware backends
++ * and salt-bound RAW_SECRET are byte-for-byte unchanged); for a > 32-byte raw RAW_SECRET it changes the
++ * derived value, so such a volume must be re-enrolled (or mounted with a version-try loop). Defence in
++ * depth — not a substitute for enabling salt-binding by default. See docs/CRC-SEAM-ADDENDUM.md.
++ */
++int HKFComputeResponse (const HKFConfig *cfg,
++                        const unsigned char *challenge, int challenge_len,
++                        unsigned char *response_out, int *response_len_out)
++{
++	int rc = hkf_dispatch_response (cfg, challenge, challenge_len, response_out, response_len_out);
++#if defined(VC_ENABLE_HKF_LEN_CONDITION)
++	if (rc == HKF_OK && response_len_out && *response_len_out > 32)
++	{
++		unsigned char h[32];
++		sha256 (h, response_out, (uint_32t) *response_len_out);
++		memcpy (response_out, h, 32);
++		*response_len_out = 32;
++		burn (h, sizeof h);
++	}
++#endif
++	return rc;
++}
++
+ /* ------------------------------------------------------------------ *
+  *  Active-config hook for the mount / format derivation call-sites    *
+  * ------------------------------------------------------------------ */

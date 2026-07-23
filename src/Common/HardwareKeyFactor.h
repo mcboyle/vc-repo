@@ -94,6 +94,12 @@ typedef struct HKFConfig_struct
 	   the feature is not compiled in. See docs/SALT-BINDING-SPEC.md. */
 	int           rawSecretBindSalt;
 
+	/* Salt-binding default (VC_ENABLE_HKF_SALT_BIND_DEFAULT — addendum Rec 1). When that build flag is
+	   set, HKFApplySaltBindDefault() turns salt-binding ON by default for a RAW_SECRET factor; the caller
+	   sets this opt-out flag (CLI --hkf-no-bind-salt) to keep the legacy raw behaviour for a volume that
+	   was enrolled without salt-binding. Ignored unless the default-on flag is compiled in. */
+	int           rawSecretNoBindSalt;
+
 	/* Application policy: which header(s) the factor gates. */
 	int           applyPolicy; /* HKF_APPLY_ALL (default) or HKF_APPLY_HIDDEN_ONLY */
 } HKFConfig;
@@ -109,6 +115,16 @@ int HKFComputeResponse (const HKFConfig *cfg,
                         unsigned char *response_out, int *response_len_out);
 
 /*
+ * Apply the salt-binding default policy to a config (addendum Rec 1). When built with
+ * VC_ENABLE_HKF_SALT_BIND_DEFAULT (and VC_ENABLE_HKF_SALT_BIND), a RAW_SECRET factor gets
+ * rawSecretBindSalt=1 unless the caller set rawSecretNoBindSalt (CLI --hkf-no-bind-salt). Salt-binding
+ * makes the response always 32 bytes = HMAC-SHA256(secret, salt), which closes BOTH cross-volume factor
+ * reuse AND the >32-byte pool-wrap exposure in one config change. A no-op without the default-on flag,
+ * for a non-RAW_SECRET backend, or when the caller opted out. Idempotent. See docs/CRC-SEAM-ADDENDUM.md.
+ */
+void HKFApplySaltBindDefault (HKFConfig *cfg);
+
+/*
  * Mix a token response into a password buffer, byte-for-byte identically to how VeraCrypt mixes a
  * keyfile (rolling CRC-32 into a HKF_POOL_SIZE pool via modular addition, then pool added into the
  * password and the length extended to the pool size). 'password' must have room for HKF_POOL_SIZE
@@ -116,6 +132,38 @@ int HKFComputeResponse (const HKFConfig *cfg,
  */
 void HKFMixResponseIntoPassword (unsigned char *password, int *password_len,
                                  const unsigned char *response, int response_len);
+
+/* Mixing versions for the version-try loop (CRC-seam addendum, Rank-1 migration). */
+#define HKF_MIX_V1  1   /* legacy CRC-32 keyfile-pool mix (HKFMixResponseIntoPassword)   */
+#define HKF_MIX_V2  2   /* HKDF-SHA256 mix (HKFMixResponseIntoPasswordV2)                */
+
+#if defined(VC_ENABLE_HKF_MIX_V2)
+/*
+ * Rank-1 v2 mixing (addendum §7): replace the CRC-32 keyfile-pool combine with an HKDF-SHA256
+ * derivation, which is a PRF over (password || response) and so preserves entropy unconditionally —
+ * no pool wrap-around, no CRC folding, injective by construction for any response length up to
+ * HKF_MAX_RESPONSE. A versioned domain-separation label goes in the HKDF info parameter, which
+ * subsumes cSHAKE-style KDF labels:
+ *
+ *   password[0..HKF_POOL_SIZE) = HKDF-SHA256(salt = <empty>,
+ *                                            IKM  = original-password || response,
+ *                                            info = "VeraCrypt/HKF/mix/v2",
+ *                                            L    = HKF_POOL_SIZE)
+ *   *password_len = HKF_POOL_SIZE
+ *
+ * This changes the value fed to PBKDF2/Argon2 versus v1 but leaves the on-disk header untouched, so a
+ * volume enrolled under v1 still opens via the mount-time version-try loop (try v2, then v1). New
+ * volumes are created under v2. 'password' must have room for HKF_POOL_SIZE bytes. Gated behind
+ * VC_ENABLE_HKF_MIX_V2. See docs/HKF-MIX-V2-SPEC.md.
+ */
+void HKFMixResponseIntoPasswordV2 (unsigned char *password, int *password_len,
+                                   const unsigned char *response, int response_len);
+
+/* Dispatch to the v1 (CRC) or v2 (HKDF) mix by version (HKF_MIX_V1 / HKF_MIX_V2). The mount path tries
+   HKF_MIX_V2 first and falls back to HKF_MIX_V1; create always uses HKF_MIX_V2. */
+void HKFMixResponseIntoPasswordVer (int version, unsigned char *password, int *password_len,
+                                    const unsigned char *response, int response_len);
+#endif
 
 /*
  * Optional process-wide active configuration, set by the mount/format caller (the UI or CLI layer)

@@ -2020,3 +2020,107 @@ if [ -n "$AH_CC" ] \
 else
 	skip_step " no compiler for the atomic header test (see /tmp/ah_log)"
 fi
+
+echo ""
+echo "[78] HKF response length conditioning (CRC-seam addendum §6)"
+# The CRC pool mix writes 4 bytes/input-byte into a 128-byte pool, so wrap (and unproven injectivity)
+# begins at 33 input bytes. A raw Shamir RAW_SECRET may be 33..64 bytes and wraps. VC_ENABLE_HKF_LEN_
+# CONDITION folds any >32-byte response through sha256()->32, keeping every backend inside the proven
+# regime. Built TWICE (cond/nocond). cond: <=32 unchanged, >32 == sha256(secret) (byte-for-byte vs
+# python). NEGATIVE CONTROL (nocond): a 64-byte secret stays 64 bytes (the reachable gap) and the §2
+# counter shows it wraps (2 writes) while the conditioned 32 does not (1).
+LC_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then LC_CC="$c"; break; fi; done
+LC_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+LC_INC="$INC -I$SRCROOT/Crypto"
+LC_SRC="$SRCROOT/Common/HardwareKeyFactor.c $SRCROOT/Crypto/Sha2.c"
+if [ -n "$LC_CC" ] \
+   && "$LC_CC" -O2 -Wno-implicit-function-declaration -DVC_ENABLE_HKF -DVC_ENABLE_HKF_LEN_CONDITION $LC_NOASM $LC_INC "$HERE/hkf_lencond_test.c" $LC_SRC -o /tmp/lc_cond 2>/tmp/lc_log \
+   && "$LC_CC" -O2 -Wno-implicit-function-declaration -DVC_ENABLE_HKF $LC_NOASM $LC_INC "$HERE/hkf_lencond_test.c" $LC_SRC -o /tmp/lc_nocond 2>>/tmp/lc_log; then
+	/tmp/lc_cond > /tmp/lc_c.txt; /tmp/lc_nocond > /tmp/lc_n.txt
+	sed 's/^/    cond:   /'   /tmp/lc_c.txt | grep -E 'RESP (33|64)|WRAP (32|64)' 
+	sed 's/^/    nocond: /' /tmp/lc_n.txt | grep -E 'RESP (33|64)|WRAP (32|64)'
+	ok=1
+	# (1) cond == independent python (conditioning rule + §2 wrap counts)
+	python3 "$HERE/hkf_lencond_reference.py" > /tmp/lc_py.txt
+	diff <(sed -n 's/^RESP/EXP/p; s/^WRAP/WRAPEXP/p' /tmp/lc_c.txt) /tmp/lc_py.txt >/dev/null || { echo "    cond != python"; ok=0; }
+	# (2) cond: no response longer than 32 bytes
+	awk '$1=="RESP"{ if ($3+0 > 32) exit 1 }' /tmp/lc_c.txt || { echo "    a cond response exceeded 32 bytes"; ok=0; }
+	# (3) no-op for <=32: the RESP 20 / RESP 32 lines are identical cond vs nocond
+	if ! diff <(grep -E '^RESP (20|32) ' /tmp/lc_c.txt) <(grep -E '^RESP (20|32) ' /tmp/lc_n.txt) >/dev/null; then echo "    <=32 not a no-op"; ok=0; fi
+	# (4) negative control: nocond keeps the 64-byte factor at 64 (gap); cond conditions it to 32
+	grep -q '^RESP 64 64 ' /tmp/lc_n.txt || { echo "    negctl: nocond did NOT keep 64 bytes"; ok=0; }
+	grep -q '^RESP 64 32 ' /tmp/lc_c.txt || { echo "    cond did NOT condition the 64-byte factor"; ok=0; }
+	grep -q '^WRAP 64 2$' /tmp/lc_c.txt && grep -q '^WRAP 32 1$' /tmp/lc_c.txt || { echo "    §2 wrap boundary not confirmed"; ok=0; }
+	if [ "$ok" = 1 ]; then
+		echo "    MATCH: >32 conditioned to sha256 (==python); <=32 a no-op; nocond 64-byte gap + wrap shown"
+	else
+		echo "    HKF LENGTH CONDITIONING FAILED"; exit 1
+	fi
+else
+	skip_step " no compiler for the hkf length-conditioning test (see /tmp/lc_log)"
+fi
+
+echo ""
+echo "[79] Salt-binding on by default for RAW_SECRET (addendum Rec 1)"
+# HKFApplySaltBindDefault turns salt-binding ON by default for a RAW_SECRET factor when built with
+# VC_ENABLE_HKF_SALT_BIND_DEFAULT, with --hkf-no-bind-salt (rawSecretNoBindSalt) as the opt-out. A
+# salt-bound response is always 32 bytes = HMAC-SHA256(secret, salt), closing BOTH cross-volume reuse
+# and the >32-byte pool wrap in one config change. Built TWICE. default: config A salt-bound (==python
+# HMAC), B opt-out raw. NEGATIVE CONTROL (legacy build, no default flag): config A stays raw/unbound.
+SD_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then SD_CC="$c"; break; fi; done
+SD_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+SD_INC="$INC -I$SRCROOT/Crypto"
+SD_SRC="$SRCROOT/Common/HardwareKeyFactor.c $SRCROOT/Crypto/Sha2.c"
+SD_BASE="-DVC_ENABLE_HKF -DVC_ENABLE_HKF_SALT_BIND"
+if [ -n "$SD_CC" ] \
+   && "$SD_CC" -O2 -Wno-implicit-function-declaration $SD_BASE -DVC_ENABLE_HKF_SALT_BIND_DEFAULT $SD_NOASM $SD_INC "$HERE/hkf_saltdefault_test.c" $SD_SRC -o /tmp/sd_def 2>/tmp/sd_log \
+   && "$SD_CC" -O2 -Wno-implicit-function-declaration $SD_BASE $SD_NOASM $SD_INC "$HERE/hkf_saltdefault_test.c" $SD_SRC -o /tmp/sd_leg 2>>/tmp/sd_log; then
+	/tmp/sd_def > /tmp/sd_d.txt; /tmp/sd_leg > /tmp/sd_l.txt
+	grep -vE '^SECRET|^SALT' /tmp/sd_d.txt | sed 's/^/    default: /'
+	grep -vE '^SECRET|^SALT' /tmp/sd_l.txt | sed 's/^/    legacy:  /'
+	ok=1
+	grep -q '^PASS' /tmp/sd_d.txt || ok=0
+	grep -q '^PASS' /tmp/sd_l.txt || ok=0
+	# default config A must be the salt-bound HMAC-SHA256(secret,salt) — byte-for-byte vs python
+	A=$(awk '/^A /{print $NF}' /tmp/sd_d.txt); P=$(python3 "$HERE/hkf_saltdefault_reference.py" < /tmp/sd_d.txt | awk '/^SBIND/{print $2}')
+	[ -n "$A" ] && [ "$A" = "$P" ] || { echo "    default A != python HMAC (A=$A P=$P)"; ok=0; }
+	grep -q '^A bind=1 rc=0 outlen=32 ' /tmp/sd_d.txt || { echo "    default did not salt-bind A"; ok=0; }
+	# negative control: the legacy build leaves A raw/unbound (default policy absent)
+	grep -q '^A bind=0 rc=0 outlen=64 ' /tmp/sd_l.txt || { echo "    negctl: legacy build unexpectedly bound A"; ok=0; }
+	if [ "$ok" = 1 ]; then
+		echo "    MATCH: default salt-binds RAW_SECRET (==python HMAC); opt-out + legacy stay raw"
+	else
+		echo "    SALT-BIND DEFAULT FAILED"; exit 1
+	fi
+else
+	skip_step " no compiler for the salt-bind-default test (see /tmp/sd_log)"
+fi
+
+echo ""
+echo "[80] Rank-1 v2 mixing (HKDF) + mount-time version-try loop (CRC-seam addendum §7)"
+# v2 replaces the CRC-32 keyfile-pool combine with HKDF-SHA256 over (password||response) — a PRF that
+# preserves entropy unconditionally, domain-separated by a versioned info label. The header is
+# unchanged, so a v1 volume still opens via a version-try loop (try v2, then v1). Two ways: the v2
+# mixed password vs an independent python HKDF (byte-for-byte), plus the try-loop behaviour. Negative
+# controls: a wrong response opens NEITHER version; v1 != v2; a 1-bit response change avalanches v2.
+MV_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then MV_CC="$c"; break; fi; done
+MV_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+MV_INC="$INC -I$SRCROOT/Crypto"
+MV_SRC="$SRCROOT/Common/HardwareKeyFactor.c $SRCROOT/Crypto/Sha2.c"
+if [ -n "$MV_CC" ] \
+   && "$MV_CC" -O2 -Wno-implicit-function-declaration -DVC_ENABLE_HKF -DVC_ENABLE_HKF_MIX_V2 $MV_NOASM $MV_INC "$HERE/hkf_mixv2_test.c" $MV_SRC -o /tmp/mixv2_test 2>/tmp/mv_log; then
+	if /tmp/mixv2_test > /tmp/mv_c.txt; then
+		grep -vE '^PASSWORD|^RESPONSE|^MIXV2 ' /tmp/mv_c.txt
+		A=$(awk '/^MIXV2 /{print $2}' /tmp/mv_c.txt); P=$(python3 "$HERE/hkf_mixv2_reference.py" < /tmp/mv_c.txt | awk '/^MIXV2EXP/{print $2}')
+		if [ -n "$A" ] && [ "$A" = "$P" ] && grep -q '^PASS' /tmp/mv_c.txt; then
+			echo "    MATCH: v2 mix == independent python HKDF; try-loop opens v1+v2; wrong factor opens neither"
+		else
+			echo "    MIXV2 MISMATCH (A=${A:0:16} P=${P:0:16}) or harness failed"; exit 1
+		fi
+	else grep -vE '^PASSWORD|^RESPONSE|^MIXV2 ' /tmp/mv_c.txt; echo "    HKF MIX V2 FAILED"; exit 1; fi
+else
+	skip_step " no compiler for the hkf mix-v2 test (see /tmp/mv_log)"
+fi
