@@ -1752,3 +1752,27 @@ if "$HERE/systemd_hardening_lint.sh" | sed 's/^/    /'; then
 else
 	echo "    SYSTEMD HARDENING LINT FAILED"; exit 1
 fi
+
+echo ""
+echo "[68] Multi-token OR-set: any one of N enrolled tokens unlocks (ROI item 45)"
+# HkfOrSet over real Keyslot + HardwareKeyFactor objects: enroll N RAW_SECRET (salt-bound) tokens
+# each wrapping ONE VMK; any single enrolled token recovers the exact VMK. Negative controls: a
+# never-enrolled token opens nothing; after revoking one token's slot, that token stops working
+# while every other token still opens (per-token, not all-or-nothing).
+OS_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then OS_CC="$c"; break; fi; done
+OS_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+OS_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+OS_DEF="-DVC_ENABLE_KEYSLOTS -DVC_ENABLE_HKF -DVC_ENABLE_HKF_SALT_BIND -DVC_ENABLE_HKF_ORSET"
+OS_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$OS_CC" ] \
+   && "$OS_CC" -O2 $OS_WNO $OS_NOASM $OS_DEF $OS_INC "$HERE/hkf_orset_test.c" \
+        "$SRCROOT/Common/HkfOrSet.c" "$SRCROOT/Common/HardwareKeyFactor.c" "$SRCROOT/Common/Keyslot.c" \
+        "$SRCROOT/Common/KeyslotStore.c" "$SRCROOT/Common/AfSplit.c" "$SRCROOT/Common/Shamir.c" \
+        "$SRCROOT/Crypto/Sha2.c" "$SRCROOT/Crypto/chacha256.c" -o /tmp/hkf_orset_test 2>/tmp/os_log; then
+	if /tmp/hkf_orset_test > /tmp/os_c.txt; then cat /tmp/os_c.txt
+		echo "    MATCH: any one enrolled token unlocks; non-enrolled fails; revoke is per-token"
+	else cat /tmp/os_c.txt; echo "    OR-SET FAILED"; exit 1; fi
+else
+	skip_step " no compiler accepted the sources for the OR-set test (see /tmp/os_log)"
+fi

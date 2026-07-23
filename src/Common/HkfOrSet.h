@@ -1,0 +1,79 @@
+/*
+ * HkfOrSet — multi-token OR-set: any ONE of N enrolled factors unlocks the volume
+ * (ROI-TOP-50 item 45).
+ *
+ * A user may want several independent tokens to each be sufficient on their own — a primary
+ * YubiKey and a backup FIDO2 key, or one token per family member — so that losing any single
+ * token does not lock them out. This is the OR of the keyslot model's building block: enroll
+ * one keyslot per token, each wrapping the SAME master key (VMK) under a key derived from
+ * that token's challenge-response. Presenting any enrolled token opens its slot and recovers
+ * the VMK; a token that was never enrolled opens nothing; revoking one token leaves the rest
+ * working. The whole OR-set therefore rides the already-proven keyslot machinery: per-record
+ * AEAD (Keyslot.c) + the constant-time multi-slot search (KeyslotStore.c) — no new crypto.
+ *
+ * (Contrast with the M-of-N threshold path — Shamir/`--hkf-shamir` — where shares must be
+ * COMBINED. OR-set = 1-of-N-sufficient; threshold = k-of-n-required. Different primitives.)
+ *
+ * Gated behind VC_ENABLE_HKF_ORSET (needs VC_ENABLE_KEYSLOTS for the area); default build stock.
+ */
+#ifndef TC_HEADER_Common_HkfOrSet
+#define TC_HEADER_Common_HkfOrSet
+
+#include "Tcdefs.h"
+
+#if defined(VC_ENABLE_HKF_ORSET) && defined(VC_ENABLE_KEYSLOTS)
+
+#include "KeyslotStore.h"        /* KeyslotStoreCfg, KeyslotArea */
+#include "HardwareKeyFactor.h"   /* HKFConfig, HKFComputeResponse, HKF_MAX_RESPONSE */
+
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
+/* Result of an OR-set open: >=0 is unused here (KeyslotOpen hides the index by design). */
+#define HKF_ORSET_ERR (-1)
+
+/*
+ * Enroll one keyslot per token RESPONSE, each wrapping the same 'vmk' (cfg->vmkLen bytes).
+ * 'responses' is nTokens rows of 'rowStride' bytes; row i is respLens[i] bytes long
+ * (1..HKF_MAX_RESPONSE). Returns the number of slots enrolled (== nTokens) on success, or a
+ * negative value on the first enrollment failure (table full / area too small / bad arg).
+ */
+int HkfOrSetEnroll (const KeyslotStoreCfg *cfg, KeyslotArea *area,
+                    const unsigned char *responses, const int *respLens, int rowStride,
+                    int nTokens, const unsigned char *vmk);
+
+/*
+ * Recover the VMK with a SINGLE token response. Returns 1 and fills vmkOut (cfg->vmkLen bytes)
+ * and, if non-NULL, *flagsOut, when the response matches any enrolled slot (the token is in the
+ * OR-set); returns 0 when it matches none (token not enrolled / wrong token).
+ */
+int HkfOrSetOpen (const KeyslotStoreCfg *cfg, KeyslotArea *area,
+                  const unsigned char *response, int respLen,
+                  unsigned char *vmkOut, int *flagsOut);
+
+/*
+ * Convenience that ties the OR-set to real backends: compute each config's response over
+ * 'salt' via HKFComputeResponse (SIMULATOR / RAW_SECRET / YubiKey / FIDO2), then enroll it.
+ * Returns slots enrolled, or a negative HKF_ERR_ or HKF_ORSET_ERR code on the first failure.
+ */
+int HkfOrSetEnrollConfigs (const KeyslotStoreCfg *ksCfg, KeyslotArea *area,
+                           const HKFConfig *cfgs, int nTokens,
+                           const unsigned char *salt, int saltLen,
+                           const unsigned char *vmk);
+
+/*
+ * Compute ONE config's response over 'salt' and try to open. Returns 1 if that token is in the
+ * OR-set, 0 if not, or a negative HKF_ERR_* if the token is present but the backend failed.
+ */
+int HkfOrSetOpenConfig (const KeyslotStoreCfg *ksCfg, KeyslotArea *area,
+                        const HKFConfig *cfg, const unsigned char *salt, int saltLen,
+                        unsigned char *vmkOut, int *flagsOut);
+
+#if defined(__cplusplus)
+}
+#endif
+
+#endif /* VC_ENABLE_HKF_ORSET && VC_ENABLE_KEYSLOTS */
+
+#endif /* TC_HEADER_Common_HkfOrSet */
