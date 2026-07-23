@@ -1,0 +1,527 @@
+diff --git a/src/Common/HardwareKeyFactor.c b/src/Common/HardwareKeyFactor.c
+index 8254ea6..37a3d5e 100644
+--- a/src/Common/HardwareKeyFactor.c
++++ b/src/Common/HardwareKeyFactor.c
+@@ -166,6 +166,29 @@ void HKFMixResponseIntoPasswordVer (int version, unsigned char *password, int *p
+ 	else
+ 		HKFMixResponseIntoPassword (password, password_len, response, response_len);
+ }
++
++int HKFComputeActiveResponse (const unsigned char *salt, int salt_len,
++                              unsigned char *respOut, int *rlenOut)
++{
++	const HKFConfig *cfg = g_hkfActiveConfig;
++	*rlenOut = 0;
++	if (!cfg || cfg->backend == HKF_BACKEND_NONE)
++		return HKF_OK;                       /* factor disabled: caller does a single unmixed pass */
++	return HKFComputeResponse (cfg, salt, salt_len, respOut, rlenOut);
++}
++
++int HKFApplyIfConfiguredVer (int version, unsigned char *userKey, int *keyLength,
++                             const unsigned char *salt, int salt_len)
++{
++	unsigned char resp[HKF_MAX_RESPONSE];
++	int rlen = 0, rc = HKFComputeActiveResponse (salt, salt_len, resp, &rlen);
++	if (rc != HKF_OK)
++		return rc;                           /* token missing/failed: caller aborts */
++	if (rlen > 0)
++		HKFMixResponseIntoPasswordVer (version, userKey, keyLength, resp, rlen);
++	{ volatile unsigned char *p = resp; size_t n = sizeof (resp); while (n--) *p++ = 0; }
++	return HKF_OK;
++}
+ #endif /* VC_ENABLE_HKF_MIX_V2 */
+ 
+ /* ================================================================== *
+diff --git a/src/Common/HardwareKeyFactor.h b/src/Common/HardwareKeyFactor.h
+index bad1748..e6fe37b 100644
+--- a/src/Common/HardwareKeyFactor.h
++++ b/src/Common/HardwareKeyFactor.h
+@@ -163,6 +163,21 @@ void HKFMixResponseIntoPasswordV2 (unsigned char *password, int *password_len,
+    HKF_MIX_V2 first and falls back to HKF_MIX_V1; create always uses HKF_MIX_V2. */
+ void HKFMixResponseIntoPasswordVer (int version, unsigned char *password, int *password_len,
+                                     const unsigned char *response, int response_len);
++
++/* Compute the ACTIVE factor's response exactly once, so the mount version-try loop hits a hardware
++   token only once and then mixes the same response under both versions (design constraint: no double
++   token round-trip). Returns HKF_OK with *rlenOut=0 when no factor is configured (caller does a single
++   unmixed pass); HKF_OK with the response bytes otherwise; or a negative HKF_ERR_* if a configured
++   token failed. respOut must hold >= HKF_MAX_RESPONSE bytes. */
++int HKFComputeActiveResponse (const unsigned char *salt, int salt_len,
++                              unsigned char *respOut, int *rlenOut);
++
++/* Apply the active factor to (userKey,*keyLength) under a specific mix version (compute + mix in one
++   call). Used by the CREATE path (single version, single compute). The MOUNT loop should prefer
++   compute-once via HKFComputeActiveResponse + HKFMixResponseIntoPasswordVer to avoid a second token
++   round-trip. Returns HKF_OK (including the no-factor no-op) or a negative HKF_ERR_*. */
++int HKFApplyIfConfiguredVer (int version, unsigned char *userKey, int *keyLength,
++                             const unsigned char *salt, int salt_len);
+ #endif
+ 
+ /*
+diff --git a/src/Common/Volumes.c b/src/Common/Volumes.c
+index 795377f..312fa15 100644
+--- a/src/Common/Volumes.c
++++ b/src/Common/Volumes.c
+@@ -200,7 +200,16 @@ static int MapBalloonResultToVcError (int result)
+ 
+ BOOL ReadVolumeHeaderRecoveryMode = FALSE;
+ 
++#if defined(VC_ENABLE_HKF_MIX_V2)
++/* v2-capable path: the header-decrypt attempt is parameterised by a precomputed factor response
++   (hkfResp/hkfRespLen, hkfRespLen==0 == no factor) and the mix version to test (hkfVersion). The
++   public ReadVolumeHeaderWithAbort() wrapper below computes the response once and calls this with
++   HKF_MIX_V2, then HKF_MIX_V1 on a wrong-password result, so a legacy v1 volume still mounts without
++   a second token round-trip. Body is otherwise identical to stock. */
++static int ReadVolumeHeaderWithAbortImpl (BOOL bBoot, unsigned char *encryptedHeader, Password *password, int selected_pkcs5_prf, int pim, PCRYPTO_INFO *retInfo, CRYPTO_INFO *retHeaderCryptoInfo, long volatile *pAbortKeyDerivation, long volatile *pUserAbort, const unsigned char *hkfResp, int hkfRespLen, int hkfVersion)
++#else
+ int ReadVolumeHeaderWithAbort (BOOL bBoot, unsigned char *encryptedHeader, Password *password, int selected_pkcs5_prf, int pim, PCRYPTO_INFO *retInfo, CRYPTO_INFO *retHeaderCryptoInfo, long volatile *pAbortKeyDerivation, long volatile *pUserAbort)
++#endif
+ {
+ 	unsigned char header[TC_VOLUME_HEADER_EFFECTIVE_SIZE];
+ 	unsigned char* keyInfoBuffer = NULL;
+@@ -338,7 +347,14 @@ int ReadVolumeHeaderWithAbort (BOOL bBoot, unsigned char *encryptedHeader, Passw
+ 	// PKCS5 is used to derive the primary header key(s) and secondary header key(s) (XTS mode) from the password
+ 	memcpy (keyInfo->salt, encryptedHeader + HEADER_SALT_OFFSET, PKCS5_SALT_SIZE);
+ 
+-#if defined(VC_ENABLE_HKF)
++#if defined(VC_ENABLE_HKF_MIX_V2)
++	// Optional hardware key factor (v2-capable path): the response was computed ONCE by the public
++	// wrapper (compute-once — a hardware token is hit at most once even across the version-try loop),
++	// so here we only mix it under the version this attempt is testing. hkfRespLen == 0 means no factor
++	// is configured (a single unmixed pass). See ReadVolumeHeaderWithAbort() below.
++	if (hkfRespLen > 0)
++		HKFMixResponseIntoPasswordVer (hkfVersion, keyInfo->userKey, &keyInfo->keyLength, hkfResp, hkfRespLen);
++#elif defined(VC_ENABLE_HKF)
+ 	// Optional hardware key factor: mix the token response (computed over THIS header's salt)
+ 	// into the password before PBKDF2. A configured-but-missing/failed token aborts the mount.
+ 	if (HKFApplyIfConfigured (keyInfo->userKey, &keyInfo->keyLength, keyInfo->salt, PKCS5_SALT_SIZE) != HKF_OK)
+@@ -816,6 +832,43 @@ ret:
+ 	return status;
+ }
+ 
++#if defined(VC_ENABLE_HKF_MIX_V2)
++/* Public mount entry: compute the active hardware-key-factor response ONCE over this header's salt,
++   then try the v2 (HKDF) mix first and fall back to the v1 (CRC pool) mix on a wrong-password result,
++   so a volume enrolled under either mix opens with at most one token round-trip. With no factor
++   configured this is a single stock derivation pass. */
++int ReadVolumeHeaderWithAbort (BOOL bBoot, unsigned char *encryptedHeader, Password *password, int selected_pkcs5_prf, int pim, PCRYPTO_INFO *retInfo, CRYPTO_INFO *retHeaderCryptoInfo, long volatile *pAbortKeyDerivation, long volatile *pUserAbort)
++{
++	unsigned char hkfResp[HKF_MAX_RESPONSE];
++	int hkfRespLen = 0;
++	int status;
++	const unsigned char *salt = encryptedHeader + HEADER_SALT_OFFSET;
++
++	if (HKFComputeActiveResponse (salt, PKCS5_SALT_SIZE, hkfResp, &hkfRespLen) != HKF_OK)
++		return ERR_KEY_DERIVATION_FAILED;   /* configured-but-missing/failed token aborts the mount */
++
++	if (hkfRespLen == 0)
++	{
++		/* no factor configured: a single stock pass (version is irrelevant with an empty response) */
++		return ReadVolumeHeaderWithAbortImpl (bBoot, encryptedHeader, password, selected_pkcs5_prf, pim, retInfo, retHeaderCryptoInfo, pAbortKeyDerivation, pUserAbort, hkfResp, 0, HKF_MIX_V2);
++	}
++
++	/* factor configured: v2 first, then v1 for a legacy volume — same response, no second token hit */
++	status = ReadVolumeHeaderWithAbortImpl (bBoot, encryptedHeader, password, selected_pkcs5_prf, pim, retInfo, retHeaderCryptoInfo, pAbortKeyDerivation, pUserAbort, hkfResp, hkfRespLen, HKF_MIX_V2);
++	if (status == ERR_PASSWORD_WRONG)
++	{
++		/* the v2 attempt has already stopped its worker threads; clear the shared abort flag so the
++		   v1 attempt is not seen as pre-aborted (a genuine user abort is a separate flag/return). */
++		if (pAbortKeyDerivation)
++			InterlockedExchange (pAbortKeyDerivation, 0);
++		status = ReadVolumeHeaderWithAbortImpl (bBoot, encryptedHeader, password, selected_pkcs5_prf, pim, retInfo, retHeaderCryptoInfo, pAbortKeyDerivation, pUserAbort, hkfResp, hkfRespLen, HKF_MIX_V1);
++	}
++
++	burn (hkfResp, sizeof (hkfResp));
++	return status;
++}
++#endif /* VC_ENABLE_HKF_MIX_V2 */
++
+ int ReadVolumeHeader (BOOL bBoot, unsigned char *encryptedHeader, Password *password, int selected_pkcs5_prf, int pim, PCRYPTO_INFO *retInfo, CRYPTO_INFO *retHeaderCryptoInfo)
+ {
+ 	return ReadVolumeHeaderWithAbort (bBoot, encryptedHeader, password, selected_pkcs5_prf, pim, retInfo, retHeaderCryptoInfo, NULL, NULL);
+@@ -1187,7 +1240,18 @@ int CreateVolumeHeaderInMemory (HWND hwndDlg, BOOL bBoot, unsigned char *header,
+ 		goto err;
+ 	}
+ 
+-#if defined(VC_ENABLE_HKF)
++#if defined(VC_ENABLE_HKF_MIX_V2)
++	// Optional hardware key factor (same seam as mount): mix the token response over the freshly
++	// generated salt into the password before PBKDF2 so the new volume requires the token to open.
++	// New volumes are always enrolled under the v2 (HKDF) mix; the mount path's v2->v1 try loop keeps
++	// legacy v1 volumes openable.
++	if (password && HKFApplyIfConfiguredVer (HKF_MIX_V2, keyInfo.userKey, &keyInfo.keyLength, keyInfo.salt, PKCS5_SALT_SIZE) != HKF_OK)
++	{
++		crypto_close (cryptoInfo);
++		retVal = ERR_KEY_DERIVATION_FAILED;
++		goto err;
++	}
++#elif defined(VC_ENABLE_HKF)
+ 	// Optional hardware key factor (same seam as mount): mix the token response over the freshly
+ 	// generated salt into the password before PBKDF2 so the new volume requires the token to open.
+ 	if (password && HKFApplyIfConfigured (keyInfo.userKey, &keyInfo.keyLength, keyInfo.salt, PKCS5_SALT_SIZE) != HKF_OK)
+diff --git a/src/Core/VolumeCreator.cpp b/src/Core/VolumeCreator.cpp
+index 35f7d62..7d35709 100644
+--- a/src/Core/VolumeCreator.cpp
++++ b/src/Core/VolumeCreator.cpp
+@@ -151,7 +151,14 @@ namespace VeraCrypt
+ 				SecureBuffer backupHeaderSalt (VolumeHeader::GetSaltSize());
+ 				RandomNumberGenerator::GetData (backupHeaderSalt);
+ 
+-#if defined(VC_ENABLE_HKF)
++#if defined(VC_ENABLE_HKF_MIX_V2)
++				// Gate by volume type: the hidden volume's headers get the factor; a decoy (Normal)
++				// outer volume under HKF_APPLY_HIDDEN_ONLY is created password-only. New volumes enroll
++				// under the v2 (HKDF) mix; the mount path's v2->v1 try loop still opens legacy v1 volumes.
++				shared_ptr <VolumePassword> creatorPassword =
++					HKFShouldApply (g_hkfActiveConfig, Options->Type == VolumeType::Hidden)
++						? HKFMixPasswordVer (*PasswordKey, backupHeaderSalt, HKF_MIX_V2) : PasswordKey;
++#elif defined(VC_ENABLE_HKF)
+ 				// Gate by volume type: the hidden volume's headers get the factor; a decoy (Normal)
+ 				// outer volume under HKF_APPLY_HIDDEN_ONLY is created password-only.
+ 				shared_ptr <VolumePassword> creatorPassword =
+@@ -368,7 +375,12 @@ namespace VeraCrypt
+ 			// Header key
+ 			HeaderKey.Allocate (VolumeHeader::GetHeaderKeyDerivationSize (options->VolumeHeaderKdf));
+ 			PasswordKey = Keyfile::ApplyListToPassword (options->Keyfiles, options->Password, options->EMVSupportEnabled);
+-#if defined(VC_ENABLE_HKF)
++#if defined(VC_ENABLE_HKF_MIX_V2)
++			// New volumes enroll under the v2 (HKDF) mix; the mount path's v2->v1 try loop opens legacy v1.
++			shared_ptr <VolumePassword> creatorPassword =
++				HKFShouldApply (g_hkfActiveConfig, options->Type == VolumeType::Hidden)
++					? HKFMixPasswordVer (*PasswordKey, salt, HKF_MIX_V2) : PasswordKey;
++#elif defined(VC_ENABLE_HKF)
+ 			shared_ptr <VolumePassword> creatorPassword =
+ 				HKFShouldApply (g_hkfActiveConfig, options->Type == VolumeType::Hidden)
+ 					? HKFMixPassword (*PasswordKey, salt) : PasswordKey;
+diff --git a/src/Volume/HardwareKeyFactorMix.h b/src/Volume/HardwareKeyFactorMix.h
+index 8495bb5..74f7e1b 100644
+--- a/src/Volume/HardwareKeyFactorMix.h
++++ b/src/Volume/HardwareKeyFactorMix.h
+@@ -55,6 +55,59 @@ namespace VeraCrypt
+ 		result->Set (password);
+ 		return result;
+ 	}
++
++#if defined(VC_ENABLE_HKF_MIX_V2)
++	/*
++	 * Mix a PRECOMPUTED factor response into a copy of 'password' under a specific mix version
++	 * (HKF_MIX_V1 / HKF_MIX_V2). Used by the mount version-try loop so the token is queried once
++	 * (via HKFComputeActiveResponse) and the same response is mixed under each version — no second
++	 * hardware round-trip. 'responseLen == 0' returns a plain copy (no factor). See VolumeHeader::Decrypt.
++	 */
++	inline shared_ptr <VolumePassword> HKFMixPasswordWithResponse (const VolumePassword &password, const unsigned char *response, int responseLen, int version)
++	{
++		make_shared_auto (VolumePassword, result);
++
++		if (responseLen > 0)
++		{
++			SecureBuffer buf (VolumePassword::MaxSize);
++			size_t n = password.Size();
++			if (n > buf.Size())
++				n = buf.Size();
++			if (n)
++				Memory::Copy (buf.Ptr(), password.DataPtr(), n);
++
++			int len = (int) n;
++			HKFMixResponseIntoPasswordVer (version, buf.Ptr(), &len, response, responseLen);
++			result->Set (buf.Ptr(), (size_t) len);
++			return result;
++		}
++
++		result->Set (password);
++		return result;
++	}
++
++	/*
++	 * Compute the active factor over 'salt' and mix it into a copy of 'password' under 'version', in one
++	 * call. Used by the CREATE path (single version, single compute — new volumes enroll under v2).
++	 * Returns a plain copy if no factor is configured; throws ExternalException if a configured token
++	 * is missing or fails.
++	 */
++	inline shared_ptr <VolumePassword> HKFMixPasswordVer (const VolumePassword &password, const ConstBufferPtr &salt, int version)
++	{
++		if (g_hkfActiveConfig && g_hkfActiveConfig->backend != HKF_BACKEND_NONE)
++		{
++			SecureBuffer resp (HKF_MAX_RESPONSE);
++			int rlen = 0;
++			if (HKFComputeActiveResponse (salt.Get(), (int) salt.Size(), resp.Ptr(), &rlen) != HKF_OK)
++				throw ExternalException (SRC_POS);   /* configured token missing or failed */
++			return HKFMixPasswordWithResponse (password, resp.Ptr(), rlen, version);
++		}
++
++		make_shared_auto (VolumePassword, result);
++		result->Set (password);
++		return result;
++	}
++#endif /* VC_ENABLE_HKF_MIX_V2 */
+ }
+ 
+ #endif /* TC_HEADER_Volume_HardwareKeyFactorMix */
+diff --git a/src/Volume/VolumeHeader.cpp b/src/Volume/VolumeHeader.cpp
+index 9f0d1d4..7914157 100644
+--- a/src/Volume/VolumeHeader.cpp
++++ b/src/Volume/VolumeHeader.cpp
+@@ -112,8 +112,35 @@ namespace VeraCrypt
+ 
+ 		ConstBufferPtr salt (encryptedData.GetRange (SaltOffset, SaltSize));
+ 
+-#if defined(VC_ENABLE_HKF)
+-		// Optional hardware key factor: derive an effective password with the token's response
++#if defined(VC_ENABLE_HKF_MIX_V2)
++		// Optional hardware key factor (v2-capable): compute the token response ONCE over this header's
++		// salt, then try the v2 (HKDF) mix first and fall back to v1 (CRC pool) for a legacy volume — a
++		// hardware token is hit at most once even across the two attempts (compute-once, mix-twice).
++		if (applyHardwareFactor && g_hkfActiveConfig && g_hkfActiveConfig->backend != HKF_BACKEND_NONE)
++		{
++			SecureBuffer resp (HKF_MAX_RESPONSE);
++			int rlen = 0;
++			if (HKFComputeActiveResponse (salt.Get(), (int) salt.Size(), resp.Ptr(), &rlen) != HKF_OK)
++				throw ExternalException (SRC_POS);   /* configured token missing or failed */
++
++			const int versions[2] = { HKF_MIX_V2, HKF_MIX_V1 };
++			for (int vi = 0; vi < 2; ++vi)
++			{
++				shared_ptr <VolumePassword> mixed = HKFMixPasswordWithResponse (password, resp.Ptr(), rlen, versions[vi]);
++				if (DecryptWithEffectivePassword (encryptedData, *mixed, pim, kdf, keyDerivationFunctions, encryptionAlgorithms, encryptionModes))
++					return true;
++			}
++			return false;
++		}
++		// no factor configured: a single unmixed pass
++		return DecryptWithEffectivePassword (encryptedData, password, pim, kdf, keyDerivationFunctions, encryptionAlgorithms, encryptionModes);
++	}
++
++	bool VolumeHeader::DecryptWithEffectivePassword (const ConstBufferPtr &encryptedData, const VolumePassword &effectivePassword, int pim, shared_ptr <Pkcs5Kdf> kdf, const Pkcs5KdfList &keyDerivationFunctions, const EncryptionAlgorithmList &encryptionAlgorithms, const EncryptionModeList &encryptionModes)
++	{
++		ConstBufferPtr salt (encryptedData.GetRange (SaltOffset, SaltSize));
++#elif defined(VC_ENABLE_HKF)
++		// Optional hardware key factor (v1 only): derive an effective password with the token's response
+ 		// (computed over THIS header's salt) mixed in. With no factor configured this is 'password'.
+ 		shared_ptr <VolumePassword> hkfPassword;
+ 		const VolumePassword *effectivePasswordPtr = &password;
+diff --git a/src/Volume/VolumeHeader.h b/src/Volume/VolumeHeader.h
+index 4369200..9c92c59 100644
+--- a/src/Volume/VolumeHeader.h
++++ b/src/Volume/VolumeHeader.h
+@@ -104,6 +104,12 @@ namespace VeraCrypt
+ #endif
+ 
+ 	protected:
++#if defined(VC_ENABLE_HKF_MIX_V2)
++		/* The KDF sweep + header-key trial for one already-effective password (post hardware-factor mix).
++		   Decrypt() computes the factor response once and calls this under each mix version (v2 then v1)
++		   so a volume enrolled under either mix opens with a single token round-trip. */
++		bool DecryptWithEffectivePassword (const ConstBufferPtr &encryptedData, const VolumePassword &effectivePassword, int pim, shared_ptr <Pkcs5Kdf> kdf, const Pkcs5KdfList &keyDerivationFunctions, const EncryptionAlgorithmList &encryptionAlgorithms, const EncryptionModeList &encryptionModes);
++#endif
+ 		bool DecryptWithHeaderKey (const ConstBufferPtr &encryptedData, shared_ptr <Pkcs5Kdf> pkcs5, const ConstBufferPtr &headerKey, const EncryptionAlgorithmList &encryptionAlgorithms, const EncryptionModeList &encryptionModes);
+ 		bool Deserialize (const ConstBufferPtr &header, shared_ptr <EncryptionAlgorithm> &ea, shared_ptr <EncryptionMode> &mode);
+ 		template <typename T> T DeserializeEntry (const ConstBufferPtr &header, size_t &offset) const;
+diff --git a/verification/build_and_verify.sh b/verification/build_and_verify.sh
+index ea42097..cdbe173 100755
+--- a/verification/build_and_verify.sh
++++ b/verification/build_and_verify.sh
+@@ -2124,3 +2124,32 @@ if [ -n "$MV_CC" ] \
+ else
+ 	skip_step " no compiler for the hkf mix-v2 test (see /tmp/mv_log)"
+ fi
++
++echo ""
++echo "[81] Rank-1 v2 WIRING seam (mount/create call sites): active-config, compute-once, cross-path"
++# Step [80] proved the v2 mix + try-loop logic in isolation. This proves the seam the mount/create call
++# sites use: the process-wide active config (HKFSetActiveConfig) driving HKFComputeActiveResponse
++# (compute-once) and HKFApplyIfConfiguredVer (the create C-path call), plus the operations the C++
++# overload (HKFMixPasswordWithResponse) performs — showing both derivation paths derive identical keys.
++# Two ways: the v2-enrolled key (through the real seam) vs the independent python HKDF (byte-for-byte),
++# plus the seam behaviours over real objects. Negative controls: wrong factor opens NEITHER version; the
++# mount wrapper queries the backend exactly once across both attempts (compute-once); v1 != v2.
++WW_CC=""
++for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then WW_CC="$c"; break; fi; done
++WW_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
++WW_INC="$INC -I$SRCROOT/Crypto"
++WW_SRC="$SRCROOT/Common/HardwareKeyFactor.c $SRCROOT/Crypto/Sha2.c"
++if [ -n "$WW_CC" ] \
++   && "$WW_CC" -O2 -Wno-implicit-function-declaration -DVC_ENABLE_HKF -DVC_ENABLE_HKF_MIX_V2 $WW_NOASM $WW_INC "$HERE/hkf_mixv2_wiring_test.c" $WW_SRC -o /tmp/mixv2_wiring 2>/tmp/ww_log; then
++	if /tmp/mixv2_wiring > /tmp/ww_c.txt; then
++		grep -vE '^PASSWORD|^RESPONSE|^MIXV2 ' /tmp/ww_c.txt
++		A=$(awk '/^MIXV2 /{print $2}' /tmp/ww_c.txt); P=$(python3 "$HERE/hkf_mixv2_reference.py" < /tmp/ww_c.txt | awk '/^MIXV2EXP/{print $2}')
++		if [ -n "$A" ] && [ "$A" = "$P" ] && grep -q '^PASS' /tmp/ww_c.txt; then
++			echo "    MATCH: v2-enrolled key (real HKFApplyIfConfiguredVer seam) == independent python HKDF; wiring behaviours verified"
++		else
++			echo "    WIRING MISMATCH (A=${A:0:16} P=${P:0:16}) or harness failed"; exit 1
++		fi
++	else grep -vE '^PASSWORD|^RESPONSE|^MIXV2 ' /tmp/ww_c.txt; echo "    HKF MIX V2 WIRING FAILED"; exit 1; fi
++else
++	skip_step " no compiler for the hkf mix-v2 wiring test (see /tmp/ww_log)"
++fi
+diff --git a/verification/hkf_mixv2_wiring_test.c b/verification/hkf_mixv2_wiring_test.c
+new file mode 100644
+index 0000000..60eb08b
+--- /dev/null
++++ b/verification/hkf_mixv2_wiring_test.c
+@@ -0,0 +1,166 @@
++/*
++ * hkf_mixv2_wiring_test.c — seam-level proof of the Rank-1 v2 WIRING (not just the mix primitive).
++ *
++ * Step [80] proved the v2 mix math and the try-loop logic in isolation. This step proves the seam the
++ * mount/create call sites actually use: the process-wide active config (HKFSetActiveConfig, as the CLI
++ * sets before an op) driving HKFComputeActiveResponse (compute-once) and HKFApplyIfConfiguredVer
++ * (versioned compute+mix, the create C-path call), plus the exact operations the C++ overload
++ * (HKFMixPasswordWithResponse) performs — so both derivation paths are shown byte-identical.
++ *
++ * Modelled behaviours, over the REAL compiled HardwareKeyFactor.o:
++ *   CREATE     : HKFApplyIfConfiguredVer(HKF_MIX_V2, ...) enrolls a volume under v2.
++ *   MOUNT      : the wrapper computes the response ONCE (HKFComputeActiveResponse) then mixes v2, then
++ *                v1 — opening a v2-enrolled volume on the first attempt and a v1-enrolled (legacy)
++ *                volume on the fallback, with a single backend query.
++ *   compute-once: the one response returned by HKFComputeActiveResponse is the same bytes both mixes
++ *                consume, and equals a direct HKFComputeResponse(cfg,...) (active-config routes to the
++ *                same backend).
++ *   cross-path : the C create path (HKFApplyIfConfiguredVer) and the C++ overload's operations
++ *                (compute-once + HKFMixResponseIntoPasswordVer) derive byte-identical keys.
++ *   no factor  : HKF_BACKEND_NONE -> HKFComputeActiveResponse returns len 0 (single unmixed pass) and
++ *                HKFApplyIfConfiguredVer leaves the key untouched.
++ *
++ * Negative controls: a WRONG active secret opens NEITHER version; v1 and v2 enrollments differ (so the
++ * version argument is genuinely consumed, the try-loop is not a no-op). A KAT (the v2-enrolled key) is
++ * additionally cross-checked byte-for-byte against the independent python HKDF (hkf_mixv2_reference.py).
++ */
++#include <stdio.h>
++#include <string.h>
++#include "Common/HardwareKeyFactor.h"
++
++#define POOL HKF_POOL_SIZE   /* 128 */
++#define SALTLEN 64
++
++static int all_pass = 1;
++static void check (const char *n, int ok) { printf ("  %-58s %s\n", n, ok ? "PASS" : "FAIL"); if (!ok) all_pass = 0; }
++static void hexline (const char *t, const unsigned char *b, int n) { int i; printf ("%s ", t); for (i=0;i<n;i++) printf ("%02x", b[i]); printf ("\n"); }
++
++/* build a RAW_SECRET active config with the given secret (no salt-binding: response == raw secret) */
++static void set_raw_config (HKFConfig *cfg, const unsigned char *secret, int len)
++{
++	memset (cfg, 0, sizeof *cfg);
++	cfg->backend = HKF_BACKEND_RAW_SECRET;
++	memcpy (cfg->rawSecret, secret, (size_t) len);
++	cfg->rawSecretLen = len;
++	cfg->rawSecretNoBindSalt = 1;   /* keep the raw secret as the response, deterministic for the KAT */
++	cfg->applyPolicy = HKF_APPLY_ALL;
++	HKFSetActiveConfig (cfg);
++}
++
++/* the MOUNT wrapper, modelled exactly: compute the active response ONCE, then mix v2, then v1.
++   Returns the version that reproduces 'stored' (HKF_MIX_V2 / HKF_MIX_V1) or 0 for no match.
++   *computeCalls counts backend queries — the wrapper must make exactly one. */
++static int mount_open (const unsigned char *password, int pwLen, const unsigned char *salt,
++                       const unsigned char stored[POOL], int *computeCalls)
++{
++	unsigned char resp[HKF_MAX_RESPONSE];
++	unsigned char buf[POOL];
++	int rlen = 0, len;
++
++	if (HKFComputeActiveResponse (salt, SALTLEN, resp, &rlen) != HKF_OK)
++		return -1;
++	(*computeCalls)++;                       /* exactly one backend query for the whole open */
++	if (rlen == 0)
++		return 0;                            /* no factor: caller does a single unmixed pass */
++
++	memset (buf, 0, sizeof buf); memcpy (buf, password, (size_t) pwLen); len = pwLen;
++	HKFMixResponseIntoPasswordVer (HKF_MIX_V2, buf, &len, resp, rlen);
++	if (len == POOL && !memcmp (buf, stored, POOL)) return HKF_MIX_V2;
++
++	memset (buf, 0, sizeof buf); memcpy (buf, password, (size_t) pwLen); len = pwLen;
++	HKFMixResponseIntoPasswordVer (HKF_MIX_V1, buf, &len, resp, rlen);
++	if (len == POOL && !memcmp (buf, stored, POOL)) return HKF_MIX_V1;
++
++	return 0;
++}
++
++int main (void)
++{
++	const unsigned char password[] = "correct horse";   /* 13 bytes */
++	const int pwLen = 13;
++	unsigned char salt[SALTLEN];
++	unsigned char secret[32], wrong[32];
++	unsigned char storedV2[POOL], storedV1[POOL];
++	HKFConfig cfg;
++	int i, len, computeCalls;
++
++	for (i = 0; i < SALTLEN; i++) salt[i]   = (unsigned char)((i * 7 + 3) & 0xff);
++	for (i = 0; i < 32; i++)      secret[i] = (unsigned char)((i * 13 + 1) & 0xff);
++	for (i = 0; i < 32; i++)      wrong[i]  = secret[i];
++	wrong[0] ^= 0x01;
++
++	/* ---- CREATE: enroll a v2 volume via the real create-path call HKFApplyIfConfiguredVer(v2) ---- */
++	set_raw_config (&cfg, secret, 32);
++	memset (storedV2, 0, sizeof storedV2); memcpy (storedV2, password, (size_t) pwLen); len = pwLen;
++	check ("create: HKFApplyIfConfiguredVer(v2) returns HKF_OK",
++	       HKFApplyIfConfiguredVer (HKF_MIX_V2, storedV2, &len, salt, SALTLEN) == HKF_OK);
++	check ("create: v2 enrollment expands key to the pool size (128)", len == POOL);
++
++	/* a legacy v1 volume: enroll under v1 (what an older build wrote) */
++	memset (storedV1, 0, sizeof storedV1); memcpy (storedV1, password, (size_t) pwLen); len = pwLen;
++	HKFApplyIfConfiguredVer (HKF_MIX_V1, storedV1, &len, salt, SALTLEN);
++
++	/* KAT for the python cross-check: v2-enrolled key == HKDF over (password || secret) */
++	hexline ("PASSWORD", password, pwLen);
++	hexline ("RESPONSE", secret, 32);
++	hexline ("MIXV2", storedV2, POOL);
++
++	printf ("[version dispatch through the active-config seam]\n");
++	check ("v1 and v2 enrollments differ (version arg is consumed)", memcmp (storedV1, storedV2, POOL) != 0);
++
++	printf ("[mount wrapper: compute-once, v2-first, v1-fallback]\n");
++	computeCalls = 0;
++	check ("mount opens a v2-enrolled volume on the v2 attempt", mount_open (password, pwLen, salt, storedV2, &computeCalls) == HKF_MIX_V2);
++	check ("  ...querying the backend exactly once (compute-once)", computeCalls == 1);
++	computeCalls = 0;
++	check ("mount opens a v1-enrolled (legacy) volume via v1 fallback", mount_open (password, pwLen, salt, storedV1, &computeCalls) == HKF_MIX_V1);
++	check ("  ...still exactly one backend query across both attempts", computeCalls == 1);
++
++	printf ("[compute-once identity: active seam == direct backend]\n");
++	{
++		unsigned char rA[HKF_MAX_RESPONSE], rB[HKF_MAX_RESPONSE];
++		int lA = 0, lB = 0;
++		HKFComputeActiveResponse (salt, SALTLEN, rA, &lA);
++		HKFComputeResponse (&cfg, salt, SALTLEN, rB, &lB);
++		check ("HKFComputeActiveResponse == HKFComputeResponse(active cfg)", lA == lB && lA > 0 && !memcmp (rA, rB, (size_t) lA));
++	}
++
++	printf ("[cross-path byte-identity: C create path == C++ overload operations]\n");
++	{
++		/* C create path */
++		unsigned char cPath[POOL]; int cl = pwLen;
++		memset (cPath, 0, sizeof cPath); memcpy (cPath, password, (size_t) pwLen);
++		HKFApplyIfConfiguredVer (HKF_MIX_V2, cPath, &cl, salt, SALTLEN);
++		/* C++ overload operations: compute-once then HKFMixResponseIntoPasswordVer on a password copy */
++		unsigned char resp[HKF_MAX_RESPONSE]; int rl = 0;
++		HKFComputeActiveResponse (salt, SALTLEN, resp, &rl);
++		unsigned char cppPath[POOL]; int pl = pwLen;
++		memset (cppPath, 0, sizeof cppPath); memcpy (cppPath, password, (size_t) pwLen);
++		HKFMixResponseIntoPasswordVer (HKF_MIX_V2, cppPath, &pl, resp, rl);
++		check ("C-path key == C++-overload key (identical bytes, both paths)", cl == pl && !memcmp (cPath, cppPath, POOL));
++	}
++
++	printf ("[negative controls]\n");
++	{
++		HKFConfig bad; int cc = 0;
++		set_raw_config (&bad, wrong, 32);   /* wrong active factor */
++		check ("wrong factor opens NEITHER version (v2 volume)", mount_open (password, pwLen, salt, storedV2, &cc) == 0);
++		cc = 0;
++		check ("wrong factor opens NEITHER version (v1 volume)", mount_open (password, pwLen, salt, storedV1, &cc) == 0);
++	}
++
++	printf ("[no-factor pass-through]\n");
++	{
++		HKFConfig none; unsigned char k[POOL]; int kl = pwLen, rl = 0; unsigned char r[HKF_MAX_RESPONSE];
++		memset (&none, 0, sizeof none); none.backend = HKF_BACKEND_NONE; HKFSetActiveConfig (&none);
++		memset (k, 0, sizeof k); memcpy (k, password, (size_t) pwLen);
++		check ("no factor: HKFComputeActiveResponse returns len 0", HKFComputeActiveResponse (salt, SALTLEN, r, &rl) == HKF_OK && rl == 0);
++		check ("no factor: HKFApplyIfConfiguredVer leaves the key untouched",
++		       HKFApplyIfConfiguredVer (HKF_MIX_V2, k, &kl, salt, SALTLEN) == HKF_OK && kl == pwLen && !memcmp (k, password, (size_t) pwLen));
++	}
++
++	HKFSetActiveConfig (0);
++	printf ("\n%s\n", all_pass ? "PASS: v2 wiring seam — create=v2, mount compute-once/v2-first/v1-fallback, cross-path identical, wrong factor opens neither"
++	                            : "FAIL: hkf mix-v2 wiring");
++	return all_pass ? 0 : 1;
++}

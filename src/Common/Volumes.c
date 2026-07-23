@@ -200,7 +200,16 @@ static int MapBalloonResultToVcError (int result)
 
 BOOL ReadVolumeHeaderRecoveryMode = FALSE;
 
+#if defined(VC_ENABLE_HKF_MIX_V2)
+/* v2-capable path: the header-decrypt attempt is parameterised by a precomputed factor response
+   (hkfResp/hkfRespLen, hkfRespLen==0 == no factor) and the mix version to test (hkfVersion). The
+   public ReadVolumeHeaderWithAbort() wrapper below computes the response once and calls this with
+   HKF_MIX_V2, then HKF_MIX_V1 on a wrong-password result, so a legacy v1 volume still mounts without
+   a second token round-trip. Body is otherwise identical to stock. */
+static int ReadVolumeHeaderWithAbortImpl (BOOL bBoot, unsigned char *encryptedHeader, Password *password, int selected_pkcs5_prf, int pim, PCRYPTO_INFO *retInfo, CRYPTO_INFO *retHeaderCryptoInfo, long volatile *pAbortKeyDerivation, long volatile *pUserAbort, const unsigned char *hkfResp, int hkfRespLen, int hkfVersion)
+#else
 int ReadVolumeHeaderWithAbort (BOOL bBoot, unsigned char *encryptedHeader, Password *password, int selected_pkcs5_prf, int pim, PCRYPTO_INFO *retInfo, CRYPTO_INFO *retHeaderCryptoInfo, long volatile *pAbortKeyDerivation, long volatile *pUserAbort)
+#endif
 {
 	unsigned char header[TC_VOLUME_HEADER_EFFECTIVE_SIZE];
 	unsigned char* keyInfoBuffer = NULL;
@@ -338,7 +347,14 @@ int ReadVolumeHeaderWithAbort (BOOL bBoot, unsigned char *encryptedHeader, Passw
 	// PKCS5 is used to derive the primary header key(s) and secondary header key(s) (XTS mode) from the password
 	memcpy (keyInfo->salt, encryptedHeader + HEADER_SALT_OFFSET, PKCS5_SALT_SIZE);
 
-#if defined(VC_ENABLE_HKF)
+#if defined(VC_ENABLE_HKF_MIX_V2)
+	// Optional hardware key factor (v2-capable path): the response was computed ONCE by the public
+	// wrapper (compute-once — a hardware token is hit at most once even across the version-try loop),
+	// so here we only mix it under the version this attempt is testing. hkfRespLen == 0 means no factor
+	// is configured (a single unmixed pass). See ReadVolumeHeaderWithAbort() below.
+	if (hkfRespLen > 0)
+		HKFMixResponseIntoPasswordVer (hkfVersion, keyInfo->userKey, &keyInfo->keyLength, hkfResp, hkfRespLen);
+#elif defined(VC_ENABLE_HKF)
 	// Optional hardware key factor: mix the token response (computed over THIS header's salt)
 	// into the password before PBKDF2. A configured-but-missing/failed token aborts the mount.
 	if (HKFApplyIfConfigured (keyInfo->userKey, &keyInfo->keyLength, keyInfo->salt, PKCS5_SALT_SIZE) != HKF_OK)
@@ -816,6 +832,43 @@ ret:
 	return status;
 }
 
+#if defined(VC_ENABLE_HKF_MIX_V2)
+/* Public mount entry: compute the active hardware-key-factor response ONCE over this header's salt,
+   then try the v2 (HKDF) mix first and fall back to the v1 (CRC pool) mix on a wrong-password result,
+   so a volume enrolled under either mix opens with at most one token round-trip. With no factor
+   configured this is a single stock derivation pass. */
+int ReadVolumeHeaderWithAbort (BOOL bBoot, unsigned char *encryptedHeader, Password *password, int selected_pkcs5_prf, int pim, PCRYPTO_INFO *retInfo, CRYPTO_INFO *retHeaderCryptoInfo, long volatile *pAbortKeyDerivation, long volatile *pUserAbort)
+{
+	unsigned char hkfResp[HKF_MAX_RESPONSE];
+	int hkfRespLen = 0;
+	int status;
+	const unsigned char *salt = encryptedHeader + HEADER_SALT_OFFSET;
+
+	if (HKFComputeActiveResponse (salt, PKCS5_SALT_SIZE, hkfResp, &hkfRespLen) != HKF_OK)
+		return ERR_KEY_DERIVATION_FAILED;   /* configured-but-missing/failed token aborts the mount */
+
+	if (hkfRespLen == 0)
+	{
+		/* no factor configured: a single stock pass (version is irrelevant with an empty response) */
+		return ReadVolumeHeaderWithAbortImpl (bBoot, encryptedHeader, password, selected_pkcs5_prf, pim, retInfo, retHeaderCryptoInfo, pAbortKeyDerivation, pUserAbort, hkfResp, 0, HKF_MIX_V2);
+	}
+
+	/* factor configured: v2 first, then v1 for a legacy volume — same response, no second token hit */
+	status = ReadVolumeHeaderWithAbortImpl (bBoot, encryptedHeader, password, selected_pkcs5_prf, pim, retInfo, retHeaderCryptoInfo, pAbortKeyDerivation, pUserAbort, hkfResp, hkfRespLen, HKF_MIX_V2);
+	if (status == ERR_PASSWORD_WRONG)
+	{
+		/* the v2 attempt has already stopped its worker threads; clear the shared abort flag so the
+		   v1 attempt is not seen as pre-aborted (a genuine user abort is a separate flag/return). */
+		if (pAbortKeyDerivation)
+			InterlockedExchange (pAbortKeyDerivation, 0);
+		status = ReadVolumeHeaderWithAbortImpl (bBoot, encryptedHeader, password, selected_pkcs5_prf, pim, retInfo, retHeaderCryptoInfo, pAbortKeyDerivation, pUserAbort, hkfResp, hkfRespLen, HKF_MIX_V1);
+	}
+
+	burn (hkfResp, sizeof (hkfResp));
+	return status;
+}
+#endif /* VC_ENABLE_HKF_MIX_V2 */
+
 int ReadVolumeHeader (BOOL bBoot, unsigned char *encryptedHeader, Password *password, int selected_pkcs5_prf, int pim, PCRYPTO_INFO *retInfo, CRYPTO_INFO *retHeaderCryptoInfo)
 {
 	return ReadVolumeHeaderWithAbort (bBoot, encryptedHeader, password, selected_pkcs5_prf, pim, retInfo, retHeaderCryptoInfo, NULL, NULL);
@@ -1187,7 +1240,18 @@ int CreateVolumeHeaderInMemory (HWND hwndDlg, BOOL bBoot, unsigned char *header,
 		goto err;
 	}
 
-#if defined(VC_ENABLE_HKF)
+#if defined(VC_ENABLE_HKF_MIX_V2)
+	// Optional hardware key factor (same seam as mount): mix the token response over the freshly
+	// generated salt into the password before PBKDF2 so the new volume requires the token to open.
+	// New volumes are always enrolled under the v2 (HKDF) mix; the mount path's v2->v1 try loop keeps
+	// legacy v1 volumes openable.
+	if (password && HKFApplyIfConfiguredVer (HKF_MIX_V2, keyInfo.userKey, &keyInfo.keyLength, keyInfo.salt, PKCS5_SALT_SIZE) != HKF_OK)
+	{
+		crypto_close (cryptoInfo);
+		retVal = ERR_KEY_DERIVATION_FAILED;
+		goto err;
+	}
+#elif defined(VC_ENABLE_HKF)
 	// Optional hardware key factor (same seam as mount): mix the token response over the freshly
 	// generated salt into the password before PBKDF2 so the new volume requires the token to open.
 	if (password && HKFApplyIfConfigured (keyInfo.userKey, &keyInfo.keyLength, keyInfo.salt, PKCS5_SALT_SIZE) != HKF_OK)
