@@ -255,7 +255,8 @@ secrets, and **zero-length keyslot passwords** (add + open + a non-empty passwor
 empty area → no-match, no crash). 20 properties, suite step `[60]`, built under ASan+UBSan when
 available (so an unguarded div-by-zero also traps). Each degenerate assertion is its own control (the
 "must NOT recover" / "must reject" side). gcc-13 + clang-18.
-**36. Wycheproof-style edge-case vectors** `[M]` — 05-29
+**36. Wycheproof-style edge-case vectors** `[M]` — 05-29 — **DONE**
+HMAC-SHA256 underpins salt-binding, duress-token recognition, the keyslot-area MAC and the per-share Shamir MAC, so it gets hammered with adversarial edge vectors rather than one happy-path KAT. `verification/wycheproof_vectors.py` emits 62 Wycheproof-style cases — key/message lengths at the SHA-256 block boundaries (0/1/32/64/65/128 and 55/56/63/64/65/127), all-zero and all-0xff keys, plus flipped-bit and truncated INVALID tags — whose expected tags come from python's own `hmac`/`hashlib` (independent oracle). `verification/wycheproof_test.c` recomputes each with the real in-tree `Sha2.c` and enforces valid==match / invalid==reject (suite step `[69]`): 60 valid matched, 2 invalid rejected, 0 fails on gcc-13 + clang-18. Negative control (`-DWP_NEGCTL`): a broken HMAC that truncates over-long keys instead of hashing them fails exactly the key=65/128 boundary vectors (18 of them) — proving the block-boundary vectors are load-bearing, not vacuous.
 **37. Static analysis in CI (clang-tidy, CodeQL)** `[M]` — 05-45 — **DONE**
 `.clang-tidy` curates a **high-signal** check set (the clang static analyzer — null-deref /
 use-after-free / uninitialised reads / leaks — plus a small `bugprone-*` subset, `WarningsAsErrors`),

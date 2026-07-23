@@ -1776,3 +1776,28 @@ if [ -n "$OS_CC" ] \
 else
 	skip_step " no compiler accepted the sources for the OR-set test (see /tmp/os_log)"
 fi
+
+echo ""
+echo "[69] Wycheproof-style HMAC-SHA256 edge-case vectors (ROI item 36)"
+# HMAC-SHA256 underpins salt-binding / duress / keyslot-MAC / Shamir-share-MAC. wycheproof_vectors.py
+# emits adversarial edge vectors (key/msg at the SHA-256 block boundaries 0/1/32/64/65/128 & 55/56/
+# 63/64/65/127, all-zero/all-0xff keys, plus flipped-bit and truncated INVALID tags); their expected
+# tags come from python's own hmac (oracle). wycheproof_test.c recomputes each with the real in-tree
+# Sha2.c and enforces valid==match / invalid==reject. Negative control (-DWP_NEGCTL): a broken HMAC
+# that truncates over-long keys instead of hashing them MUST fail the key=65/128 boundary vectors.
+WP_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then WP_CC="$c"; break; fi; done
+WP_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+WP_INC="$INC -I$SRCROOT/Crypto -I/tmp"
+if [ -n "$WP_CC" ] && python3 "$HERE/wycheproof_vectors.py" --emit-header > /tmp/wycheproof_vectors.h 2>/tmp/wp_gen.log \
+   && "$WP_CC" -O2 -Wno-implicit-function-declaration $WP_NOASM $WP_INC "$HERE/wycheproof_test.c" "$SRCROOT/Crypto/Sha2.c" -o /tmp/wp_test 2>/tmp/wp_log \
+   && "$WP_CC" -O2 -Wno-implicit-function-declaration -DWP_NEGCTL $WP_NOASM $WP_INC "$HERE/wycheproof_test.c" "$SRCROOT/Crypto/Sha2.c" -o /tmp/wp_nc 2>>/tmp/wp_log; then
+	if /tmp/wp_test > /tmp/wp_c.txt && /tmp/wp_nc > /tmp/wp_nc.txt; then
+		sed 's/^/    /' /tmp/wp_c.txt; sed 's/^/    /' /tmp/wp_nc.txt
+		echo "    MATCH: real Sha2.c HMAC-SHA256 passes the edge vectors; broken HMAC fails the boundary cases"
+	else
+		sed 's/^/    /' /tmp/wp_c.txt; sed 's/^/    /' /tmp/wp_nc.txt; echo "    WYCHEPROOF VECTORS FAILED"; exit 1
+	fi
+else
+	skip_step " no compiler/python for the wycheproof edge-vector test (see /tmp/wp_log, /tmp/wp_gen.log)"
+fi
