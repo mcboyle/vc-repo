@@ -87,6 +87,13 @@ typedef struct HKFConfig_struct
 	unsigned char rawSecret[64];
 	int           rawSecretLen;
 
+	/* Salt-binding (VC_ENABLE_HKF_SALT_BIND): when non-zero, the RAW_SECRET backend returns
+	   HMAC-SHA256(rawSecret, salt) — a per-volume response bound to the volume's PBKDF2 salt — instead
+	   of the raw secret. This makes a reconstructed/threshold secret behave like the challenge-response
+	   hardware backends (the same secret yields a different factor on a different volume). Ignored when
+	   the feature is not compiled in. See docs/SALT-BINDING-SPEC.md. */
+	int           rawSecretBindSalt;
+
 	/* Application policy: which header(s) the factor gates. */
 	int           applyPolicy; /* HKF_APPLY_ALL (default) or HKF_APPLY_HIDDEN_ONLY */
 } HKFConfig;
@@ -118,6 +125,17 @@ void HKFMixResponseIntoPassword (unsigned char *password, int *password_len,
  */
 extern const HKFConfig *g_hkfActiveConfig;
 void HKFSetActiveConfig (const HKFConfig *cfg);
+
+#if defined(VC_ENABLE_KEYSCRUB)
+/*
+ * Securely wipe the secret material in the active configuration — the reconstructed Shamir/raw
+ * secret, the simulator secret, and the FIDO2 PIN — and detach it, so nothing sensitive lingers in
+ * process RAM after the mount/create operation that needed it. Called by the KeyScrub event manager
+ * on unmount / idle / screen-lock / new-device-connect, and safe to call when no factor is active.
+ * The wipe is on the caller-owned config storage the active pointer refers to.
+ */
+void HKFScrubActiveConfig (void);
+#endif
 
 /*
  * Convenience for the derivation call-sites: if a factor is configured, compute the response over

@@ -28,4 +28,67 @@ ifeq "$(PLATFORM)" "MacOSX"
 OBJS += Unix/FreeBSD/CoreFreeBSD.o
 endif
 
+# Cross-platform memory-key scrub (opt-in via `make KEYSCRUB=1`; the -DVC_ENABLE_KEYSCRUB define is
+# added globally by the top-level Makefile). A default build sets VC_ENABLE_KEYSCRUB=0, so none of
+# these objects are compiled and the build stays byte-for-byte stock. This pulls in the scrub module,
+# its C++ event manager, and the in-tree ChaCha/t1ha primitives the RAM-encryption transform reuses.
+ifeq "$(VC_ENABLE_KEYSCRUB)" "1"
+OBJS += KeyScrubEvents.o
+OBJS += ../Common/KeyScrub.o
+OBJS += ../Crypto/t1ha2.o
+OBJS += ../Crypto/chacha256.o
+# chacha256.c dispatches to chacha_ECRYPT_encrypt_bytes (SSSE3 SIMD inner loop) when the CPU has
+# SSSE3; that symbol lives in chacha-xmm.c, which uses _mm_shuffle_epi8 and so must be built with
+# -mssse3. Use the .ossse3 object convention (compiled via Makefile.inc's %.ossse3 rule and linked
+# through $(OBJSSSSE3)) — the same mechanism blake2s_SSSE3 uses.
+OBJSSSSE3 += ../Crypto/chacha-xmm.ossse3
+OBJS += ../Crypto/chachaRng.o
+endif
+
+# Multiple keyslots (opt-in via `make KEYSLOTS=1`; -DVC_ENABLE_KEYSLOTS added globally by the
+# top-level Makefile). The record crypto + store backends + the derive_key_sha512 KDF binding. Sha2.o
+# and Pkcs5.o are already in the build; chacha256.o is shared with KeyScrub, so add it only if that
+# feature did not already. A default build sets VC_ENABLE_KEYSLOTS=0 and stays byte-for-byte stock.
+ifeq "$(VC_ENABLE_KEYSLOTS)" "1"
+OBJS += ../Common/Keyslot.o
+OBJS += ../Common/KeyslotStore.o
+OBJS += ../Common/KeyslotKdf.o
+OBJS += ../Common/AfSplit.o          # KeyslotStore.c calls AfSplit/AfMerge (afStripes) — required to link
+OBJS += ../Common/KeyslotAreaFile.o  # file-backed KeyslotArea bindings (header-slack / sidecar / deniable)
+ifneq "$(VC_ENABLE_KEYSCRUB)" "1"
+OBJS += ../Crypto/chacha256.o
+OBJSSSSE3 += ../Crypto/chacha-xmm.ossse3   # SSSE3 inner loop (only add when KeyScrub did not already)
+endif
+endif
+
+# Duress token (opt-in via `make DURESS=1`). DuressToken.o was previously only referenced by Main.make's
+# link list, which does not reliably compile it — so a real `make DURESS=1` failed to link with
+# "no such file: ../Common/DuressToken.o". Compiling it here (as with the keyslot objects) produces the
+# .o on disk that both Core and Main's link steps resolve. A default build stays byte-for-byte stock.
+ifeq "$(VC_ENABLE_DURESS)" "1"
+OBJS += ../Common/DuressToken.o
+endif
+
+# Hardware/threshold key factor (opt-in via `make HKF=1` / `HKF_SIMULATOR=1` / `YUBIKEY=1` / `FIDO2=1`;
+# the -DVC_ENABLE_HKF define is added globally by the top-level Makefile). The factor module carries its
+# own CRC-32 and, for the simulator/FIDO2-profile backends, uses Crypto/Sha2.o (already in the build).
+# Shamir.o provides the M-of-N reconstruction the RAW_SECRET backend consumes. A default build compiles
+# neither and stays byte-for-byte stock.
+ifeq "$(VC_ENABLE_HKF)" "1"
+OBJS += ../Common/HardwareKeyFactor.o
+OBJS += ../Common/Shamir.o
+endif
+
+# Keyed per-share MAC (opt-in via `make SHAMIRMAC=1`). ShamirMac.o uses only the ShamirShare struct +
+# Sha2.o (already in the build), so it links standalone. A default build stays byte-for-byte stock.
+ifeq "$(VC_ENABLE_SHAMIR_MAC)" "1"
+OBJS += ../Common/ShamirMac.o
+endif
+
+# Transcribable share encoding (opt-in via `make SHARECODE=1`). ShareCode.o likewise needs only the
+# ShamirShare struct; a default build stays byte-for-byte stock.
+ifeq "$(VC_ENABLE_SHARECODE)" "1"
+OBJS += ../Common/ShareCode.o
+endif
+
 include $(BUILD_INC)/Makefile.inc

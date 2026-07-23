@@ -1,0 +1,85 @@
+# Session summary
+
+Work on branch `claude/project-structure-review-5p44w9`. Every crypto-relevant change is proven **two
+ways** (independent Python **and** real compiled VeraCrypt objects); every default build stays
+byte-for-byte stock; not-sandbox-testable integration is scoped in docs, not written blind.
+`verification/build_and_verify.sh` runs **35 green steps**.
+
+## Built + verified (product code, gated)
+
+| feature | gate | anchor / step |
+|---|---|---|
+| Cross-platform memory-key scrub (ChaCha RAM-encrypt + scrub on unmount/idle/lock/device) | `VC_ENABLE_KEYSCRUB` | `d28b461b…` [6] |
+| Safe duress-dismount (dismount all + scrub; duress passphrase, no header change) | `VC_ENABLE_DURESS` | `3d874ea9…` [7] |
+| Multiple-keyslots core (record wrap + 3 backends + KDF binding; **constant-time search**) | `VC_ENABLE_KEYSLOTS` | `56434b53…` [8], lifecycle [9] |
+| Explicit Argon2id memory/iterations/parallelism | `VC_ENABLE_ARGON2_PARAMS` | RFC-9106 `0d640df5…` [11] |
+| Salt-binding for RAW_SECRET (`HMAC(secret, salt)`) | `VC_ENABLE_HKF_SALT_BIND` | `4619ed18…` [12] |
+
+## P0 hardening of existing code (`IDEAS-BACKLOG.md` §P0)
+
+- **Constant-time GF(2⁸) in Shamir** — branchless multiply + `a^254`, equal to the table over all 65536 inputs (§P0.1).
+- **Constant-time keyslot search** — always-decrypt `KeyslotUnwrapCT`, fixed-count scan, constant-time select (§P0.2).
+- **Anti-forensic key splitting** — LUKS/TKS1 split/merge, any missing stripe defeats recovery; the SSD-remnant answer (§P0.3, step [15], `ddb23937…`).
+- **Swap/hibernate/core-dump lockdown** — `mlockall`/`RLIMIT_CORE=0`/`PR_SET_DUMPABLE=0`, runtime-verified (§P0.4, step [6][G]).
+- **Zeroization tests** — `VcSecureWipe` across all sizes/alignments, survives `-O2` (§P0.6, step [6][H]).
+- **Verifiable Shamir reconstruction** — `shamir_secret_checksum` (CRC-32), detects wrong/short combines; matches `zlib.crc32` (§D, step [5]).
+
+## Specced + core proven (integration is real-build / `[FORMAT]` / `[HW]`)
+
+| item | proven | doc |
+|---|---|---|
+| Multiple keyslots — design + wrapping | [8]/[9] | `docs/KEYSLOTS-SPEC.md` |
+| Network-bound share (McCallum–Relyea) | `cc288fab…` [10] | `docs/NETWORK-SHARE-SPEC.md` |
+| Write-only ORAM (multi-snapshot deniability) | `203b068d…` [13] | `docs/ORAM-SPEC.md` |
+| Decoy-fragments-by-default (SSD presence) | `47067dd6…` [14] | `docs/DECOY-FRAGMENTS-SPEC.md` |
+| Anti-forensic key splitting (SSD remnant) | `ddb23937…` [15] | `docs/AF-SPLIT-SPEC.md` |
+| AF-split keyslot records (`[FORMAT]` integration) | `76b60553…` [36] | `docs/AF-SPLIT-SPEC.md` |
+| KeyslotArea volume-I/O bindings (file-backed, 3 backends) | behavioural [37] | `docs/KEYSLOTS-SPEC.md` §9 |
+| Balloon wired as mountable PRF (`VC_ENABLE_BALLOON_KDF`) | dk-vectors chained to `635ebeac…` [38] | `docs/BALLOON-SPEC.md` |
+| MR network share at production params (full Ed25519) | RFC 8032 KAT + `ab8b717f…` [39] | `docs/NETWORK-SHARE-SPEC.md` |
+| Keyed per-share MAC (adversarial share tamper) | tags vs Python [40] | `docs/VSS-SPEC.md` |
+| Shamir GF(2⁸) constant-time timing screen (dudect) | self-validating [41] | ROADMAP item 13 |
+| Transcribable share encoding (bech32/BIP-173) | BIP-173 anchor + Python [42] | `docs/VSS-SPEC.md` |
+| OPRF at production params (full ristretto255) | RFC 9496 KAT + Python [43] | `docs/OPRF-SPEC.md` |
+| Threshold OPRF / PPSS over ristretto255 (3-of-5) | reconstructs single-key output [44] | `docs/OPRF-SPEC.md` |
+| Randomized/differential robustness (split-key core) | 44.8k seeded invariant checks [45] | IDEAS-BACKLOG |
+| Keyslot constant-time compare timing screen (dudect) | self-validating [46] | IDEAS-BACKLOG |
+| Verifiable OPRF (DLEQ proof) over ristretto255 | RFC 9496 KAT + Python [47] | `docs/OPRF-SPEC.md` |
+| Catena-BRG memory-hard KDF core (survey) | Python byte-for-byte [48] | `docs/CATENA-SPEC.md` |
+| Audit-prep: threat→control map + API surface | — (doc) | `docs/THREAT-CONTROL-MAP.md` |
+| Formal security analysis + mechanization plan (pending-tool) | — (doc; not mechanized) | `docs/FORMAL-ANALYSIS.md` |
+| Balloon memory-hard KDF | `635ebeac…` [16] | `docs/BALLOON-SPEC.md` |
+| OPRF password hardening (offline-guess resistance) | `ca5691bd…` [17] | `docs/OPRF-SPEC.md` |
+| Poly1305 one-time authenticator (integrity-tier primitive) | RFC 8439 `a8061dc1…` [18] | `docs/POLY1305-SPEC.md` |
+| Merkle tree over the volume (off-disk root, offline-tamper detection) | root `6dbdb1c1…` [19] | `docs/MERKLE-SPEC.md` |
+| Keyslot-area MAC (ChaCha20-Poly1305; tamper/truncation detected before unwrap) | tag `446592f2…` [20] | `docs/KEYSLOT-MAC-SPEC.md` |
+| Per-sector authentication (index-bound MAC; per-sector independence + relocation resistance) | tag `74e883b1…` [21] | `docs/PERSECTOR-AUTH-SPEC.md` |
+| Rollback/replay protection (monotonic counter bound into the commit authenticator) | tag `e8bbc4f0…` [22] | `docs/ROLLBACK-COUNTER-SPEC.md` |
+| Header-version + anti-downgrade parameter binding (fail closed on weakened params) | tag `0692cc06…` [23] | `docs/ANTI-DOWNGRADE-SPEC.md` |
+| Adiantum wide-block mode (sector-atomic; kills XTS 16-byte malleability) | 18 official KATs, ct₀ `820ae444…` [24] | `docs/ADIANTUM-SPEC.md` |
+| ML-KEM-768 + PQ hybrid combiner (harvest-now-decrypt-later hedge, either-break-safe) | NIST ACVP, tag `5f44c605…` [25] | `docs/PQ-HYBRID-SPEC.md` |
+| HCTR2 wide-block mode (AES-NI-class sibling of Adiantum; kernel-deployed design) | 35 official KATs + RFC-8452 POLYVAL `f7a3b47b…` [26] | `docs/HCTR2-SPEC.md` |
+| BLAKE3 tree hash (fast keyfile/pool + Merkle hash) | 35 official BLAKE3-team cases | `docs/HASHES-SPEC.md` |
+| Ascon-Hash256 (NIST LWC winner, SP 800-232) | official NIST ACVP vectors | `docs/HASHES-SPEC.md` |
+| Threefish 512/1024 large-block cipher (birthday headroom) | official Botan-512 vectors + 1024 round-trip | `docs/LARGE-BLOCK-SPEC.md` |
+| Sloth verifiable delay function (coercion cooling-off) | `1f884ff5…`, verify-recovers-seed | `docs/DELAY-SPEC.md` |
+| Feldman verifiable secret sharing (catch a cheating dealer) | tamper-share rejected, t-reconstruct | `docs/VSS-SPEC.md` |
+| Pedersen VSS (perfectly-hiding verifiable sharing) | tampered f/b rejected, t-reconstruct | `docs/VSS-SPEC.md` |
+| RSW time-lock puzzle (create-fast delay; owner trapdoor) | trapdoor == sequential | `docs/DELAY-SPEC.md` |
+| scrypt KDF (second memory-hard KDF) | RFC 7914 KATs + hashlib | `docs/BALLOON-SPEC.md` |
+| Threshold OPRF (t-of-n password hardening) | t-subset == single-key output | `docs/OPRF-SPEC.md` |
+
+## Remaining — real build / real hardware only
+
+- **Keyslots §9** — `KeyslotArea` volume-I/O, mount-time slot search + duress-slot hook, enroll/rotate/revoke CLI. The keyslot-area MAC (§P0.5) crypto is now **proven** [20]; only its per-backend `(nonce, tag)` placement + the pre-search check call remain.
+- **Network-share / OPRF servers** — real CFRG group (ristretto255/P-256) or 2048-bit MODP, transport, threshold OPRF/PPSS split.
+- **ORAM / decoy-fragments / AF-split integration** — block layer, real hidden-volume offsets, stripe layout; validate on real SSDs.
+- **End-to-end validations** — KeyScrub OS triggers, duress round-trip, Argon2/salt-bind create↔mount, on real volumes/desktop.
+- **Larger research** — mobile PDE, UEFI/GPT hidden-OS, TPM/measured-boot, wide-block modes (HCTR2/Adiantum), per-sector integrity / Merkle, PQ hybrid. See `docs/RESEARCH-NOTES.md` and `docs/IDEAS-BACKLOG.md`.
+
+## Scope boundary — held throughout
+
+Everything built is confidentiality / access-control / integrity / deniable **storage**. The DESCOPED
+evidence-fabrication tooling was not built; the "decoy content generator" DESIGN item was flagged as
+too close to that line and left alone; decoy-fragments and free-space chaff are kept to
+indistinguishable-random artifacts, never fabricated activity.

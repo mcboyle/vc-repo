@@ -32,6 +32,17 @@
 #include "Application.h"
 #include "FavoriteVolume.h"
 #include "UserInterface.h"
+#if defined(VC_ENABLE_KEYSCRUB)
+#include "Core/KeyScrubEvents.h"
+#if defined(VC_ENABLE_KEYSLOTS)
+#include "Volume/KeyslotVolumeBinding.h"
+#include "Volume/EncryptionAlgorithm.h"
+#include "Volume/VolumeHeader.h"
+#endif
+#if defined(VC_ENABLE_DURESS)
+#include "Common/DuressToken.h"
+#endif
+#endif
 
 namespace VeraCrypt
 {
@@ -159,6 +170,281 @@ namespace VeraCrypt
 
 		DismountVolumes (volumes, ignoreOpenFiles, interactive);
 	}
+
+#if defined(VC_ENABLE_DURESS)
+	void UserInterface::DuressDismount () const
+	{
+		// Force-dismount everything that is mounted, ignoring open files (the point is to lock down
+		// under coercion, not to tidy up), and swallow per-volume errors so one stuck mount cannot
+		// stop the rest. Nothing is mounted, nothing on disk is altered.
+		try
+		{
+			VolumeInfoList mountedVolumes = Core->GetMountedVolumes();
+			foreach (shared_ptr <VolumeInfo> volume, mountedVolumes)
+			{
+				try { Core->DismountVolume (volume, true /* ignoreOpenFiles */); }
+				catch (...) { }
+			}
+		}
+		catch (...) { }
+
+#if defined(VC_ENABLE_KEYSCRUB)
+		// Erase any user-space secrets left in RAM (reconstructed Shamir secret, HardwareKeyFactor
+		// material) and tear down the in-RAM key-obfuscation area. The mounted master keys lived in
+		// the kernel device-mapper and are released by the dismounts above; see docs/MEMORY-SCRUB.md.
+		KeyScrubManager::Instance().ScrubNow ("duress");
+#endif
+	}
+
+	void UserInterface::DuressRegister () const
+	{
+		// Register a duress passphrase: pick a random salt, derive tag = HMAC-SHA256(salt, passphrase),
+		// and print both as hex. The user stores these and supplies them as --duress-salt/--duress-hash
+		// at mount time; the passphrase itself is never stored. No volume is read or changed.
+		shared_ptr <VolumePassword> pass = CmdLine->ArgNewPassword;
+		if (!pass || pass->Size() == 0)
+			throw_err (L"--duress-register needs --new-password (the duress passphrase)");
+
+		if (!RandomNumberGenerator::IsRunning())
+			RandomNumberGenerator::Start();
+
+		unsigned char salt[DURESS_SALT_SIZE], tag[DURESS_TAG_SIZE];
+		{
+			BufferPtr saltBuf (salt, sizeof (salt));
+			RandomNumberGenerator::GetData (saltBuf);
+		}
+		DuressTokenDerive (salt, DURESS_SALT_SIZE, pass->DataPtr(), (int) pass->Size(), tag);
+
+		wstring saltHex, tagHex;
+		static const wchar_t *hexd = L"0123456789abcdef";
+		for (int i = 0; i < DURESS_SALT_SIZE; ++i) { saltHex += hexd[salt[i] >> 4]; saltHex += hexd[salt[i] & 0xf]; }
+		for (int i = 0; i < DURESS_TAG_SIZE;  ++i) { tagHex  += hexd[tag[i]  >> 4]; tagHex  += hexd[tag[i]  & 0xf]; }
+
+		ShowString (L"Duress passphrase registered. Save these and pass them at mount time:\n");
+		ShowString (L"  --duress-salt=" + saltHex + L"\n");
+		ShowString (L"  --duress-hash=" + tagHex  + L"\n");
+		ShowString (L"A --mount whose password is this passphrase (with the pair above) runs the safe\n"
+		            L"duress action (dismount all + scrub, mount nothing) instead of mounting.\n");
+
+		{ volatile unsigned char *p = tag;  size_t n = sizeof (tag);  while (n--) *p++ = 0; }
+		{ volatile unsigned char *p = salt; size_t n = sizeof (salt); while (n--) *p++ = 0; }
+	}
+#endif
+
+#if defined(VC_ENABLE_KEYSLOTS)
+	void UserInterface::KeyslotCommand (CommandId::Enum command) const
+	{
+		// The volume's master-key material (VMK) is the decrypted 448-byte header plaintext. A keyslot
+		// is an independent wrapping of it under another passphrase, stored in the primary header slack
+		// [512, 64K); slot 0 (the native header) and the body are never touched. We recover the VMK by
+		// opening the volume in-process (header decrypt only — no dm-crypt, so this runs anywhere),
+		// prepend a 1-byte cipher (EA) index so a slot can be mounted stand-alone, and drive the proven
+		// KeyslotStore ops through the header-slack KeyslotArea. See docs/KEYSLOTS-SPEC.md §9.
+		shared_ptr <VolumePath> volumePath = CmdLine->ArgVolumePath;
+		if (!volumePath)
+			throw_err (L"--keyslot-* requires a volume path");
+
+		// The store's per-slot salts and the revoke overwrite draw from the CSPRNG; make sure it is
+		// running (add/kill both need it). Harmless if already started.
+		if (!RandomNumberGenerator::IsRunning())
+			RandomNumberGenerator::Start();
+
+		const int backend = CmdLine->ArgKeyslotBackend;   // 1 header, 2 deniable, 3 sidecar
+		const int vmkLen  = 1 + (int) VolumeHeader::GetKeyslotPayloadSize();
+
+		// Bind 'area'/'areaCtx' over 'storeFile' for the chosen backend. For header/deniable the store IS
+		// the container (deniable = a passphrase-derived slot in the free-space/data region, so the
+		// header stays untouched); for sidecar the store is a separate file. Returns the matching cfg.
+		// dataEnd is the container length (deniable free-space upper bound).
+		KeyslotFileArea areaCtx; KeyslotArea area;
+		struct BindResult { KeyslotStoreCfg cfg; bool ok; };
+		#define KS_BIND(storeFileP, volLen) ([&]() -> BindResult {                                        \
+			BindResult r; r.ok = true;                                                                    \
+			if (backend == 3)      { KeyslotBindSidecar  (area, areaCtx, (storeFileP)); r.cfg = KeyslotSidecarCfg (vmkLen); } \
+			else if (backend == 2) { r.ok = KeyslotBindDeniable (area, areaCtx, (storeFileP), TC_VOLUME_DATA_OFFSET, (volLen), 0); r.cfg = KeyslotDeniableCfg (vmkLen); } \
+			else                   { KeyslotBindHeaderSlack (area, areaCtx, (storeFileP)); r.cfg = KeyslotHeaderCfg (vmkLen); } \
+			return r; })()
+		const wchar_t *backendName = backend == 3 ? L"sidecar" : backend == 2 ? L"deniable" : L"header";
+
+		// Open the store file. Sidecar lives in its own file (created + random-filled on first use);
+		// header/deniable use the container itself.
+		make_shared_auto (File, storeFile);
+		bool sidecarCreated = false;
+		if (backend == 3)
+		{
+			if (!CmdLine->ArgKeyslotSidecar)
+				throw_err (L"--keyslot-backend=sidecar requires --keyslot-sidecar <path>");
+			bool exists = FilesystemPath (*CmdLine->ArgKeyslotSidecar).IsFile();
+			storeFile->Open (*CmdLine->ArgKeyslotSidecar,
+				exists ? File::OpenReadWrite : File::CreateReadWrite, File::ShareReadWriteIgnoreLock);
+			if (!exists)
+			{
+				// Size a fresh sidecar to 64 KiB (63 slots at the 1 KiB stride) and fill it with random,
+				// so unused slots are indistinguishable from fill.
+				SecureBuffer fill (KEYSLOT_TABLE_STRIDE);
+				for (int s = 0; s < 64; ++s)
+				{
+					KeyslotRandBytes (fill.Ptr(), fill.Size());
+					storeFile->Write (ConstBufferPtr (fill.Ptr(), fill.Size()));
+				}
+				storeFile->Flush();
+				sidecarCreated = true;
+			}
+		}
+		else
+		{
+			storeFile->Open (*volumePath, File::OpenReadWrite, File::ShareReadWriteIgnoreLock);
+		}
+		(void) sidecarCreated;
+		// Container length (for the deniable free-space window) — the store file's own length.
+		uint64 volLen = storeFile->Length();
+
+		// KeyslotList / KeyslotKill do not need the master key.
+		if (command == CommandId::KeyslotList || command == CommandId::KeyslotKill)
+		{
+			BindResult br = KS_BIND (storeFile.get(), volLen);
+			if (!br.ok)
+				throw_err (L"keyslot area could not be bound (container too small for the deniable window)");
+			KeyslotStoreCfg cfg = br.cfg;
+			if (command == CommandId::KeyslotList)
+			{
+				int n = KeyslotCount (&cfg, &area);
+				if (backend == 2)
+					ShowString (L"deniable backend: slots are not enumerable without their passphrase (by design)\n");
+				else
+					ShowString (StringConverter::ToWide (StringConverter::ToSingle (n)) + wxString (L" keyslot(s) occupied in the ") + backendName + L" table\n");
+			}
+			else
+			{
+				if (KeyslotRevoke (&cfg, &area, CmdLine->ArgKeyslotIndex) != 0)
+					throw_err (L"keyslot revoke failed (index out of range or write error)");
+				ShowString (L"Keyslot revoked.\n");
+			}
+			return;
+		}
+
+		// Add / Open / Rotate need the VMK. Recover it via the existing password/keyfiles by opening the
+		// volume header (no mount — works on a plain file with no kernel device-mapper). Do this in an
+		// inner scope so the Volume's own file handle is released BEFORE it matters.
+		if (!CmdLine->ArgPassword)
+			throw_err (L"the existing volume password (--password) is required to recover the master key");
+
+		SecureBuffer vmk;
+		{
+			bool recovered = false;
+			shared_ptr <Volume> volume;
+			try
+			{
+				volume = Core->OpenVolume (volumePath, Preferences.DefaultMountOptions.PreserveTimestamps,
+					CmdLine->ArgPassword, CmdLine->ArgPim, CmdLine->ArgHash, CmdLine->ArgKeyfiles,
+					CmdLine->ArgMountOptions.EMVSupportEnabled, VolumeProtection::ReadOnly);
+			}
+			catch (PasswordException&) { volume.reset(); }
+
+			if (volume)
+			{
+				ConstBufferPtr mk = volume->GetHeader()->GetHeaderPlaintext();   // effective header plaintext (keyslot payload)
+				int eaIndex = -1, i = 0;
+				wstring eaName = volume->GetEncryptionAlgorithm()->GetName();
+				foreach (shared_ptr <EncryptionAlgorithm> ea, EncryptionAlgorithm::GetAvailableAlgorithms())
+				{
+					if (ea->GetName() == eaName) { eaIndex = i; break; }
+					++i;
+				}
+				if (eaIndex < 0 || eaIndex > 255)
+					throw_err (L"internal: cannot index the volume cipher for the keyslot");
+				vmk.Allocate (1 + mk.Size());
+				vmk.Ptr()[0] = (uint8) eaIndex;
+				BufferPtr (vmk.Ptr() + 1, mk.Size()).CopyFrom (mk);
+				recovered = true;
+			}
+			else
+			{
+				// Native header did not accept --password; try opening a keyslot with it, in the SAME
+				// backend the command targets.
+				BindResult br = KS_BIND (storeFile.get(), volLen);
+				if (br.ok)
+				{
+					KeyslotStoreCfg rcfg = br.cfg;
+					vmk.Allocate (vmkLen);
+					int fl = 0;
+					if (KeyslotOpen (&rcfg, &area, CmdLine->ArgPassword->DataPtr(),
+					                 (int) CmdLine->ArgPassword->Size(), vmk.Ptr(), &fl))
+						recovered = true;
+				}
+			}
+			if (!recovered)
+				throw_err (L"could not recover the master key: --password did not open the native header or any keyslot");
+		}
+
+		BindResult br = KS_BIND (storeFile.get(), volLen);
+		if (!br.ok)
+			throw_err (L"keyslot area could not be bound (container too small for the deniable window)");
+		KeyslotStoreCfg cfg = br.cfg;
+
+		shared_ptr <VolumePassword> slotPass = CmdLine->ArgKeyslotPassword;
+
+		if (command == CommandId::KeyslotOpen)
+		{
+			SecureBuffer out (vmk.Size());
+			int flags = 0;
+			int ok = KeyslotOpen (&cfg, &area, slotPass->DataPtr(), (int) slotPass->Size(), out.Ptr(), &flags);
+			if (!ok)
+			{
+				ShowString (L"No keyslot opens with that passphrase.\n");
+				throw_err (L"keyslot open failed");
+			}
+			// Success == this passphrase recovers the exact master key. Prove it byte-for-byte.
+			bool match = (out.Size() == vmk.Size()
+				&& memcmp (out.Ptr() + 1, vmk.Ptr() + 1, vmk.Size() - 1) == 0);
+			ShowString (wxString (L"Keyslot opens: recovered master key ")
+				+ (match ? L"matches the native header (this passphrase mounts the volume)"
+				         : L"DIFFERS from the native header")
+				+ ((flags & KEYSLOT_FLAG_DURESS) ? L" [DURESS slot]" : L"") + L"\n");
+			if (!match)
+				throw_err (L"recovered master key does not match");
+			return;
+		}
+
+		if (command == CommandId::KeyslotAdd || command == CommandId::KeyslotRotate)
+		{
+			int flags = CmdLine->ArgKeyslotDuress ? KEYSLOT_FLAG_DURESS : 0;
+			int idx = KeyslotAdd (&cfg, &area, slotPass->DataPtr(), (int) slotPass->Size(), flags, vmk.Ptr());
+			if (idx < 0)
+				throw_err (L"keyslot add failed (table full or write error)");
+			ShowString (wxString::Format (L"Added keyslot %d%s.\n", idx,
+				(flags & KEYSLOT_FLAG_DURESS) ? L" (duress)" : L""));
+
+			if (command == CommandId::KeyslotRotate)
+			{
+				// Retire the OLD passphrase: revoke the table slot that --password opens, if any. (When
+				// --password is the native header, there is no table slot to retire — the new slot is
+				// simply added.) Uses the admin-side indexed open, which reveals the matching index.
+				SecureBuffer out (vmk.Size());
+				int killed = -1;
+				// Scan the labeled table. maxSlots is set for the header backend; for sidecar it is 0 and
+				// the table spans the whole area, so derive the count from the bound window. (Deniable is
+				// not a labeled table — KeyslotOpenAt returns 0 for it, so the scan simply finds nothing.)
+				int scanSlots = cfg.maxSlots > 0 ? cfg.maxSlots : (int) (areaCtx.len / KEYSLOT_TABLE_STRIDE);
+				for (int i = 0; i < scanSlots; ++i)
+				{
+					if (i == idx)   // never retire the slot we just added
+						continue;
+					if (KeyslotOpenAt (&cfg, &area, i, CmdLine->ArgPassword->DataPtr(),
+					                   (int) CmdLine->ArgPassword->Size(), out.Ptr(), NULL))
+					{
+						if (KeyslotRevoke (&cfg, &area, i) == 0) { killed = i; break; }
+					}
+				}
+				if (killed >= 0)
+					ShowString (wxString::Format (L"Rotated: retired old keyslot %d.\n", killed));
+				else
+					ShowString (L"Rotated: new slot added (the old credential is the native header, which is not a revocable keyslot).\n");
+			}
+			return;
+		}
+	}
+#endif
 
 	void UserInterface::DismountVolumes (VolumeInfoList volumes, bool ignoreOpenFiles, bool interactive, bool emergencyCleanupRequested) const
 	{
@@ -1151,6 +1437,9 @@ const FileManager fileManagers[] = {
 					break;
 
 				case CommandId::MountVolume:
+#if defined(VC_ENABLE_KEYSLOTS)
+					try {
+#endif
 					if (Preferences.OpenExplorerWindowAfterMount)
 					{
 						// Open explorer window for an already mounted volume
@@ -1180,6 +1469,19 @@ const FileManager fileManagers[] = {
 						}
 						mountedVolumes.push_back (volume);
 					}
+#if defined(VC_ENABLE_KEYSLOTS)
+					}
+					catch (KeyslotDuress&)
+					{
+						// The password opened a keyslot flagged as a DURESS slot: run the safe duress
+						// action (dismount all + scrub, mount nothing) instead of mounting this volume.
+						// Nothing on disk is altered; see docs/KEYSLOTS-SPEC.md §5, DURESS-DISMOUNT-SPEC.md.
+						ShowString (L"Duress keyslot: dismounting all volumes and scrubbing keys; nothing mounted.\n");
+#if defined(VC_ENABLE_DURESS)
+						DuressDismount();
+#endif
+					}
+#endif
 					break;
 
 				default:
@@ -1249,6 +1551,26 @@ const FileManager fileManagers[] = {
 #endif
 				);
 			return true;
+
+#if defined(VC_ENABLE_DURESS)
+		case CommandId::DuressDismount:
+			DuressDismount();
+			return true;
+
+		case CommandId::DuressRegister:
+			DuressRegister();
+			return true;
+#endif
+
+#if defined(VC_ENABLE_KEYSLOTS)
+		case CommandId::KeyslotAdd:
+		case CommandId::KeyslotOpen:
+		case CommandId::KeyslotRotate:
+		case CommandId::KeyslotKill:
+		case CommandId::KeyslotList:
+			KeyslotCommand (cmdLine.ArgCommand);
+			return true;
+#endif
 
 		case CommandId::DisplayVersion:
 			ShowString (Application::GetName() + L" " + StringConverter::ToWide (Version::String()) + L"\n");

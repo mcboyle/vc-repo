@@ -1,0 +1,105 @@
+# Pairwise feature-flag × multi-compiler build matrix (ROI-TOP-50 item 3).
+#
+# Runs verification/flag_matrix.sh under GCC 12, 13, 14 and clang. The script compiles every fork
+# Common module for every pairwise VC_ENABLE_* combination and partial-links them (`ld -r`), failing
+# on any duplicate/undefined symbol — the class of defect (HKFScrubActiveConfig double-definition in
+# the KEYSCRUB-on/HKF-off cell) that neither the all-on product build nor the default stock build hits.
+#
+# It also runs the script's own negative control (VC_MATRIX_NEGCTL=1), which re-injects the historical
+# broken guard and asserts the matrix flags it — so a matrix that has silently stopped detecting
+# collisions fails CI too.
+name: flag-matrix
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  matrix:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler:
+          - { pkg: gcc-12, cc: gcc-12 }
+          - { pkg: gcc-13, cc: gcc-13 }
+          - { pkg: gcc-14, cc: gcc-14 }
+          - { pkg: clang,  cc: clang  }
+    name: ${{ matrix.compiler.cc }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ${{ matrix.compiler.pkg }} + binutils
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends ${{ matrix.compiler.pkg }} binutils
+          ${{ matrix.compiler.cc }} --version
+
+      # The script auto-discovers compilers on PATH; pin PATH to just this job's compiler by making it
+      # the only gcc/clang the discovery loop will find is fine — it de-dupes by family+version anyway.
+      - name: Pairwise flag matrix (negative control first)
+        run: |
+          cd verification
+          VC_MATRIX_NEGCTL=1 ./flag_matrix.sh
+          ./flag_matrix.sh
+
+      # ROI item 4: the `static VC_INLINE` idiom expands to `static static inline` on GCC and is
+      # rejected by GCC 13+ ("duplicate 'static'"). Compile the files that historically carried it so
+      # every compiler in the matrix — including GCC 14 — guards against a regression. jitterentropy
+      # requires -O0 by design (an intentional #error otherwise).
+      - name: Guard the static-VC_INLINE idiom (GCC 12/13/14 + clang)
+        run: |
+          CC='${{ matrix.compiler.cc }}'
+          INC="-Isrc -Isrc/Common -Isrc/Crypto"
+          W="-Wno-implicit-function-declaration"
+          set -e
+          for f in Crypto/t1ha_selfcheck.c Crypto/chacha256.c Crypto/chachaRng.c; do
+            echo "  $CC -O2 src/$f"; $CC -O2 $W $INC -c "src/$f" -o /tmp/idiom.o
+          done
+          echo "  $CC -O0 src/Crypto/jitterentropy-base.c"
+          $CC -O0 $W $INC -c src/Crypto/jitterentropy-base.c -o /tmp/jeb.o
+          if grep -rn 'static VC_INLINE' src/ ; then echo 'regression: static VC_INLINE reintroduced'; exit 1; fi
+          echo "no 'static VC_INLINE' sites; idiom-sensitive files compile under $CC"
+
+  # Confirms the full self-contained crypto suite passes under strict coverage on the CI image too
+  # (any silently-skipped step fails the job). Complements the flag matrix above.
+  strict-verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: sudo apt-get update -y && sudo apt-get install -y --no-install-recommends clang gcc python3 binutils
+      - name: Verification suite (strict)
+        run: ./scripts/verify.sh --strict
+
+  # ROI item 33: ASan+UBSan across the behavioural harnesses (gcc ships libasan). The fuzzers (items
+  # 31/32, suite steps 56/57) also run under sanitizers as part of the strict-verify job above.
+  sanitize:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain (gcc libasan)
+        run: sudo apt-get update -y && sudo apt-get install -y --no-install-recommends gcc python3 libasan8 libubsan1
+      - name: Sanitizer sweep (ASan+UBSan)
+        run: ./verification/sanitize.sh
+
+  # ROI item 38: block credentials from landing in the tree (also enforced pre-commit via .githooks).
+  secrets-scan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Secrets scan (self-test then full tree)
+        run: ./scripts/secrets-scan.sh --self-test && ./scripts/secrets-scan.sh
+
+  # ROI item 37: clang-tidy over the fork's Common modules (curated high-signal checks, .clang-tidy).
+  # CodeQL runs in the separate codeql.yml workflow.
+  clang-tidy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-tidy
+        run: sudo apt-get update -y && sudo apt-get install -y --no-install-recommends clang-tidy
+      - name: clang-tidy (fork modules)
+        run: ./scripts/clang-tidy-fork.sh

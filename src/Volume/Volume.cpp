@@ -22,10 +22,36 @@ extern "C" {
 #include "Common/HardwareKeyFactor.h"
 }
 #endif
+#if defined(VC_ENABLE_KEYSLOTS)
+extern "C" {
+#include "Common/KeyslotStore.h"   // KeyslotArea, KeyslotStoreCfg, KeyslotOpen (mount-time slot search)
+#include "Common/Keyslot.h"        // KeyslotKdfSha512, KEYSLOT_FLAG_DURESS
+}
+#include "Pkcs5Kdf.h"
+#endif
 #include "Common/Crypto.h"
 
 namespace VeraCrypt
 {
+#if defined(VC_ENABLE_KEYSLOTS)
+	// Read-only KeyslotArea over the volume's File, used only by the mount-time slot search below. The
+	// header-slack window [512, 64K) is the on-disk keyslot table location (docs/KEYSLOTS-SPEC.md §3);
+	// these constants are the volume format's, mirrored from Common/Volumes.h to avoid dragging the full
+	// platform stack. The store's open path never writes, so write is a stub and randBytes is unused.
+	namespace {
+		struct VolKeyslotCtx { const File *file; uint64 base, len; };
+		int volKeyslotRead (void *ctx, uint64 off, unsigned char *buf, size_t n)
+		{
+			VolKeyslotCtx *c = (VolKeyslotCtx *) ctx;
+			if (off > c->len || n > c->len - off) return -1;
+			try { c->file->ReadAt (BufferPtr (buf, n), c->base + off); } catch (...) { return -1; }
+			return 0;
+		}
+		int volKeyslotWriteStub (void *, uint64, const unsigned char *, size_t) { return -1; }
+		uint64 volKeyslotSize (void *ctx) { return ((VolKeyslotCtx *) ctx)->len; }
+	}
+#endif
+
 	Volume::Volume ()
 		: HiddenVolumeProtectionTriggered (false),
 		SystemEncryption (false),
@@ -278,6 +304,61 @@ namespace VeraCrypt
 					return;
 				}
 			}
+
+#if defined(VC_ENABLE_KEYSLOTS)
+			// Mount-time keyslot auto-search: no native header (slot 0) accepted the password, so try the
+			// additional wrappings in the primary header slack. A matching slot recovers the effective
+			// header plaintext (the keyslot payload) and the volume is rebuilt from it WITHOUT re-deriving
+			// the header key; a slot flagged KEYSLOT_FLAG_DURESS instead throws KeyslotDuress, which the
+			// UI turns into the safe duress action (dismount all + scrub, mount nothing). Header-slack
+			// backend, normal (primary) layout only. See docs/KEYSLOTS-SPEC.md §9.
+			if (volumeType != VolumeType::Hidden && !partitionInSystemEncryptionScope && !useBackupHeaders)
+			{
+				VolKeyslotCtx kc; kc.file = VolumeFile.get(); kc.base = 512; kc.len = (64 * 1024) - 512;
+				KeyslotArea area; area.read = volKeyslotRead; area.write = volKeyslotWriteStub; area.size = volKeyslotSize; area.ctx = &kc;
+				KeyslotStoreCfg cfg; memset (&cfg, 0, sizeof cfg);
+				cfg.backend = KSB_HEADER; cfg.kdf = &KeyslotKdfSha512; cfg.cost = 500000;
+				cfg.vmkLen = 1 + (int) VolumeHeader::GetKeyslotPayloadSize (); cfg.maxSlots = 63;
+				cfg.randBytes = 0; cfg.afStripes = 0;
+
+				SecureBuffer vmk (cfg.vmkLen);
+				int slotFlags = 0;
+				if (KeyslotOpen (&cfg, &area, passwordKey->DataPtr(), (int) passwordKey->Size(), vmk.Ptr(), &slotFlags))
+				{
+					if (slotFlags & KEYSLOT_FLAG_DURESS)
+						throw KeyslotDuress (SRC_POS);      // UI runs the safe duress action
+
+					int eaIndex = vmk[0];
+					shared_ptr <EncryptionAlgorithm> ea;
+					{
+						int i = 0;
+						foreach (shared_ptr <EncryptionAlgorithm> a, EncryptionAlgorithm::GetAvailableAlgorithms())
+						{ if (i == eaIndex) { ea = a->GetNew(); break; } ++i; }
+					}
+					if (ea)
+					{
+						shared_ptr <EncryptionMode> mode (new EncryptionModeXTS ());
+						shared_ptr <VolumeLayout> klayout (new VolumeLayoutV2Normal ());
+						shared_ptr <VolumeHeader> header = klayout->GetHeader();
+						shared_ptr <Pkcs5Kdf> anyKdf = Pkcs5Kdf::GetAvailableAlgorithms().front();
+						ConstBufferPtr plain (vmk.Ptr() + 1, cfg.vmkLen - 1);
+						if (header->RebuildFromKeyslot (plain, ea, mode, anyKdf))
+						{
+							Pim = pim;
+							Type = klayout->GetType();
+							SectorSize = header->GetSectorSize();
+							VolumeDataOffset = klayout->GetDataOffset (VolumeHostSize);
+							VolumeDataSize   = klayout->GetDataSize (VolumeHostSize);
+							EncryptedDataSize = header->GetEncryptedAreaLength();
+							Header = header;
+							Layout = klayout;
+							EA = header->GetEncryptionAlgorithm();
+							return;
+						}
+					}
+				}
+			}
+#endif
 
 			if (partitionInSystemEncryptionScope)
 				throw PasswordOrKeyboardLayoutIncorrect (SRC_POS);

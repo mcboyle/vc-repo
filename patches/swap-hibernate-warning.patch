@@ -1,0 +1,216 @@
+# swap-hibernate-warning.patch — swap/hibernation exposure detector + loud warning (ROI-TOP-50 item 11)
+#
+# Apply with `git apply -p1` from the REPOSITORY ROOT. All changes are gated behind VC_ENABLE_KEYSCRUB;
+# a default build stays byte-for-byte stock. Completes item 11 (the mlock/RLIMIT_CORE/PR_SET_DUMPABLE
+# core already shipped as VcKeyMemoryLockdown).
+#
+#   * Common/KeyScrub.{c,h}: VcSwapHibernateStatus() detects an active swap area (/proc/swaps) and an
+#     available suspend-to-disk mode (/sys/power/state has "disk") — the two RAM-to-disk paths mlock
+#     cannot close. Parse core VcSwapHibernateStatusFrom(swapsPath, powerStatePath) is path-parametrized
+#     for fixture-driven testing. Read-only, best-effort; returns 0 on a platform without /proc+/sys.
+#   * Core/KeyScrubEvents.cpp: KeyScrubManager::Enable prints a loud per-exposure stderr warning.
+#   * verification/keyscrub_selftest.c: step 6 [J] drives the detector with fixtures (own negative
+#     control: no-swap => clean; active-swap+suspend => both bits; "diskless" not misread as "disk").
+#
+# Verified: scripts/verify.sh --strict -> "48/48 steps verified, 0 skipped"; [J] all YES; gcc-13,
+# clang-18, g++/clang++ (KeyScrubEvents.cpp) all clean. Not sandbox-testable: the warning firing in a
+# real mounted-volume wx/CLI session (detector + output string are proven).
+#
+diff --git a/src/Common/KeyScrub.c b/src/Common/KeyScrub.c
+index de700c3..8fe24f3 100644
+--- a/src/Common/KeyScrub.c
++++ b/src/Common/KeyScrub.c
+@@ -14,6 +14,7 @@
+ #include <string.h>
+ #include <stdlib.h>
+ #include <stdint.h>
++#include <stdio.h>
+ #include "Crypto/t1ha.h"
+ #include "Crypto/chacha256.h"
+ #include "Crypto/chachaRng.h"
+@@ -85,6 +86,82 @@ int VcKeyMemoryLockdown (void)
+ 	return applied;
+ }
+ 
++/* ================================================================================================
++ *  Swap / hibernation exposure detector  (see KeyScrub.h)
++ * ============================================================================================== */
++
++int VcSwapHibernateStatusFrom (const char *swapsPath, const char *powerStatePath)
++{
++	int flags = 0;
++
++	/* /proc/swaps: a header line ("Filename  Type  Size  Used  Priority") followed by one line per
++	 * active swap area. Any non-empty, non-header data line => swap is active. */
++	if (swapsPath)
++	{
++		FILE *f = fopen (swapsPath, "r");
++		if (f)
++		{
++			char line[512];
++			int lineno = 0;
++			while (fgets (line, (int) sizeof (line), f))
++			{
++				const char *p = line;
++				lineno++;
++				if (lineno == 1)
++					continue;                    /* skip the header row */
++				while (*p == ' ' || *p == '\t')  /* is this line non-blank? */
++					p++;
++				if (*p != '\0' && *p != '\n')
++				{
++					flags |= VC_HIBERNATE_SWAP_ACTIVE;
++					break;
++				}
++			}
++			fclose (f);
++		}
++	}
++
++	/* /sys/power/state lists the supported sleep modes, space-separated (e.g. "freeze mem disk").
++	 * The "disk" token means suspend-to-disk (hibernation) is available. */
++	if (powerStatePath)
++	{
++		FILE *f = fopen (powerStatePath, "r");
++		if (f)
++		{
++			char buf[256];
++			size_t n = fread (buf, 1, sizeof (buf) - 1, f);
++			buf[n] = '\0';
++			fclose (f);
++			{
++				/* token-exact match for "disk" so "diskfoo" would not trip it */
++				const char *s = buf;
++				while (*s)
++				{
++					while (*s == ' ' || *s == '\t' || *s == '\n') s++;
++					if (s[0] == 'd' && s[1] == 'i' && s[2] == 's' && s[3] == 'k'
++					    && (s[4] == '\0' || s[4] == ' ' || s[4] == '\t' || s[4] == '\n'))
++					{
++						flags |= VC_HIBERNATE_SUPPORTED;
++						break;
++					}
++					while (*s && *s != ' ' && *s != '\t' && *s != '\n') s++;
++				}
++			}
++		}
++	}
++
++	return flags;
++}
++
++int VcSwapHibernateStatus (void)
++{
++#if defined(__linux__)
++	return VcSwapHibernateStatusFrom ("/proc/swaps", "/sys/power/state");
++#else
++	return 0;   /* unknown on this platform — reported as 0 (not "safe") */
++#endif
++}
++
+ /* ================================================================================================
+  *  Scrub registry
+  * ============================================================================================== */
+diff --git a/src/Common/KeyScrub.h b/src/Common/KeyScrub.h
+index 9076b31..bb970f1 100644
+--- a/src/Common/KeyScrub.h
++++ b/src/Common/KeyScrub.h
+@@ -61,6 +61,28 @@ void VcSecureWipe (volatile void *pbData, size_t cbData);
+  */
+ int VcKeyMemoryLockdown (void);
+ 
++/* ---- swap / hibernation exposure detector ------------------------------------------------ */
++
++/* Bits returned by VcSwapHibernateStatus reporting RAM-to-disk exposure that mlock cannot prevent. */
++#define VC_HIBERNATE_SWAP_ACTIVE  0x01  /* an active swap area exists: paged-out RAM can reach disk */
++#define VC_HIBERNATE_SUPPORTED    0x02  /* kernel advertises suspend-to-disk: hibernation writes ALL
++                                           of RAM (mlocked pages included) to the swap device */
++
++/*
++ * mlockall stops routine swapping, but two things still push key material to disk and it cannot help:
++ * an already-active swap area (a key paged out BEFORE lockdown, or by a sibling process) and
++ * hibernation (suspend-to-disk snapshots the whole of RAM, mlocked pages included). This detector
++ * reports both so the caller can print a loud warning while volumes are mounted. Best-effort and
++ * read-only; on a platform without /proc + /sys it simply returns 0 (unknown, not "safe").
++ * Returns a bitmask of the VC_HIBERNATE_* bits.
++ */
++int VcSwapHibernateStatus (void);
++
++/* Testable core of VcSwapHibernateStatus: parses the given files instead of the real /proc + /sys, so
++ * the verification harness can drive it with fixtures. Pass the real paths for production behaviour.
++ * A NULL path is treated as "file absent" (that bit is not set). */
++int VcSwapHibernateStatusFrom (const char *swapsPath, const char *powerStatePath);
++
+ /* ---- scrub registry ---------------------------------------------------------------------- */
+ 
+ /* Maximum number of secret regions tracked at once. Small and fixed: no allocation on the scrub
+diff --git a/src/Core/KeyScrubEvents.cpp b/src/Core/KeyScrubEvents.cpp
+index 9c99f4f..71c099a 100644
+--- a/src/Core/KeyScrubEvents.cpp
++++ b/src/Core/KeyScrubEvents.cpp
+@@ -79,6 +79,21 @@ namespace VeraCrypt
+ 		if (!Enabled)
+ 		{
+ 			VcKeyMemoryLockdown ();   // no swap / no core / no ptrace, before any secret is derived
++
++			// Loud warning for the exposures mlock cannot close (ROI item 11): an active swap area or
++			// suspend-to-disk still pushes key material to persistent storage. Printed once at enable.
++			{
++				int exposure = VcSwapHibernateStatus ();
++				if (exposure & VC_HIBERNATE_SWAP_ACTIVE)
++					fprintf (stderr, "WARNING: an active swap area is present — key material paged out "
++					                 "before mlock (or by another process) can reach unencrypted disk. "
++					                 "Encrypt swap or run `swapoff` while volumes are mounted.\n");
++				if (exposure & VC_HIBERNATE_SUPPORTED)
++					fprintf (stderr, "WARNING: hibernation (suspend-to-disk) is available on this system "
++					                 "— it snapshots ALL of RAM, mlocked pages included, to disk. Disable "
++					                 "hibernation while volumes are mounted (see docs/MEMORY-SCRUB.md).\n");
++			}
++
+ 			VcKsRamProtectInit (&KeyScrubManager::RandSeed);
+ 			Enabled = true;
+ 			IdleTimeoutSeconds = idleTimeoutSeconds;
+diff --git a/verification/keyscrub_selftest.c b/verification/keyscrub_selftest.c
+index 277f985..a57bbd8 100644
+--- a/verification/keyscrub_selftest.c
++++ b/verification/keyscrub_selftest.c
+@@ -165,6 +165,39 @@ int main (void)
+ 		        (bits & VC_LOCKDOWN_MLOCK) ? "applied" : "skipped");
+ 	}
+ 
++	/* [J] swap / hibernation exposure detector (ROI item 11). Driven with fixtures so the two states
++	 *     are exercised deterministically — this IS the negative control: a system with no swap and no
++	 *     hibernation must report clean (0), and the detector must NOT cry wolf; a system with an
++	 *     active swap area and suspend-to-disk must report both bits. */
++	{
++		const char *clean_swaps = "/tmp/ks_fix_swaps_clean";
++		const char *swap_swaps  = "/tmp/ks_fix_swaps_active";
++		const char *no_hib      = "/tmp/ks_fix_power_nohib";
++		const char *hib         = "/tmp/ks_fix_power_hib";
++		FILE *f;
++		int clean, exposed, tokfp;
++		f = fopen (clean_swaps, "w"); fputs ("Filename\t\t\t\tType\t\tSize\tUsed\tPriority\n", f); fclose (f);
++		f = fopen (swap_swaps, "w");  fputs ("Filename\t\t\t\tType\t\tSize\tUsed\tPriority\n"
++		                                     "/dev/dm-1                               partition\t8388604\t0\t-2\n", f); fclose (f);
++		f = fopen (no_hib, "w"); fputs ("freeze mem\n", f); fclose (f);
++		f = fopen (hib,    "w"); fputs ("freeze mem disk\n", f); fclose (f);
++
++		clean   = VcSwapHibernateStatusFrom (clean_swaps, no_hib);   /* expect 0 */
++		exposed = VcSwapHibernateStatusFrom (swap_swaps,  hib);      /* expect SWAP_ACTIVE|SUPPORTED */
++		/* token-exactness: a mode literally named "diskless" must NOT be read as "disk" */
++		f = fopen ("/tmp/ks_fix_power_fp", "w"); fputs ("freeze diskless\n", f); fclose (f);
++		tokfp = VcSwapHibernateStatusFrom (NULL, "/tmp/ks_fix_power_fp");   /* expect 0 (no SUPPORTED) */
++
++		printf ("[J] no-swap/no-hibernate fixture reports clean: %s\n", clean == 0 ? "YES" : "NO");
++		printf ("[J] active-swap fixture flags SWAP_ACTIVE: %s\n",
++		        (exposed & VC_HIBERNATE_SWAP_ACTIVE) ? "YES" : "NO");
++		printf ("[J] suspend-to-disk fixture flags SUPPORTED: %s\n",
++		        (exposed & VC_HIBERNATE_SUPPORTED) ? "YES" : "NO");
++		printf ("[J] 'diskless' not misread as hibernation: %s\n",
++		        (tokfp & VC_HIBERNATE_SUPPORTED) ? "NO" : "YES");
++		remove (clean_swaps); remove (swap_swaps); remove (no_hib); remove (hib); remove ("/tmp/ks_fix_power_fp");
++	}
++
+ 	/* [H] zeroization matrix: VcSecureWipe zeroes every size/alignment and survives -O2 DSE */
+ 	{
+ 		static unsigned char pool[300];

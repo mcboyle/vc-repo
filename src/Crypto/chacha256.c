@@ -18,7 +18,7 @@ and released into public domain.
 void chacha_ECRYPT_encrypt_bytes(size_t bytes, uint32* x, const unsigned char* m, unsigned char* out, unsigned char* output, unsigned int r);
 #endif
 
-static VC_INLINE void xor_block_512(const unsigned char* in, const unsigned char* prev, unsigned char* out)
+VC_INLINE void xor_block_512(const unsigned char* in, const unsigned char* prev, unsigned char* out)
 {
 #if CRYPTOPP_BOOL_SSE2_INTRINSICS_AVAILABLE && !defined(_UEFI) && (!defined (TC_WINDOWS_DRIVER) || (!defined (DEBUG)))
     if (HasSSE2())
@@ -50,7 +50,7 @@ static VC_INLINE void xor_block_512(const unsigned char* in, const unsigned char
 
 }
 
-static VC_INLINE void chacha_core(uint32* x, int r)
+VC_INLINE void chacha_core(uint32* x, int r)
 {
 	int i;
     for (i = 0; i < r; i++)
@@ -129,7 +129,7 @@ static VC_INLINE void chacha_core(uint32* x, int r)
     }
 }
 
-static VC_INLINE void chacha_hash(const uint32* in, uint32* out, int r)
+VC_INLINE void chacha_hash(const uint32* in, uint32* out, int r)
 {
     uint32 x[16];
 	int i;
@@ -139,14 +139,14 @@ static VC_INLINE void chacha_hash(const uint32* in, uint32* out, int r)
         out[i] = x[i] + in[i];
 }
 
-static VC_INLINE void incrementSalsaCounter(uint32* input, uint32* block, int r)
+VC_INLINE void incrementSalsaCounter(uint32* input, uint32* block, int r)
 {
     chacha_hash(input, block, r);
     if (!++input[12])
         ++input[13];
 }
 
-static VC_INLINE void do_encrypt(const unsigned char* in, size_t len, unsigned char* out, int r, size_t* posPtr, uint32* input, uint32* block)
+VC_INLINE void do_encrypt(const unsigned char* in, size_t len, unsigned char* out, int r, size_t* posPtr, uint32* input, uint32* block)
 {
     size_t i = 0, pos = *posPtr;
     if (pos)

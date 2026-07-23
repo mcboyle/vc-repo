@@ -68,7 +68,10 @@ typedef int32 ssize_t;
 #endif
 #endif
 
-static VC_INLINE void jent_get_nstime(uint64 *out)
+/* Drop the redundant `static`: VC_INLINE is `static inline ...` on GCC (would be `static static
+ * inline` -> duplicate 'static' on GCC 13+). Matches the sibling jent_get_nstime definitions below
+ * (lines ~103/114), which already use bare VC_INLINE; single-TU header, so no linkage change on MSVC. */
+VC_INLINE void jent_get_nstime(uint64 *out)
 {
 #ifdef _M_ARM64
 	LARGE_INTEGER v = { 0 };

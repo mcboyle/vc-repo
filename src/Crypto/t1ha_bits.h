@@ -199,6 +199,21 @@
 
 #endif                          /* Compiler */
 
+/* bswap16/32/64 are defined above only for MSVC. On GCC/clang the big-endian fetch helpers below use
+   them too; GCC merely warned on the implicit declaration and dead-code-eliminated the unused BE paths
+   on little-endian, but clang (>=16) makes an implicit function declaration a hard error, so a real
+   clang build of the KeyScrub t1ha dependency failed to compile. Provide the compiler builtins
+   (GCC 4.8+/all clang). VeraCrypt builds this fork with clang (gcc rejects Crypto/chacha256.c). */
+#ifndef bswap16
+#define bswap16(v) __builtin_bswap16(v)
+#endif
+#ifndef bswap32
+#define bswap32(v) __builtin_bswap32(v)
+#endif
+#ifndef bswap64
+#define bswap64(v) __builtin_bswap64(v)
+#endif
+
 #ifndef likely
 #define likely(cond) (cond)
 #endif

@@ -78,6 +78,30 @@ namespace VeraCrypt
 		VolumeTime GetVolumeCreationTime () const { return VolumeCreationTime; }
 		void SetSize (uint32 headerSize);
 		bool IsMasterKeyVulnerable () const { return XtsKeyVulnerable; }
+#if defined(VC_ENABLE_KEYSLOTS)
+		/* The volume master-key material (VMK): the concatenated primary + secondary (XTS) master keys
+		   as laid out in the header key area (DataKeyAreaMaxSize bytes), populated by a successful
+		   Decrypt. Retained for reference; a keyslot actually wraps the full effective plaintext below. */
+		ConstBufferPtr GetMasterKeys () const { return ConstBufferPtr (DataAreaKey.Ptr(), DataAreaKey.Size()); }
+		static size_t GetMasterKeyDataSize () { return DataKeyAreaMaxSize; }
+
+		/* The EFFECTIVE decrypted-header plaintext: the leading KeyslotPayloadSize bytes of the header
+		   that Deserialize actually reads (magic, geometry, and the master-key area) — everything needed
+		   to reconstruct a mountable volume WITHOUT re-deriving the header key. This is what a keyslot
+		   wraps (docs/KEYSLOTS-SPEC.md §1/§9): a passphrase that recovers these exact bytes reproduces
+		   the whole native open, so a plain --mount can recover the VMK from a slot and mount. Populated
+		   by a successful Decrypt; empty otherwise. */
+		ConstBufferPtr GetHeaderPlaintext () const { return ConstBufferPtr (EffectivePlaintext.Ptr(), EffectivePlaintext.Size()); }
+		/* 448 bytes: everything Deserialize reads (through the end of the master-key area). A function, not
+		   a static const, so it can reference the offset/size constants declared later in the class. */
+		static size_t GetKeyslotPayloadSize () { return DataAreaKeyOffset + DataKeyAreaMaxSize; }
+
+		/* Rebuild this header from KeyslotPayloadSize plaintext bytes recovered from a keyslot, with 'ea'
+		   / 'mode' naming the volume's cipher (from the slot's stored EA index). Zero-pads to the full
+		   header size (no Deserialize CRC/field lies beyond KeyslotPayloadSize) and runs the same
+		   validation + master-key setup as the tail of Decrypt. Returns true on success. */
+		bool RebuildFromKeyslot (const ConstBufferPtr &plaintext, shared_ptr <EncryptionAlgorithm> ea, shared_ptr <EncryptionMode> mode, shared_ptr <Pkcs5Kdf> kdf);
+#endif
 
 	protected:
 		bool DecryptWithHeaderKey (const ConstBufferPtr &encryptedData, shared_ptr <Pkcs5Kdf> pkcs5, const ConstBufferPtr &headerKey, const EncryptionAlgorithmList &encryptionAlgorithms, const EncryptionModeList &encryptionModes);
@@ -124,6 +148,9 @@ namespace VeraCrypt
 
 		SecureBuffer DataAreaKey;
 		bool XtsKeyVulnerable;
+#if defined(VC_ENABLE_KEYSLOTS)
+		SecureBuffer EffectivePlaintext;   /* leading KeyslotPayloadSize bytes stashed on a successful Decrypt */
+#endif
 
 	private:
 		VolumeHeader (const VolumeHeader &);

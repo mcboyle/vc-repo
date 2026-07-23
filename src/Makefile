@@ -147,6 +147,13 @@ export CPU_ARCH ?= unknown
 export SIMD_SUPPORTED := 0
 export DISABLE_AESNI ?= 0
 export ENABLE_WOLFCRYPT ?= 0
+export VC_ENABLE_KEYSCRUB ?= 0
+export VC_ENABLE_DURESS ?= 0
+export VC_ENABLE_KEYSLOTS ?= 0
+export VC_ENABLE_ARGON2_PARAMS ?= 0
+export VC_ENABLE_SHAMIR_MAC ?= 0
+export VC_ENABLE_SHARECODE ?= 0
+export VC_ENABLE_HKF ?= 0
 
 export GCC_GTEQ_440 := 0
 export GCC_GTEQ_430 := 0
@@ -198,6 +205,90 @@ ifeq "$(origin WOLFCRYPT)" "command line"
 	C_CXX_FLAGS += -DWOLFCRYPT_BACKEND
 	export LIBS += -lwolfssl
 	export LD_LIBRARY_PATH=/usr/local/lib
+endif
+
+# Cross-platform memory-key scrub (opt-in). `make KEYSCRUB=1` defines the feature macro for the
+# whole build and links the scrub objects listed in Core/Core.make; a plain `make` stays stock.
+ifeq "$(origin KEYSCRUB)" "command line"
+	VC_ENABLE_KEYSCRUB := 1
+	C_CXX_FLAGS += -DVC_ENABLE_KEYSCRUB
+	export LIBS += -lpthread
+endif
+
+# Safe duress-dismount (opt-in). `make DURESS=1` defines the feature macro for the whole build and
+# links Common/DuressToken.o (see Main/Main.make); a plain `make` stays stock. Combine with KEYSCRUB=1
+# so the duress action also scrubs RAM keys.
+ifeq "$(origin DURESS)" "command line"
+	VC_ENABLE_DURESS := 1
+	C_CXX_FLAGS += -DVC_ENABLE_DURESS
+endif
+
+# Multiple keyslots (opt-in). `make KEYSLOTS=1` defines the feature macro for the whole build and links
+# the keyslot record/store/KDF objects (see Core/Core.make); a plain `make` stays stock. This is the
+# one deliberately fork-only on-disk format (docs/KEYSLOTS-SPEC.md).
+ifeq "$(origin KEYSLOTS)" "command line"
+	VC_ENABLE_KEYSLOTS := 1
+	C_CXX_FLAGS += -DVC_ENABLE_KEYSLOTS
+endif
+
+# Explicit Argon2id parameters (opt-in). `make ARGON2PARAMS=1` exposes --argon2-memory/-iterations/
+# -parallelism, overriding the PIM-derived defaults. Only touches Common/Pkcs5.c (already in the
+# build) + the CLI; a plain `make` stays byte-for-byte stock. See docs/ARGON2-PARAMS-SPEC.md.
+ifeq "$(origin ARGON2PARAMS)" "command line"
+	VC_ENABLE_ARGON2_PARAMS := 1
+	C_CXX_FLAGS += -DVC_ENABLE_ARGON2_PARAMS
+endif
+
+# Hardware/threshold key factor (opt-in). `make HKF=1` defines the feature macro for the whole build,
+# exposes the --hkf-* CLI options, and links Common/HardwareKeyFactor.o + Common/Shamir.o (see
+# Core/Core.make). Backends are separately opt-in: YUBIKEY=1 (-lykpers-1), FIDO2=1 (-lfido2), and
+# HKF_SIMULATOR=1 (software token — TESTING ONLY, never ship). A plain `make` stays byte-for-byte
+# stock. See docs/HARDWARE-2FA.md.
+ifeq "$(origin HKF)" "command line"
+	VC_ENABLE_HKF := 1
+	C_CXX_FLAGS += -DVC_ENABLE_HKF
+endif
+ifeq "$(origin HKF_SIMULATOR)" "command line"
+	VC_ENABLE_HKF := 1
+	C_CXX_FLAGS += -DVC_ENABLE_HKF -DVC_ENABLE_HKF_SIMULATOR
+endif
+ifeq "$(origin YUBIKEY)" "command line"
+	VC_ENABLE_HKF := 1
+	C_CXX_FLAGS += -DVC_ENABLE_HKF -DVC_ENABLE_YUBIKEY_HMAC
+	export LIBS += -lykpers-1
+endif
+ifeq "$(origin FIDO2)" "command line"
+	VC_ENABLE_HKF := 1
+	C_CXX_FLAGS += -DVC_ENABLE_HKF -DVC_ENABLE_FIDO2
+	export LIBS += -lfido2
+endif
+
+# RAW_SECRET salt-binding (opt-in; an HKF sub-feature). `make HKF_SALT_BIND=1` makes the RAW_SECRET
+# backend return HMAC-SHA256(secret, volume salt) when --hkf-bind-salt is given. Only touches the
+# already-gated HardwareKeyFactor.c + the CLI; a plain `make` stays stock. See docs/SALT-BINDING-SPEC.md.
+ifeq "$(origin HKF_SALT_BIND)" "command line"
+	C_CXX_FLAGS += -DVC_ENABLE_HKF_SALT_BIND
+endif
+
+# Balloon memory-hard KDF as a selectable PRF (opt-in). `make BALLOON=1` exposes the Balloon hash
+# (--hash Balloon) via derive_key_balloon in Common/Pkcs5.c + the Pkcs5Balloon class in Volume/ (both
+# already in the build); no new objects. A plain `make` stays byte-for-byte stock. docs/BALLOON-SPEC.md.
+ifeq "$(origin BALLOON)" "command line"
+	C_CXX_FLAGS += -DVC_ENABLE_BALLOON_KDF
+endif
+
+# Keyed per-share MAC for Shamir shares (opt-in). `make SHAMIRMAC=1` adds Common/ShamirMac.o (adversarial
+# share tamper/fabrication detection). Sha2.o is already in the build. docs/VSS-SPEC.md.
+ifeq "$(origin SHAMIRMAC)" "command line"
+	VC_ENABLE_SHAMIR_MAC := 1
+	C_CXX_FLAGS += -DVC_ENABLE_SHAMIR_MAC
+endif
+
+# Transcribable checksummed share encoding (opt-in). `make SHARECODE=1` adds Common/ShareCode.o (bech32/
+# BIP-173 recovery strings). Sha2.o is already in the build. docs/VSS-SPEC.md.
+ifeq "$(origin SHARECODE)" "command line"
+	VC_ENABLE_SHARECODE := 1
+	C_CXX_FLAGS += -DVC_ENABLE_SHARECODE
 endif
 
 #------ Linux configuration ------

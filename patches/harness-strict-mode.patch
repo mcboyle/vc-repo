@@ -1,0 +1,522 @@
+# harness-strict-mode.patch — verification strict mode + coverage accounting (ROI-TOP-50 item 1)
+#
+# Apply with `git apply -p1` (or `patch -p1`) from the REPOSITORY ROOT — unlike the src/-relative
+# feature patches, this one also touches the fork-only verification/ and scripts/ trees, which do not
+# exist in stock VeraCrypt 1.26.29.
+#
+# What it does:
+#   * verification/build_and_verify.sh: adds a coverage line ("N/48 steps verified, M skipped") on
+#     every run, and a --strict / VC_STRICT=1 mode that makes ANY skipped step exit non-zero, so a
+#     partially-covered run can no longer report all-green. Also FIXES the two steps that were
+#     silently skipping (masking real harness link defects):
+#       - step 6 (KeyScrub): build the HKF path so the REAL HKFScrubActiveConfig is exercised;
+#       - step 9 (Keyslots lifecycle): add the missing AfSplit.o to the link line.
+#     Adds a VC_SELFTEST_FORCE_SKIP negative control that exercises --strict cheaply.
+#   * scripts/verify.sh: forwards args ("$@") so `scripts/verify.sh --strict` reaches the suite.
+#   * src/Common/HardwareKeyFactor.c: tightens the HKFScrubActiveConfig guard to
+#     `VC_ENABLE_KEYSCRUB && VC_ENABLE_HKF`, making it the exact complement of the KeyScrub.c stub
+#     (`VC_ENABLE_KEYSCRUB && !VC_ENABLE_HKF`). Without this, a KEYSCRUB-on/HKF-off build defined the
+#     symbol twice (link error). The src/ hunk builds on this fork's HardwareKeyFactor series.
+#
+# Verified: `scripts/verify.sh --strict` -> exit 0, "48/48 steps verified, 0 skipped".
+#
+diff --git a/scripts/verify.sh b/scripts/verify.sh
+index b7a28fc..9e4fb33 100755
+--- a/scripts/verify.sh
++++ b/scripts/verify.sh
+@@ -1,3 +1,3 @@
+ #!/usr/bin/env bash
+ set -e
+-cd "$(dirname "$0")/../verification" && ./build_and_verify.sh
++cd "$(dirname "$0")/../verification" && ./build_and_verify.sh "$@"
+diff --git a/src/Common/HardwareKeyFactor.c b/src/Common/HardwareKeyFactor.c
+index 6d4d84d..91c3c95 100644
+--- a/src/Common/HardwareKeyFactor.c
++++ b/src/Common/HardwareKeyFactor.c
+@@ -488,7 +488,12 @@ void HKFSetActiveConfig (const HKFConfig *cfg)
+ 	g_hkfActiveConfig = cfg;
+ }
+ 
+-#if defined(VC_ENABLE_KEYSCRUB)
++/* Guarded on KEYSCRUB && HKF so this is the *complement* of the KeyScrub.c fallback stub, which is
++ * guarded on KEYSCRUB && !HKF. Exactly one definition exists when KEYSCRUB is on (this real one when
++ * a hardware/threshold factor is compiled in, the empty stub otherwise), and neither when KEYSCRUB is
++ * off. Without the && HKF here the KEYSCRUB-on/HKF-off build defined the symbol twice (see
++ * docs/REAL-BUILD-VALIDATION.md guard-complementarity). */
++#if defined(VC_ENABLE_KEYSCRUB) && defined(VC_ENABLE_HKF)
+ void HKFScrubActiveConfig (void)
+ {
+ 	HKFConfig *cfg = (HKFConfig *) g_hkfActiveConfig;   /* wipe the caller-owned secret storage */
+diff --git a/verification/build_and_verify.sh b/verification/build_and_verify.sh
+index d358b49..8e3e07b 100755
+--- a/verification/build_and_verify.sh
++++ b/verification/build_and_verify.sh
+@@ -3,6 +3,39 @@
+ set -e
+ HERE="$(cd "$(dirname "$0")" && pwd)"; SRCROOT="$HERE/../src"
+ INC="-I$SRCROOT -I$SRCROOT/Common -I$HERE"
++
++# --- coverage accounting + strict mode (ROI item 1) -------------------------------------------------
++# A "step" is a top-level `echo "[N] ..."` header; a step that cannot build its harness prints a SKIP
++# via skip_step (compiler/lib absent). The suite already exit 1s on any real MISMATCH/FAILED, so if we
++# reach the end, every non-skipped step verified: PASS = TOTAL - SKIP. --strict (or VC_STRICT=1) turns
++# any SKIP into a non-zero exit, so a partially-covered run can never masquerade as fully green.
++STRICT=0
++for a in "$@"; do case "$a" in --strict) STRICT=1;; --help|-h) echo "usage: $(basename "$0") [--strict]"; exit 0;; esac; done
++[ "${VC_STRICT:-0}" = "1" ] && STRICT=1
++STEP_TOTAL="$(grep -cE '^echo "\[[0-9]+\]' "$HERE/$(basename "$0")" 2>/dev/null || echo 0)"
++STEP_SKIP=0
++skip_step() { printf '    SKIP:%s\n' "$1"; STEP_SKIP=$((STEP_SKIP + 1)); }
++verify_summary() {
++	rc=$?
++	echo ""
++	echo "=== coverage: $((STEP_TOTAL - STEP_SKIP))/$STEP_TOTAL steps verified, $STEP_SKIP skipped ==="
++	if [ "$rc" -ne 0 ]; then exit "$rc"; fi          # a genuine MISMATCH/FAILED already set the code
++	if [ "$STRICT" = 1 ] && [ "$STEP_SKIP" -gt 0 ]; then
++		echo "STRICT: $STEP_SKIP of $STEP_TOTAL step(s) skipped (harness/toolchain incomplete) -> FAIL"
++		exit 3
++	fi
++}
++trap verify_summary EXIT
++# Negative control for strict mode itself: VC_SELFTEST_FORCE_SKIP=1 injects one artificial SKIP and
++# exits early (before the ~5-min real steps), so the accounting can be exercised cheaply:
++#   VC_SELFTEST_FORCE_SKIP=1 ./build_and_verify.sh           -> exit 0, coverage shows 1 skipped
++#   VC_SELFTEST_FORCE_SKIP=1 ./build_and_verify.sh --strict  -> exit 3 (a skip fails the suite)
++if [ "${VC_SELFTEST_FORCE_SKIP:-0}" = "1" ]; then
++	echo "[strict-mode self-test] injecting one artificial SKIP to exercise --strict / coverage"
++	skip_step " artificial (VC_SELFTEST_FORCE_SKIP negative control — not a real coverage run)"
++	exit 0
++fi
++# ---------------------------------------------------------------------------------------------------
+ echo "[1] compile module (simulator backend)"
+ gcc -O2 -DVC_ENABLE_HKF_SIMULATOR $INC -c "$SRCROOT/Common/HardwareKeyFactor.c" -o /tmp/hkf.o
+ echo "[2] crypto + mixing selftest vs independent python reference"
+@@ -56,12 +89,17 @@ KS_CC=""
+ for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then KS_CC="$c"; break; fi; done
+ KS_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+ KS_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+-if "$KS_CC" -O2 $KS_WNO $KS_NOASM -DVC_ENABLE_KEYSCRUB $INC -c "$SRCROOT/Common/KeyScrub.c" -o /tmp/ks_keyscrub.o 2>/tmp/ks_cc.log \
+-   && "$KS_CC" -O2 $KS_WNO $KS_NOASM -DVC_ENABLE_KEYSCRUB $INC -c "$SRCROOT/Common/HardwareKeyFactor.c" -o /tmp/ks_hkf.o 2>>/tmp/ks_cc.log \
++# KEYSCRUB and HKF are both defined so this exercises the REAL HKFScrubActiveConfig (test [F] asserts
++# the reconstructed secret is wiped): with KEYSCRUB alone the KeyScrub.c empty stub would run and [F]
++# would (correctly) report NO. The two definitions are guard-complementary (KeyScrub.c: KEYSCRUB &&
++# !HKF stub; HardwareKeyFactor.c: KEYSCRUB && HKF real), so building both objects never collides.
++KS_DEF="-DVC_ENABLE_KEYSCRUB -DVC_ENABLE_HKF"
++if "$KS_CC" -O2 $KS_WNO $KS_NOASM $KS_DEF $INC -c "$SRCROOT/Common/KeyScrub.c" -o /tmp/ks_keyscrub.o 2>/tmp/ks_cc.log \
++   && "$KS_CC" -O2 $KS_WNO $KS_NOASM $KS_DEF $INC -c "$SRCROOT/Common/HardwareKeyFactor.c" -o /tmp/ks_hkf.o 2>>/tmp/ks_cc.log \
+    && "$KS_CC" -O2 $KS_WNO $KS_NOASM $INC -c "$SRCROOT/Crypto/t1ha2.c"     -o /tmp/ks_t1ha2.o     2>>/tmp/ks_cc.log \
+    && "$KS_CC" -O2 $KS_WNO $KS_NOASM $INC -c "$SRCROOT/Crypto/chacha256.c" -o /tmp/ks_chacha256.o 2>>/tmp/ks_cc.log \
+    && "$KS_CC" -O2 $KS_WNO $KS_NOASM $INC -c "$SRCROOT/Crypto/chachaRng.c" -o /tmp/ks_chachaRng.o 2>>/tmp/ks_cc.log \
+-   && "$KS_CC" -O2 $KS_WNO -DVC_ENABLE_KEYSCRUB $INC "$HERE/keyscrub_selftest.c" \
++   && "$KS_CC" -O2 $KS_WNO $KS_DEF $INC "$HERE/keyscrub_selftest.c" \
+         /tmp/ks_keyscrub.o /tmp/ks_hkf.o /tmp/ks_t1ha2.o /tmp/ks_chacha256.o /tmp/ks_chachaRng.o -lpthread -o /tmp/keyscrub_selftest 2>>/tmp/ks_cc.log; then
+ 	/tmp/keyscrub_selftest > /tmp/ks_c.txt; cat /tmp/ks_c.txt
+ 	python3 "$HERE/keyscrub_reference.py" > /tmp/ks_py.txt
+@@ -74,7 +112,7 @@ if "$KS_CC" -O2 $KS_WNO $KS_NOASM -DVC_ENABLE_KEYSCRUB $INC -c "$SRCROOT/Common/
+ 	# all boolean self-checks must report YES
+ 	if grep -Eq ': NO$' /tmp/ks_c.txt; then echo "    KEYSCRUB SELFTEST FAILED"; exit 1; fi
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/ks_cc.log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/ks_cc.log)"
+ fi
+ 
+ echo ""
+@@ -101,7 +139,7 @@ if "$DT_CC" -O2 $DT_WNO $DT_NOASM $DT_GC -DVC_ENABLE_DURESS $DT_INC -c "$SRCROOT
+ 	fi
+ 	if grep -Eq ': NO$' /tmp/d_c.txt; then echo "    DURESS SELFTEST FAILED"; exit 1; fi
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/dt_cc.log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/dt_cc.log)"
+ fi
+ 
+ echo ""
+@@ -128,7 +166,7 @@ if "$KP_CC" -O2 $KP_WNO $KP_NOASM $KP_GC $KP_INC -c "$SRCROOT/Crypto/Sha2.c"
+ 	fi
+ 	if grep -Eq ': NO$' /tmp/kp_c.txt; then echo "    KEYSLOT POC FAILED"; exit 1; fi
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/kp_cc.log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/kp_cc.log)"
+ fi
+ 
+ echo ""
+@@ -140,16 +178,20 @@ KL_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+ KL_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+ KL_GC="-ffunction-sections -fdata-sections"
+ KL_INC="$INC -I$SRCROOT/Crypto"
++# KeyslotStore.c calls AfSplit/AfMerge (Common/AfSplit.c, gated on VC_ENABLE_KEYSLOTS) for the
++# anti-forensic record format, so AfSplit.o must be on the link line — without it the harness
++# link fails with "undefined reference to AfSplit" and (pre strict-mode) silently SKIPped.
+ if "$KL_CC" -O2 $KL_WNO $KL_NOASM $KL_GC -DVC_ENABLE_KEYSLOTS $KL_INC -c "$SRCROOT/Common/Keyslot.c"      -o /tmp/kl_keyslot.o 2>/tmp/kl_cc.log \
+    && "$KL_CC" -O2 $KL_WNO $KL_NOASM $KL_GC -DVC_ENABLE_KEYSLOTS $KL_INC -c "$SRCROOT/Common/KeyslotStore.c" -o /tmp/kl_store.o 2>>/tmp/kl_cc.log \
++   && "$KL_CC" -O2 $KL_WNO $KL_NOASM $KL_GC -DVC_ENABLE_KEYSLOTS $KL_INC -c "$SRCROOT/Common/AfSplit.c"      -o /tmp/kl_af.o    2>>/tmp/kl_cc.log \
+    && "$KL_CC" -O2 $KL_WNO $KL_NOASM $KL_GC $KL_INC -c "$SRCROOT/Crypto/Sha2.c"     -o /tmp/kl_sha2.o   2>>/tmp/kl_cc.log \
+    && "$KL_CC" -O2 $KL_WNO $KL_NOASM $KL_GC $KL_INC -c "$SRCROOT/Crypto/chacha256.c" -o /tmp/kl_chacha.o 2>>/tmp/kl_cc.log \
+    && "$KL_CC" -O2 $KL_WNO $KL_NOASM -DVC_ENABLE_KEYSLOTS $KL_INC "$HERE/keyslot_store_test.c" \
+-        /tmp/kl_keyslot.o /tmp/kl_store.o /tmp/kl_sha2.o /tmp/kl_chacha.o -Wl,--gc-sections -o /tmp/keyslot_store_test 2>>/tmp/kl_cc.log; then
++        /tmp/kl_keyslot.o /tmp/kl_store.o /tmp/kl_af.o /tmp/kl_sha2.o /tmp/kl_chacha.o -Wl,--gc-sections -o /tmp/keyslot_store_test 2>>/tmp/kl_cc.log; then
+ 	if /tmp/keyslot_store_test > /tmp/kl_out.txt; then cat /tmp/kl_out.txt
+ 	else cat /tmp/kl_out.txt; echo "    KEYSLOT LIFECYCLE FAILED"; exit 1; fi
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/kl_cc.log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/kl_cc.log)"
+ fi
+ 
+ echo ""
+@@ -174,7 +216,7 @@ if "$NS_CC" -O2 $NS_WNO $NS_NOASM $NS_GC $NS_INC -c "$SRCROOT/Crypto/Sha2.c" -o
+ 	fi
+ 	if grep -Eq ': NO$' /tmp/ns_c.txt; then echo "    NETSHARE POC FAILED"; exit 1; fi
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/ns_cc.log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/ns_cc.log)"
+ fi
+ 
+ echo ""
+@@ -210,7 +252,7 @@ if "$AP_CC" -O2 $AP_WNO $AP_GC -DARGON2_NO_THREADS $AP_INC -c "$AP_ARG/argon2.c"
+ 	fi
+ 	if grep -Eq ': NO$' /tmp/ap_c.txt; then echo "    ARGON2 PARAMS TEST FAILED"; exit 1; fi
+ else
+-	echo "    SKIP: no compiler accepted the stock Argon2/Pkcs5 sources (see /tmp/ap_cc.log)"
++	skip_step " no compiler accepted the stock Argon2/Pkcs5 sources (see /tmp/ap_cc.log)"
+ fi
+ 
+ echo ""
+@@ -236,7 +278,7 @@ if "$SB_CC" -O2 $SB_WNO $SB_NOASM $SB_GC -DVC_ENABLE_HKF -DVC_ENABLE_HKF_SALT_BI
+ 	fi
+ 	if grep -Eq ': NO$' /tmp/sb_c.txt; then echo "    SALTBIND TEST FAILED"; exit 1; fi
+ else
+-	echo "    SKIP: no compiler accepted the stock sources (see /tmp/sb_cc.log)"
++	skip_step " no compiler accepted the stock sources (see /tmp/sb_cc.log)"
+ fi
+ 
+ echo ""
+@@ -263,7 +305,7 @@ if "$OR_CC" -O2 $OR_WNO $OR_NOASM $OR_GC $OR_INC -c "$SRCROOT/Crypto/chacha256.c
+ 	fi
+ 	if grep -Eq ': NO$' /tmp/or_c.txt; then echo "    ORAM POC FAILED"; exit 1; fi
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/or_log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/or_log)"
+ fi
+ 
+ echo ""
+@@ -290,7 +332,7 @@ if "$DF_CC" -O2 $DF_WNO $DF_NOASM $DF_GC $DF_INC -c "$SRCROOT/Crypto/chacha256.c
+ 	fi
+ 	if grep -Eq ': NO$' /tmp/df_c.txt; then echo "    DECOYFRAG POC FAILED"; exit 1; fi
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/df_log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/df_log)"
+ fi
+ 
+ echo ""
+@@ -316,7 +358,7 @@ if "$AF_CC" -O2 $AF_WNO $AF_NOASM $AF_GC $AF_INC -c "$SRCROOT/Crypto/Sha2.c" -o
+ 	fi
+ 	if grep -Eq ': NO$' /tmp/af_c.txt; then echo "    AFSPLIT POC FAILED"; exit 1; fi
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/af_log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/af_log)"
+ fi
+ 
+ echo ""
+@@ -341,7 +383,7 @@ if "$BL_CC" -O2 $BL_WNO $BL_NOASM $BL_GC $BL_INC -c "$SRCROOT/Crypto/Sha2.c" -o
+ 	fi
+ 	if grep -Eq ': NO$' /tmp/bl_c.txt; then echo "    BALLOON POC FAILED"; exit 1; fi
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/bl_log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/bl_log)"
+ fi
+ 
+ echo ""
+@@ -366,7 +408,7 @@ if "$OP_CC" -O2 $OP_WNO $OP_NOASM $OP_GC $OP_INC -c "$SRCROOT/Crypto/Sha2.c" -o
+ 	fi
+ 	if grep -Eq ': NO$' /tmp/op_c.txt; then echo "    OPRF POC FAILED"; exit 1; fi
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/op_log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/op_log)"
+ fi
+ 
+ echo "[18] Poly1305 one-shot (RFC 8439) vs independent python reference + published KATs"
+@@ -390,7 +432,7 @@ if "$PL_CC" -O2 -Wall -I"$HERE" "$HERE/poly1305_poc.c" -o /tmp/poly1305_poc 2>/t
+ 	grep -q '^REF a3_1 36e5f6b5c5e06070f0efca96227a863e$'   /tmp/pl_c.txt || { echo "    RFC A.3 #2 KAT FAILED"; exit 1; }
+ 	echo "    RFC 8439 published tags reproduced (Sec 2.5.2 + A.3)"
+ else
+-	echo "    SKIP: no compiler available (see /tmp/pl_log)"
++	skip_step " no compiler available (see /tmp/pl_log)"
+ fi
+ 
+ echo "[19] Merkle tree over the volume, root held off-disk (tamper detection) vs independent python"
+@@ -417,7 +459,7 @@ if "$MK_CC" -O2 $MK_WNO $MK_NOASM $MK_GC $MK_INC -c "$SRCROOT/Crypto/Sha2.c" -o
+ 	grep -q '^REF tamper_path_rejected YES$' /tmp/mk_c.txt || { echo "    STALE PROOF ACCEPTED"; exit 1; }
+ 	echo "    single-bit sector flip changes the root and its authentication path is rejected"
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/mk_log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/mk_log)"
+ fi
+ 
+ echo "[20] Keyslot-area MAC (ChaCha20-Poly1305 one-time) — tamper/truncation detection vs independent python"
+@@ -447,7 +489,7 @@ if "$KM_CC" -O2 $KM_WNO $KM_NOASM $KM_GC $KM_INC -c "$SRCROOT/Crypto/chacha256.c
+ 	done
+ 	echo "    tamper, truncation, wrong-key all rejected by constant-time tag check; nonce binds"
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/km_log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/km_log)"
+ fi
+ 
+ echo "[21] Per-sector authentication (dm-integrity style) — tamper/relocation detection vs independent python"
+@@ -475,7 +517,7 @@ if "$PS_CC" -O2 $PS_WNO $PS_NOASM $PS_GC $PS_INC -c "$SRCROOT/Crypto/chacha256.c
+ 	done
+ 	echo "    per-sector independence, relocation resistance, and wrong-key all hold"
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/ps_log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/ps_log)"
+ fi
+ 
+ echo "[22] Rollback/replay protection via a monotonic counter — snapshot-replay detection vs independent python"
+@@ -504,7 +546,7 @@ if "$MC_CC" -O2 $MC_WNO $MC_NOASM $MC_GC $MC_INC -c "$SRCROOT/Crypto/chacha256.c
+ 	done
+ 	echo "    snapshot rollback + forged marker + tamper rejected; counter is increment-only"
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/mc_log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/mc_log)"
+ fi
+ 
+ echo "[23] Header-version + anti-downgrade parameter binding — reject silent parameter downgrade vs independent python"
+@@ -533,7 +575,7 @@ if "$DG_CC" -O2 $DG_WNO $DG_NOASM $DG_GC $DG_INC -c "$SRCROOT/Crypto/Sha2.c" -o
+ 	done
+ 	echo "    every Argon2/PRF/cipher/version downgrade rejected; canonical encoding unambiguous"
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/dg_log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/dg_log)"
+ fi
+ 
+ echo "[24] Adiantum wide-block mode (XChaCha12/AES-256/NH/Poly1305) — official google/adiantum KATs vs independent python"
+@@ -569,7 +611,7 @@ if "$AD_CC" -O2 $AD_WNO $AD_NOASM $AD_INC -c "$SRCROOT/Crypto/chacha256.c" -o /t
+ 	echo "    all 18 official vectors reproduced; single-bit flip randomizes the whole sector"
+ 	rm -rf "$HERE/__pycache__"
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/ad_log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/ad_log)"
+ fi
+ 
+ echo "[25] ML-KEM-768 (FIPS 203) + PQ hybrid combiner — NIST ACVP vectors vs independent python"
+@@ -605,7 +647,7 @@ if "$MK2_CC" -O2 $MK2_WNO $MK2_NOASM $MK2_GC $MK2_INC -c "$SRCROOT/Crypto/Sha3.c
+ 	echo "    NIST ACVP vectors reproduced incl. implicit rejection; hybrid needs both secrets"
+ 	rm -rf "$HERE/__pycache__"
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/mk2_log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/mk2_log)"
+ fi
+ 
+ echo "[26] HCTR2 wide-block mode (XCTR + POLYVAL) — official google/hctr2 KATs vs independent python"
+@@ -640,7 +682,7 @@ if "$H2_CC" -O2 $H2_WNO $H2_NOASM $H2_INC -c "$SRCROOT/Crypto/Aescrypt.c" -o /tm
+ 	echo "    all 35 official vectors reproduced; single-bit flip randomizes the whole sector"
+ 	rm -rf "$HERE/__pycache__"
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/h2_log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/h2_log)"
+ fi
+ 
+ echo "[27] BLAKE3 tree hash — official published vectors vs independent python"
+@@ -663,7 +705,7 @@ if "$B3_CC" -O2 -Wall -I"$HERE" "$HERE/blake3_poc.c" -o /tmp/blake3_poc 2>/tmp/b
+ 	echo "    all 35 official cases (hash/keyed/derive_key, 0..102400 B, 131-B XOF) reproduced"
+ 	rm -rf "$HERE/__pycache__"
+ else
+-	echo "    SKIP: no compiler (see /tmp/b3_log)"
++	skip_step " no compiler (see /tmp/b3_log)"
+ fi
+ 
+ echo "[28] Ascon-Hash256 (NIST SP 800-232) — official NIST ACVP vectors vs independent python"
+@@ -685,7 +727,7 @@ if "$AS_CC" -O2 -Wall -I"$HERE" "$HERE/ascon_poc.c" -o /tmp/ascon_poc 2>/tmp/as_
+ 	echo "    all official NIST ACVP Ascon-Hash256 vectors reproduced"
+ 	rm -rf "$HERE/__pycache__"
+ else
+-	echo "    SKIP: no compiler (see /tmp/as_log)"
++	skip_step " no compiler (see /tmp/as_log)"
+ fi
+ 
+ echo "[29] Threefish large-block cipher (512 + 1024) — official Botan-512 vectors vs independent python"
+@@ -712,7 +754,7 @@ if "$TF_CC" -O2 -Wall -I"$HERE" "$HERE/threefish_poc.c" -o /tmp/threefish_poc 2>
+ 	echo "    Threefish-512 matches official Botan vectors; 1024 cross-checked + round-trips"
+ 	rm -rf "$HERE/__pycache__"
+ else
+-	echo "    SKIP: no compiler (see /tmp/tf_log)"
++	skip_step " no compiler (see /tmp/tf_log)"
+ fi
+ 
+ echo "[30] Sloth verifiable delay function (coercion cooling-off) — C bignum vs independent python"
+@@ -738,7 +780,7 @@ if "$SL_CC" -O2 -Wall -I"$HERE" "$HERE/sloth_poc.c" -o /tmp/sloth_poc 2>/tmp/sl_
+ 	echo "    delay chain verifies (fast squarings recover the seed); tamper detected"
+ 	rm -rf "$HERE/__pycache__"
+ else
+-	echo "    SKIP: no compiler (see /tmp/sl_log)"
++	skip_step " no compiler (see /tmp/sl_log)"
+ fi
+ 
+ echo "[31] Feldman verifiable secret sharing — C bignum vs independent python"
+@@ -764,7 +806,7 @@ if "$FV_CC" -O2 -Wall -I"$HERE" "$HERE/feldman_poc.c" -o /tmp/feldman_poc 2>/tmp
+ 	echo "    commitments verify honest shares, reject a tampered share; t-of-n reconstructs"
+ 	rm -rf "$HERE/__pycache__"
+ else
+-	echo "    SKIP: no compiler (see /tmp/fv_log)"
++	skip_step " no compiler (see /tmp/fv_log)"
+ fi
+ 
+ echo "[32] Pedersen verifiable secret sharing (perfectly hiding) — C bignum vs independent python"
+@@ -787,7 +829,7 @@ if "$PD_CC" -O2 -Wall -I"$HERE" "$HERE/pedersen_poc.c" -o /tmp/pedersen_poc 2>/t
+ 	done
+ 	echo "    perfectly-hiding commitments verify shares, reject tampered f or b; t reconstructs"
+ 	rm -rf "$HERE/__pycache__"
+-else echo "    SKIP: no compiler (see /tmp/pd_log)"; fi
++else skip_step " no compiler (see /tmp/pd_log)"; fi
+ 
+ echo "[33] RSW time-lock puzzle (create-fast delay, complements Sloth) — C bignum vs independent python"
+ # Delay functions row (IDEAS-BACKLOG): RSW (Rivest-Shamir-Wagner 1996) -- opening is T sequential
+@@ -809,7 +851,7 @@ if "$RW_CC" -O2 -Wall -I"$HERE" "$HERE/rsw_poc.c" -o /tmp/rsw_poc 2>/tmp/rw_log;
+ 	done
+ 	echo "    trapdoor equals the sequential result; wrong factorization diverges"
+ 	rm -rf "$HERE/__pycache__"
+-else echo "    SKIP: no compiler (see /tmp/rw_log)"; fi
++else skip_step " no compiler (see /tmp/rw_log)"; fi
+ 
+ echo "[34] scrypt KDF (RFC 7914) — official KATs + hashlib vs C over the in-tree PBKDF2/SHA-256"
+ # Memory-hard KDF row (IDEAS-BACKLOG): scrypt (Percival, RFC 7914) -- Salsa20/8 -> BlockMix -> ROMix ->
+@@ -832,7 +874,7 @@ if "$SC_CC" -O2 $SC_WNO $SC_NOASM $SC_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/sc
+ 	else echo "    MISMATCH"; diff /tmp/sc_c_ref.txt /tmp/sc_py_ref.txt | head -4; exit 1; fi
+ 	grep -q '^REF rfc_kat_match YES$' /tmp/sc_c.txt || { echo "    RFC KAT FAILED"; exit 1; }
+ 	rm -rf "$HERE/__pycache__"
+-else echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/sc_log)"; fi
++else skip_step " no compiler accepted the stock Crypto sources (see /tmp/sc_log)"; fi
+ 
+ echo "[35] Threshold OPRF (t-of-n password hardening) — real in-tree Sha2 vs independent python"
+ # Password-protocols row (IDEAS-BACKLOG): threshold OPRF splits the single-server OPRF (step [17]) key
+@@ -858,7 +900,7 @@ if "$TO_CC" -O2 $TO_WNO $TO_NOASM $TO_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/to
+ 	done
+ 	echo "    any t servers reconstruct the single-key output; t-1 differ; servers see only the blind"
+ 	rm -rf "$HERE/__pycache__"
+-else echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/to_log)"; fi
++else skip_step " no compiler accepted the stock Crypto sources (see /tmp/to_log)"; fi
+ 
+ echo "[36] AF-split keyslot records ([FORMAT] integration): real AfSplit.c + KeyslotStore.c vs independent python"
+ # docs/AF-SPLIT-SPEC.md integration: the wrapped payload is AF-split into s stripes before wrapping, so
+@@ -891,7 +933,7 @@ if "$KA_CC" -O2 $KA_WNO $KA_NOASM $KA_GC -DVC_ENABLE_KEYSLOTS $KA_INC -c "$SRCRO
+ 	if grep -Eq '= NO$' /tmp/ka_c.txt; then echo "    AF PROPERTY FAILED"; exit 1; fi
+ 	rm -rf "$HERE/__pycache__"
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/ka_cc.log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/ka_cc.log)"
+ fi
+ 
+ echo "[37] KeyslotArea volume-I/O bindings: real KeyslotAreaFile.c over synthetic containers (KEYSLOTS-SPEC §9)"
+@@ -918,7 +960,7 @@ if "$KB_CC" -O2 $KB_WNO $KB_NOASM $KB_GC -DVC_ENABLE_KEYSLOTS $KB_INC -c "$SRCRO
+ 	if /tmp/keyslotarea_test > /tmp/kb_out.txt; then cat /tmp/kb_out.txt
+ 	else cat /tmp/kb_out.txt; echo "    KEYSLOT AREA TEST FAILED"; exit 1; fi
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/kb_cc.log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/kb_cc.log)"
+ fi
+ 
+ echo "[38] Balloon as a mountable PRF: real Common/Pkcs5.c derive_key_balloon vs independent python"
+@@ -959,7 +1001,7 @@ if "$BF_CC" -O2 $BF_WNO $BF_GC -DARGON2_NO_THREADS $BF_INC -c "$BF_ARG/argon2.c"
+ 	if grep -Eq '= NO$' /tmp/bf_c.txt; then echo "    BALLOON PROPERTY FAILED"; exit 1; fi
+ 	rm -rf "$HERE/__pycache__"
+ else
+-	echo "    SKIP: no compiler accepted the stock Pkcs5/Argon2 sources (see /tmp/bf_log)"
++	skip_step " no compiler accepted the stock Pkcs5/Argon2 sources (see /tmp/bf_log)"
+ fi
+ 
+ echo "[39] Network share at PRODUCTION parameters: McCallum-Relyea over full Ed25519 vs independent python"
+@@ -1001,7 +1043,7 @@ if "$NE_CC" -O2 $NE_WNO $NE_NOASM $NE_GC $NE_INC -c "$SRCROOT/Crypto/Sha2.c" -o
+ 	if grep -Eq '= NO$' /tmp/ne_c.txt; then echo "    MR PROPERTY FAILED"; exit 1; fi
+ 	rm -rf "$HERE/__pycache__"
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/ne_cc.log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/ne_cc.log)"
+ fi
+ 
+ echo "[40] Keyed per-share MAC: real Common/Shamir.c + ShamirMac.c vs independent python"
+@@ -1034,7 +1076,7 @@ if "$SM_CC" -O2 $SM_WNO $SM_NOASM $SM_GC -DVC_ENABLE_SHAMIR_MAC $SM_INC -c "$SRC
+ 	if grep -Eq 'FAIL$' /tmp/sm_c.txt; then echo "    SHAMIR MAC PROPERTY FAILED"; exit 1; fi
+ 	rm -rf "$HERE/__pycache__"
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/sm_cc.log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/sm_cc.log)"
+ fi
+ 
+ echo "[41] Shamir GF(2^8) timing-leakage screen (dudect): real gf_mul/gf_inv are constant-time"
+@@ -1050,7 +1092,7 @@ if "$DU_CC" -O2 -I"$SRCROOT" -I"$SRCROOT/Common" "$HERE/shamir_dudect_test.c" -l
+ 	else cat /tmp/du_out.txt; echo "    SHAMIR DUDECT SCREEN FAILED"; exit 1; fi
+ 	grep -q '^gf_mul vs leaky table agree on all 65536 products = YES$' /tmp/du_out.txt || { echo "    LEAKY REF COMPUTES WRONG PRODUCT"; exit 1; }
+ else
+-	echo "    SKIP: no compiler built the dudect harness (see /tmp/du_log)"
++	skip_step " no compiler built the dudect harness (see /tmp/du_log)"
+ fi
+ 
+ echo "[42] Transcribable share encoding (bech32/BIP-173): real ShareCode.c + Shamir.c vs independent python"
+@@ -1078,7 +1120,7 @@ if "$SR_CC" -O2 $SR_WNO -DVC_ENABLE_SHARECODE $SR_INC -c "$SRCROOT/Common/ShareC
+ 	if grep -Eq 'FAIL$' /tmp/sr_c.txt; then echo "    SHARECODE PROPERTY FAILED"; exit 1; fi
+ 	rm -rf "$HERE/__pycache__"
+ else
+-	echo "    SKIP: no compiler accepted the stock sources (see /tmp/sr_log)"
++	skip_step " no compiler accepted the stock sources (see /tmp/sr_log)"
+ fi
+ 
+ echo "[43] OPRF at PRODUCTION parameters: DH-OPRF over full ristretto255 (RFC 9497) vs independent python"
+@@ -1109,7 +1151,7 @@ if "$OR_CC" -O2 $OR_WNO $OR_NOASM $OR_GC $OR_INC -c "$SRCROOT/Crypto/Sha2.c" -o
+ 	if grep -Eq '= NO$' /tmp/or_c.txt; then echo "    OPRF PROPERTY FAILED"; exit 1; fi
+ 	rm -rf "$HERE/__pycache__"
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/or_cc.log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/or_cc.log)"
+ fi
+ 
+ echo "[44] Threshold OPRF over ristretto255 (PPSS): real Sha2 + from-scratch group vs independent python"
+@@ -1137,7 +1179,7 @@ if "$TR_CC" -O2 $TR_WNO $TR_NOASM $TR_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/tr
+ 	if grep -Eq '= NO$' /tmp/tr_c.txt; then echo "    TOPRF PROPERTY FAILED"; exit 1; fi
+ 	rm -rf "$HERE/__pycache__"
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/tr_cc.log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/tr_cc.log)"
+ fi
+ 
+ echo "[45] Randomized/differential robustness: real Shamir/ShamirMac/ShareCode/Keyslot over seeded fuzzing"
+@@ -1165,7 +1207,7 @@ if [ "$DF_OK" = 1 ] && "$DF_CC" -O2 $DF_WNO $DF_NOASM $DF_DEF $DF_INC "$HERE/dif
+ 	if /tmp/differential_test > /tmp/df_out.txt; then cat /tmp/df_out.txt
+ 	else cat /tmp/df_out.txt; echo "    DIFFERENTIAL CHECKS FAILED"; exit 1; fi
+ else
+-	echo "    SKIP: no compiler accepted the stock sources (see /tmp/df_cc.log)"
++	skip_step " no compiler accepted the stock sources (see /tmp/df_cc.log)"
+ fi
+ 
+ echo "[46] Keyslot constant-time compare timing screen (dudect): KeyslotConstTimeEqual is data-oblivious"
+@@ -1188,7 +1230,7 @@ if "$KE_CC" -O2 $KE_WNO $KE_NOASM $KE_GC -DVC_ENABLE_KEYSLOTS $KE_INC -c "$SRCRO
+ 	else cat /tmp/ke_out.txt; echo "    KEYSLOT DUDECT SCREEN FAILED"; exit 1; fi
+ 	grep -q '^const-time vs leaky compare agree on all verdicts = YES$' /tmp/ke_out.txt || { echo "    LEAKY REF WRONG VERDICT"; exit 1; }
+ else
+-	echo "    SKIP: no compiler built the keyslot dudect harness (see /tmp/ke_log)"
++	skip_step " no compiler built the keyslot dudect harness (see /tmp/ke_log)"
+ fi
+ 
+ echo "[47] Verifiable OPRF (DLEQ proof) over ristretto255: real Sha2 + from-scratch group vs independent python"
+@@ -1217,7 +1259,7 @@ if "$VO_CC" -O2 $VO_WNO $VO_NOASM $VO_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/vo
+ 	if grep -Eq '= NO$' /tmp/vo_c.txt; then echo "    VOPRF PROPERTY FAILED"; exit 1; fi
+ 	rm -rf "$HERE/__pycache__"
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/vo_cc.log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/vo_cc.log)"
+ fi
+ 
+ echo "[48] Catena-BRG memory-hard KDF core (survey alongside Balloon/scrypt) vs independent python"
+@@ -1245,7 +1287,7 @@ if "$CA_CC" -O2 $CA_WNO $CA_NOASM $CA_GC $CA_INC -c "$SRCROOT/Crypto/Sha2.c" -o
+ 	if grep -Eq '= NO$' /tmp/ca_c.txt; then echo "    CATENA POC FAILED"; exit 1; fi
+ 	rm -rf "$HERE/__pycache__"
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/ca_log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/ca_log)"
+ fi
+ 
+ echo ""
+@@ -1275,5 +1317,5 @@ if "$NT_CC" -O2 $NT_WNO $NT_NOASM $NT_GC $NT_INC -c "$SRCROOT/Crypto/Sha2.c" -o
+ 	if ! grep -q '^NETSHARE TRANSPORT ROUND-TRIP PASSED' /tmp/nt_c.txt; then echo "    NETSHARE TRANSPORT FAILED"; exit 1; fi
+ 	rm -rf "$HERE/__pycache__"
+ else
+-	echo "    SKIP: no compiler accepted the stock Crypto sources (see /tmp/nt_log)"
++	skip_step " no compiler accepted the stock Crypto sources (see /tmp/nt_log)"
+ fi

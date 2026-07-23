@@ -378,6 +378,48 @@ done:
 #endif /* VC_ENABLE_FIDO2 */
 
 /* ================================================================== *
+ *  Salt-binding for RAW_SECRET (production HMAC-SHA256 over sha256)   *
+ * ================================================================== */
+
+#if defined(VC_ENABLE_HKF_SALT_BIND)
+#include "Crypto/Sha2.h"   /* VeraCrypt's real SHA-256 */
+
+/* out = HMAC-SHA256(key = secret, msg = salt). Standard ipad/opad over the in-tree sha256(). */
+static void hkf_saltbind_hmac_sha256 (const unsigned char *key, int keyLen,
+                                      const unsigned char *msg, int msgLen,
+                                      unsigned char out[32])
+{
+	sha256_ctx    ctx;
+	unsigned char k0[64], pad[64], inner[32], keyHash[32];
+	int i;
+
+	if (keyLen > 64)
+	{
+		sha256_begin (&ctx); sha256_hash (key, (uint_32t) keyLen, &ctx); sha256_end (keyHash, &ctx);
+		memcpy (k0, keyHash, 32); memset (k0 + 32, 0, 32);
+	}
+	else
+	{
+		if (keyLen > 0) memcpy (k0, key, (size_t) keyLen);
+		memset (k0 + keyLen, 0, (size_t) (64 - keyLen));
+	}
+
+	for (i = 0; i < 64; i++) pad[i] = (unsigned char) (k0[i] ^ 0x36);
+	sha256_begin (&ctx); sha256_hash (pad, 64, &ctx);
+	if (msgLen > 0) sha256_hash (msg, (uint_32t) msgLen, &ctx);
+	sha256_end (inner, &ctx);
+
+	for (i = 0; i < 64; i++) pad[i] = (unsigned char) (k0[i] ^ 0x5c);
+	sha256_begin (&ctx); sha256_hash (pad, 64, &ctx); sha256_hash (inner, 32, &ctx);
+	sha256_end (out, &ctx);
+
+	{ volatile unsigned char *p = k0;      size_t n = sizeof (k0);      while (n--) *p++ = 0; }
+	{ volatile unsigned char *p = inner;   size_t n = sizeof (inner);   while (n--) *p++ = 0; }
+	{ volatile unsigned char *p = keyHash; size_t n = sizeof (keyHash); while (n--) *p++ = 0; }
+}
+#endif /* VC_ENABLE_HKF_SALT_BIND */
+
+/* ================================================================== *
  *  Dispatcher                                                         *
  * ================================================================== */
 
@@ -412,10 +454,20 @@ int HKFComputeResponse (const HKFConfig *cfg,
 #endif
 
 	case HKF_BACKEND_RAW_SECRET:
-		/* A caller-supplied secret (typically a Shamir reconstruction); mixed like a keyfile.
-		   The challenge (salt) is not used — the secret is fixed per enrollment. */
+		/* A caller-supplied secret (typically a Shamir reconstruction); mixed like a keyfile. */
 		if (cfg->rawSecretLen <= 0 || cfg->rawSecretLen > HKF_MAX_RESPONSE)
 			return HKF_ERR_CONFIG;
+#if defined(VC_ENABLE_HKF_SALT_BIND)
+		if (cfg->rawSecretBindSalt)
+		{
+			/* Bind the secret to this volume's salt: response = HMAC-SHA256(secret, salt). The same
+			   reconstructed secret then yields a different factor on a different volume. */
+			hkf_saltbind_hmac_sha256 (cfg->rawSecret, cfg->rawSecretLen, challenge, challenge_len, response_out);
+			*response_len_out = 32;
+			return HKF_OK;
+		}
+#endif
+		/* Otherwise the salt is not used — the secret is fixed per enrollment. */
 		memcpy (response_out, cfg->rawSecret, (size_t) cfg->rawSecretLen);
 		*response_len_out = cfg->rawSecretLen;
 		return HKF_OK;
@@ -435,6 +487,27 @@ void HKFSetActiveConfig (const HKFConfig *cfg)
 {
 	g_hkfActiveConfig = cfg;
 }
+
+/* Guarded on KEYSCRUB && HKF so this is the *complement* of the KeyScrub.c fallback stub, which is
+ * guarded on KEYSCRUB && !HKF. Exactly one definition exists when KEYSCRUB is on (this real one when
+ * a hardware/threshold factor is compiled in, the empty stub otherwise), and neither when KEYSCRUB is
+ * off. Without the && HKF here the KEYSCRUB-on/HKF-off build defined the symbol twice (see
+ * docs/REAL-BUILD-VALIDATION.md guard-complementarity). */
+#if defined(VC_ENABLE_KEYSCRUB) && defined(VC_ENABLE_HKF)
+void HKFScrubActiveConfig (void)
+{
+	HKFConfig *cfg = (HKFConfig *) g_hkfActiveConfig;   /* wipe the caller-owned secret storage */
+	if (cfg)
+	{
+		{ volatile unsigned char *p = cfg->rawSecret;  size_t n = sizeof (cfg->rawSecret);  while (n--) *p++ = 0; }
+		{ volatile unsigned char *p = cfg->simSecret;  size_t n = sizeof (cfg->simSecret);  while (n--) *p++ = 0; }
+		{ volatile unsigned char *p = (volatile unsigned char *) cfg->fidoPin; size_t n = sizeof (cfg->fidoPin); while (n--) *p++ = 0; }
+		cfg->rawSecretLen = 0;
+		cfg->simSecretLen = 0;
+	}
+	g_hkfActiveConfig = 0;
+}
+#endif
 
 int HKFApplyIfConfigured (unsigned char *userKey, int *keyLength,
                           const unsigned char *salt, int salt_len)

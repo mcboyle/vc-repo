@@ -14,6 +14,15 @@
 #include <wx/cmdline.h>
 #include <wx/tokenzr.h>
 #include "Core/Core.h"
+#if defined(VC_ENABLE_KEYSCRUB)
+#include "Core/KeyScrubEvents.h"
+#endif
+#if defined(VC_ENABLE_DURESS)
+#include "Common/DuressToken.h"
+#endif
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+#include "Common/Pkcs5.h"
+#endif
 #include "Application.h"
 #include "CommandLineInterface.h"
 #include "LanguageStrings.h"
@@ -22,6 +31,32 @@
 
 namespace VeraCrypt
 {
+#if defined(VC_ENABLE_DURESS)
+	// Parse exactly 'outLen' bytes from a hex string (case-insensitive, no separators). Returns false
+	// on any non-hex character or a length mismatch.
+	static bool ParseHexBytes (const wxString &hex, unsigned char *out, int outLen)
+	{
+		if ((int) hex.Length() != outLen * 2)
+			return false;
+		for (int i = 0; i < outLen; i++)
+		{
+			int hi = -1, lo = -1;
+			wxChar ch = hex[2 * i];
+			wxChar cl = hex[2 * i + 1];
+			if (ch >= L'0' && ch <= L'9') hi = ch - L'0';
+			else if (ch >= L'a' && ch <= L'f') hi = ch - L'a' + 10;
+			else if (ch >= L'A' && ch <= L'F') hi = ch - L'A' + 10;
+			if (cl >= L'0' && cl <= L'9') lo = cl - L'0';
+			else if (cl >= L'a' && cl <= L'f') lo = cl - L'a' + 10;
+			else if (cl >= L'A' && cl <= L'F') lo = cl - L'A' + 10;
+			if (hi < 0 || lo < 0)
+				return false;
+			out[i] = (unsigned char) ((hi << 4) | lo);
+		}
+		return true;
+	}
+#endif
+
 	static shared_ptr <Pkcs5Kdf> FindKdfAlgorithm (const wxString &name)
 	{
 		foreach (shared_ptr <Pkcs5Kdf> kdf, Pkcs5Kdf::GetAvailableAlgorithms())
@@ -103,6 +138,34 @@ namespace VeraCrypt
 		parser.AddOption (L"",	L"hkf-fido-pin",			_("FIDO2 device PIN (optional)"));
 		parser.AddOption (L"",	L"hkf-sim-secret",		_("Simulator secret (hex, testing only)"));
 		parser.AddOption (L"",	L"hkf-sim-mac",			_("Simulator MAC 1=HMAC-SHA1 2=HMAC-SHA256 (testing only)"));
+#if defined(VC_ENABLE_HKF_SALT_BIND)
+		parser.AddSwitch (L"",	L"hkf-bind-salt",		_("RAW_SECRET: use HMAC-SHA256(secret, volume salt) instead of the raw secret (binds a reconstructed/threshold secret to the volume)"));
+#endif
+#endif
+#if defined(VC_ENABLE_KEYSCRUB)
+		parser.AddSwitch (L"",	L"keyscrub",			_("Enable in-RAM key hygiene: scrub user-space secrets on unmount/idle/screen-lock/new-device"));
+		parser.AddOption (L"",	L"keyscrub-idle",		_("Idle-timeout seconds after which in-RAM secrets are scrubbed (0 = off)"));
+#endif
+#if defined(VC_ENABLE_DURESS)
+		parser.AddSwitch (L"",	L"duress-dismount",		_("Safe duress action: dismount all volumes + scrub RAM keys, mount nothing (non-destructive)"));
+		parser.AddSwitch (L"",	L"duress-register",		_("Register a duress passphrase (--new-password): print the (salt, tag) to save and pass as --duress-salt/--duress-hash at mount"));
+		parser.AddOption (L"",	L"duress-hash",			_("Duress passphrase tag (hex, 32 bytes): if the mount password matches, run the safe duress action instead of mounting"));
+		parser.AddOption (L"",	L"duress-salt",			_("Duress passphrase salt (hex, 16 bytes), paired with --duress-hash"));
+#endif
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+		parser.AddOption (L"",	L"argon2-memory",		_("Argon2id memory cost in MiB (explicit; overrides the PIM-derived default). Supply the same at mount as at create"));
+		parser.AddOption (L"",	L"argon2-iterations",	_("Argon2id time cost / iterations (explicit; overrides the PIM-derived default)"));
+		parser.AddOption (L"",	L"argon2-parallelism",	_("Argon2id parallelism / lanes (explicit; stock is fixed at 1)"));
+#endif
+#if defined(VC_ENABLE_KEYSLOTS)
+		parser.AddSwitch (L"",	L"keyslot-add",			_("Add a keyslot: wrap the volume's master key under a NEW passphrase (--new-password); open with the existing password/keyfiles. Header-slack backend"));
+		parser.AddSwitch (L"",	L"keyslot-open",		_("Test-open a keyslot with --new-password: reports whether that passphrase recovers the master key (does not mount)"));
+		parser.AddSwitch (L"",	L"keyslot-rotate",		_("Rotate: add a slot under --new-password, then revoke the slot the existing --password opens"));
+		parser.AddOption (L"",	L"keyslot-kill",		_("Revoke keyslot number N (0-based, header-slack table)"));
+		parser.AddSwitch (L"",	L"keyslot-list",		_("List occupied keyslots in the header-slack table"));
+		parser.AddSwitch (L"",	L"keyslot-duress",		_("With --keyslot-add: mark the new slot as a duress slot (opening it triggers the safe duress action, not a mount)"));
+		parser.AddOption (L"",	L"keyslot-backend",		_("Keyslot placement: header (default, primary-header slack), sidecar (a separate file), or deniable (a passphrase-derived slot in the container's free space)"));
+		parser.AddOption (L"",	L"keyslot-sidecar",		_("Sidecar file for --keyslot-backend=sidecar (created if absent)"));
 #endif
 		parser.AddSwitch (L"h", L"help",				_("Display detailed command line help"), wxCMD_LINE_OPTION_HELP);
 		parser.AddSwitch (L"",	L"import-token-keyfiles", _("Import keyfiles to security token"));
@@ -576,8 +639,47 @@ namespace VeraCrypt
 			if (!BuildHKFConfig (hkfBackend, hkfYkSlot, hkfRp, hkfCredId, hkfPin, hkfSimSecret, hkfSimMac, ArgHKFConfig, hkfError))
 				throw_err (wxString (L"Hardware key factor: ") + wxString (hkfError.c_str(), wxConvUTF8));
 
+#if defined(VC_ENABLE_HKF_SALT_BIND)
+			if (parser.Found (L"hkf-bind-salt"))
+				ArgHKFConfig.rawSecretBindSalt = 1;   // RAW_SECRET -> HMAC-SHA256(secret, salt)
+#endif
+
 			if (ArgHKFConfig.backend != HKF_BACKEND_NONE)
 				HKFSetActiveConfig (&ArgHKFConfig);   // applies to this process's mount/create
+		}
+#endif
+
+#if defined(VC_ENABLE_KEYSCRUB)
+		if (parser.Found (L"keyscrub"))
+		{
+			int idle = 0;
+			wxString v;
+			if (parser.Found (L"keyscrub-idle", &v))
+				idle = StringConverter::ToInt32 (wstring (v));
+			KeyScrubManager::Instance().Enable (idle);
+		}
+#endif
+
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+		{
+			// Explicit Argon2id parameters override the PIM-derived defaults for this process's
+			// create/mount. They are NOT stored in the header, so the same values must be given at
+			// mount as at create (like PIM). If any one is set, the others take sane high-risk
+			// defaults (1024 MiB, 4 iterations, 4 lanes). See docs/ARGON2-PARAMS-SPEC.md.
+			wxString v;
+			bool anyArgon2 = parser.Found (L"argon2-memory") || parser.Found (L"argon2-iterations")
+			              || parser.Found (L"argon2-parallelism");
+			if (anyArgon2)
+			{
+				uint32 memMiB = 1024, iters = 4, par = 4;
+				if (parser.Found (L"argon2-memory", &v))      memMiB = (uint32) StringConverter::ToUInt32 (wstring (v));
+				if (parser.Found (L"argon2-iterations", &v))  iters  = (uint32) StringConverter::ToUInt32 (wstring (v));
+				if (parser.Found (L"argon2-parallelism", &v)) par    = (uint32) StringConverter::ToUInt32 (wstring (v));
+				if (memMiB < 8)  memMiB = 8;      // Argon2 needs >= 8*parallelism KiB; keep a sane floor
+				if (iters < 1)   iters = 1;
+				if (par < 1)     par = 1;
+				Argon2SetParamsOverride (1, memMiB * 1024u, iters, par);   // MiB -> KiB
+			}
 		}
 #endif
 
@@ -790,6 +892,92 @@ namespace VeraCrypt
 #ifdef TC_LINUX
 		if (ArgEmergencyUnmount && ArgCommand != CommandId::DismountVolumes)
 			throw_err (L"--emergency-unmount is supported only with an unmount command");
+#endif
+
+#if defined(VC_ENABLE_DURESS)
+		{
+			// Explicit panic switch.
+			if (parser.Found (L"duress-dismount"))
+				ArgCommand = CommandId::DuressDismount;
+
+			// Register a duress passphrase: generate a random salt, derive the tag, and print the
+			// (salt, tag) pair the user then supplies as --duress-salt/--duress-hash at mount time. The
+			// passphrase (via --new-password) is never stored — only its salted HMAC tag. No volume needed.
+			if (parser.Found (L"duress-register"))
+			{
+				if (!ArgNewPassword)
+					throw_err (L"--duress-register needs --new-password (the duress passphrase to register)");
+				ArgCommand = CommandId::DuressRegister;
+			}
+
+			// Duress-passphrase recognition: a pre-registered (salt, tag) turns a *mount* whose
+			// password is the duress passphrase into the safe duress action instead — so entering the
+			// duress passphrase locks everything down. The passphrase itself is never stored; only the
+			// salt and HMAC-SHA256(salt, passphrase) tag are, and the compare is constant-time. No
+			// volume header is read or changed. See docs/DURESS-DISMOUNT-SPEC.md.
+			wxString dhash, dsalt;
+			if (ArgCommand == CommandId::MountVolume && ArgPassword
+				&& parser.Found (L"duress-hash", &dhash) && parser.Found (L"duress-salt", &dsalt))
+			{
+				unsigned char tag[DURESS_TAG_SIZE], salt[DURESS_SALT_SIZE];
+				if (!ParseHexBytes (dsalt, salt, DURESS_SALT_SIZE))
+					throw_err (L"--duress-salt must be exactly 16 hex-encoded bytes");
+				if (!ParseHexBytes (dhash, tag, DURESS_TAG_SIZE))
+					throw_err (L"--duress-hash must be exactly 32 hex-encoded bytes");
+				if (DuressTokenCheck (salt, DURESS_SALT_SIZE, ArgPassword->DataPtr(), (int) ArgPassword->Size(), tag))
+					ArgCommand = CommandId::DuressDismount;
+				{ volatile unsigned char *p = tag;  size_t n = sizeof (tag);  while (n--) *p++ = 0; }
+				{ volatile unsigned char *p = salt; size_t n = sizeof (salt); while (n--) *p++ = 0; }
+			}
+		}
+#endif
+
+#if defined(VC_ENABLE_KEYSLOTS)
+		{
+			// Keyslot lifecycle commands. The existing --password/--keyfiles open the volume (via the
+			// native header or any slot) to recover the master key; --new-password is the slot being
+			// added / opened / rotated in. All operate on the primary header's reserved slack and never
+			// touch the 512-byte header or the data body. See docs/KEYSLOTS-SPEC.md §9.
+			ArgKeyslotPassword = ArgNewPassword;
+			ArgKeyslotIndex = -1;
+			ArgKeyslotDuress = parser.Found (L"keyslot-duress");
+			ArgKeyslotBackend = 1;   // KSB_HEADER
+			wxString ksBackend;
+			if (parser.Found (L"keyslot-backend", &ksBackend))
+			{
+				if (ksBackend.IsSameAs (L"header", false))        ArgKeyslotBackend = 1;
+				else if (ksBackend.IsSameAs (L"deniable", false)) ArgKeyslotBackend = 2;
+				else if (ksBackend.IsSameAs (L"sidecar", false))  ArgKeyslotBackend = 3;
+				else throw_err (L"--keyslot-backend must be header, sidecar or deniable");
+			}
+			wxString ksSidecar;
+			if (parser.Found (L"keyslot-sidecar", &ksSidecar))
+				ArgKeyslotSidecar.reset (new FilePath (wstring (ksSidecar)));
+			if (ArgKeyslotBackend == 3 && !ArgKeyslotSidecar)
+				throw_err (L"--keyslot-backend=sidecar requires --keyslot-sidecar <path>");
+
+			int ksCmds = 0;
+			if (parser.Found (L"keyslot-add"))    { ArgCommand = CommandId::KeyslotAdd;    ksCmds++; }
+			if (parser.Found (L"keyslot-open"))   { ArgCommand = CommandId::KeyslotOpen;   ksCmds++; }
+			if (parser.Found (L"keyslot-rotate")) { ArgCommand = CommandId::KeyslotRotate; ksCmds++; }
+			if (parser.Found (L"keyslot-list"))   { ArgCommand = CommandId::KeyslotList;   ksCmds++; }
+			wxString killArg;
+			if (parser.Found (L"keyslot-kill", &killArg))
+			{
+				ArgCommand = CommandId::KeyslotKill; ksCmds++;
+				try { ArgKeyslotIndex = StringConverter::ToInt32 (wstring (killArg)); }
+				catch (...) { throw_err (L"--keyslot-kill needs a slot number"); }
+				if (ArgKeyslotIndex < 0)
+					throw_err (L"--keyslot-kill slot number must be >= 0");
+			}
+			if (ksCmds > 1)
+				throw_err (L"specify only one --keyslot-* command at a time");
+			if (ksCmds == 1 && (ArgVolumePath.get() == nullptr))
+				throw_err (L"--keyslot-* requires a volume path");
+			if ((ArgCommand == CommandId::KeyslotAdd || ArgCommand == CommandId::KeyslotOpen
+				 || ArgCommand == CommandId::KeyslotRotate) && !ArgKeyslotPassword)
+				throw_err (L"this --keyslot-* command needs --new-password (the slot passphrase)");
+		}
 #endif
 
 		if (ArgCommand == CommandId::None && Application::GetUserInterfaceType() == UserInterfaceType::Text)

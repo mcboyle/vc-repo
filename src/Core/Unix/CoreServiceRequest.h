@@ -15,12 +15,28 @@
 
 #include "Platform/Serializable.h"
 #include "Core/Core.h"
+#if defined(VC_ENABLE_HKF)
+extern "C" {
+#include "Common/HardwareKeyFactor.h"
+}
+#endif
 
 namespace VeraCrypt
 {
 	struct CoreServiceRequest : public Serializable
 	{
-		CoreServiceRequest () : ElevateUserPrivileges (false), FastElevation (false), UseDummySudoPassword (false), AllowInsecureMount (false) { }
+		CoreServiceRequest () : ElevateUserPrivileges (false), FastElevation (false), UseDummySudoPassword (false), AllowInsecureMount (false)
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+			, Argon2OverrideActive (false), Argon2MemCostKiB (0), Argon2Iterations (0), Argon2Parallelism (1)
+#endif
+#if defined(VC_ENABLE_HKF)
+			, HKFActive (false)
+#endif
+			{
+#if defined(VC_ENABLE_HKF)
+				Memory::Zero (&HKFCfg, sizeof (HKFCfg));
+#endif
+			}
 		TC_SERIALIZABLE (CoreServiceRequest);
 
 		virtual bool RequiresElevation () const { return false; }
@@ -32,6 +48,27 @@ namespace VeraCrypt
 		string UserEnvPATH;
 		bool UseDummySudoPassword;
 		bool AllowInsecureMount;
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+		// The explicit Argon2id parameter override (CLI --argon2-memory/-iterations/-parallelism) is a
+		// process-global set in the front-end after the privileged CoreService child was already forked,
+		// so it does not otherwise reach the child that performs mount-time key derivation. Carry it on
+		// every request and re-apply it in the child (CoreService::ProcessRequests) so a volume created
+		// with explicit Argon2 params can actually be mounted. Not stored in the header, exactly like PIM.
+		bool   Argon2OverrideActive;
+		uint32 Argon2MemCostKiB;
+		uint32 Argon2Iterations;
+		uint32 Argon2Parallelism;
+#endif
+#if defined(VC_ENABLE_HKF)
+		// The hardware/threshold key factor config is likewise a process-global (set by the CLI via
+		// HKFSetActiveConfig) that the forked CoreService child performing mount-time key derivation
+		// would otherwise never see. Carried as a raw POD blob: parent and child run the same binary,
+		// so the struct layout is identical, and the pipe already transports the volume password —
+		// the factor secret adds no new exposure class. Re-applied in ProcessRequests; the child
+		// scrubs its copy when the config is cleared.
+		bool      HKFActive;
+		HKFConfig HKFCfg;
+#endif
 	};
 
 	struct CheckFilesystemRequest : CoreServiceRequest

@@ -1,0 +1,78 @@
+# static-inline-idiom.patch — remove redundant `static` from `static VC_INLINE` (ROI-TOP-50 item 4)
+#
+# Apply with `git apply -p1` from the REPOSITORY ROOT. The two src/Crypto/ hunks apply directly onto
+# stock VeraCrypt 1.26.29 (these are upstream files). The workflow hunk is fork-only CI.
+#
+# VC_INLINE expands to `static inline __attribute__((always_inline))` on GCC (Crypto/config.h), so
+# `static VC_INLINE` is `static static inline` and GCC 13+ hard-errors "duplicate 'static'".
+#   * src/Crypto/t1ha_selfcheck.c:55 (probe) — genuinely failed to compile on GCC; now clean.
+#   * src/Crypto/jitterentropy-base-user.h:71 (jent_get_nstime) — Windows-guarded, fixed for
+#     consistency with its sibling definitions (which already use bare VC_INLINE); single-TU header
+#     so no MSVC linkage change.
+#   * .github/workflows/flag-matrix.yml — idiom-guard step compiling the four historically affected
+#     files under GCC 12/13/14 + clang, with a regression grep.
+#
+# Behaviour is unchanged (still static inline always_inline). No default-build behaviour change.
+# Verified: gcc-13 + clang-18 compile all four files clean; zero `static VC_INLINE` sites remain.
+#
+diff --git a/.github/workflows/flag-matrix.yml b/.github/workflows/flag-matrix.yml
+index 5751e0a..ef4051f 100644
+--- a/.github/workflows/flag-matrix.yml
++++ b/.github/workflows/flag-matrix.yml
+@@ -45,6 +45,24 @@ jobs:
+           VC_MATRIX_NEGCTL=1 ./flag_matrix.sh
+           ./flag_matrix.sh
+ 
++      # ROI item 4: the `static VC_INLINE` idiom expands to `static static inline` on GCC and is
++      # rejected by GCC 13+ ("duplicate 'static'"). Compile the files that historically carried it so
++      # every compiler in the matrix — including GCC 14 — guards against a regression. jitterentropy
++      # requires -O0 by design (an intentional #error otherwise).
++      - name: Guard the static-VC_INLINE idiom (GCC 12/13/14 + clang)
++        run: |
++          CC='${{ matrix.compiler.cc }}'
++          INC="-Isrc -Isrc/Common -Isrc/Crypto"
++          W="-Wno-implicit-function-declaration"
++          set -e
++          for f in Crypto/t1ha_selfcheck.c Crypto/chacha256.c Crypto/chachaRng.c; do
++            echo "  $CC -O2 src/$f"; $CC -O2 $W $INC -c "src/$f" -o /tmp/idiom.o
++          done
++          echo "  $CC -O0 src/Crypto/jitterentropy-base.c"
++          $CC -O0 $W $INC -c src/Crypto/jitterentropy-base.c -o /tmp/jeb.o
++          if grep -rn 'static VC_INLINE' src/ ; then echo 'regression: static VC_INLINE reintroduced'; exit 1; fi
++          echo "no 'static VC_INLINE' sites; idiom-sensitive files compile under $CC"
++
+   # Confirms the full self-contained crypto suite passes under strict coverage on the CI image too
+   # (any silently-skipped step fails the job). Complements the flag matrix above.
+   strict-verify:
+diff --git a/src/Crypto/jitterentropy-base-user.h b/src/Crypto/jitterentropy-base-user.h
+index aaefb41..c123b79 100644
+--- a/src/Crypto/jitterentropy-base-user.h
++++ b/src/Crypto/jitterentropy-base-user.h
+@@ -68,7 +68,10 @@ typedef int32 ssize_t;
+ #endif
+ #endif
+ 
+-static VC_INLINE void jent_get_nstime(uint64 *out)
++/* Drop the redundant `static`: VC_INLINE is `static inline ...` on GCC (would be `static static
++ * inline` -> duplicate 'static' on GCC 13+). Matches the sibling jent_get_nstime definitions below
++ * (lines ~103/114), which already use bare VC_INLINE; single-TU header, so no linkage change on MSVC. */
++VC_INLINE void jent_get_nstime(uint64 *out)
+ {
+ #ifdef _M_ARM64
+ 	LARGE_INTEGER v = { 0 };
+diff --git a/src/Crypto/t1ha_selfcheck.c b/src/Crypto/t1ha_selfcheck.c
+index 51d0291..4028f4c 100644
+--- a/src/Crypto/t1ha_selfcheck.c
++++ b/src/Crypto/t1ha_selfcheck.c
+@@ -52,7 +52,10 @@ const uint8_t t1ha_test_pattern[64] = {
+     'e',  'f',  'g',  'h',  'i',  'j',  'k',  'l',  'm',  'n',  'o',
+     'p',  'q',  'r',  's',  't',  'u',  'v',  'w',  'x'};
+ 
+-static VC_INLINE int probe(uint64_t (*hash)(const void *, size_t, uint64_t),
++/* VC_INLINE already expands to `static inline ...` on GCC (Crypto/config.h), so a leading `static`
++ * here makes `static static inline` -> GCC 13+ hard-errors "duplicate 'static'". Drop the redundant
++ * keyword (matches the fix already applied to chacha256.c / chachaRng.c). */
++VC_INLINE int probe(uint64_t (*hash)(const void *, size_t, uint64_t),
+                            const uint64_t reference, const void *data,
+                            unsigned len, uint64_t seed) {
+   const uint64_t actual = hash(data, len, seed);

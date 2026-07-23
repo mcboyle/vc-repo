@@ -32,7 +32,7 @@
 #include "misc.h"
 #include <string.h>
 
-static VC_INLINE void ChaCha20RngReKey (ChaCha20RngCtx* pCtx, int useCallBack)
+VC_INLINE void ChaCha20RngReKey (ChaCha20RngCtx* pCtx, int useCallBack)
 {
 	/* fill rs_buf with the keystream */
 	if (pCtx->m_rs_have)
@@ -58,7 +58,7 @@ static VC_INLINE void ChaCha20RngReKey (ChaCha20RngCtx* pCtx, int useCallBack)
 	pCtx->m_rs_have = sizeof (pCtx->m_rs_buf) - CHACHA20RNG_KEYSZ - CHACHA20RNG_IVSZ;
 }
 
-static VC_INLINE void ChaCha20RngStir(ChaCha20RngCtx* pCtx)
+VC_INLINE void ChaCha20RngStir(ChaCha20RngCtx* pCtx)
 {
 	ChaCha20RngReKey (pCtx, 1);
 
@@ -69,7 +69,7 @@ static VC_INLINE void ChaCha20RngStir(ChaCha20RngCtx* pCtx)
 	pCtx->m_rs_count = 1600000;
 }
 
-static VC_INLINE void ChaCha20RngStirIfNeeded(ChaCha20RngCtx* pCtx, size_t len)
+VC_INLINE void ChaCha20RngStirIfNeeded(ChaCha20RngCtx* pCtx, size_t len)
 {
 	if (pCtx->m_rs_count <= len) {
 		ChaCha20RngStir(pCtx);

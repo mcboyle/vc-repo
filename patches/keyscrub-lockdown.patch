@@ -1,0 +1,91 @@
+# keyscrub-lockdown.patch — process memory-hygiene lockdown (P0 hardening, VC_ENABLE_KEYSCRUB)
+#
+# Paths relative to src/ (apply -p1 from src/). Adds VcKeyMemoryLockdown (mlockall / RLIMIT_CORE=0 /
+# PR_SET_DUMPABLE=0) to this fork's KeyScrub module and calls it from KeyScrubManager::Enable. Builds
+# on the KeyScrub feature (apply patches/keyscrub.patch first). A default build stays byte-for-byte
+# stock. See docs/MEMORY-SCRUB.md.
+#
+diff --git a/Common/KeyScrub.c b/Common/KeyScrub.c
+index d6471cf..eace7a8 100644
+--- a/Common/KeyScrub.c
++++ b/Common/KeyScrub.c
+@@ -53,6 +53,38 @@ void VcSecureWipe (volatile void *pbData, size_t cbData)
+ #endif
+ }
+ 
++/* ================================================================================================
++ *  Process memory-hygiene lockdown
++ * ============================================================================================== */
++
++#if defined(__linux__)
++#	include <sys/mman.h>       /* mlockall */
++#	include <sys/resource.h>   /* setrlimit */
++#	include <sys/prctl.h>      /* prctl */
++#endif
++
++int VcKeyMemoryLockdown (void)
++{
++	int applied = 0;
++#if defined(__linux__) || defined(__APPLE__)
++	if (mlockall (MCL_CURRENT | MCL_FUTURE) == 0)
++		applied |= VC_LOCKDOWN_MLOCK;    /* keys never swapped to disk (needs privilege) */
++#endif
++#if defined(__linux__) || defined(__APPLE__)
++	{
++		struct rlimit rl;
++		rl.rlim_cur = 0; rl.rlim_max = 0;
++		if (setrlimit (RLIMIT_CORE, &rl) == 0)
++			applied |= VC_LOCKDOWN_NO_CORE;   /* a crash cannot dump keys to a core file */
++	}
++#endif
++#if defined(__linux__)
++	if (prctl (PR_SET_DUMPABLE, 0, 0, 0, 0) == 0)
++		applied |= VC_LOCKDOWN_NO_DUMP;      /* blocks ptrace attach / core generation */
++#endif
++	return applied;
++}
++
+ /* ================================================================================================
+  *  Scrub registry
+  * ============================================================================================== */
+diff --git a/Common/KeyScrub.h b/Common/KeyScrub.h
+index 2f61ff6..9076b31 100644
+--- a/Common/KeyScrub.h
++++ b/Common/KeyScrub.h
+@@ -43,6 +43,24 @@ extern "C" {
+ /* Zero cbData bytes at pbData in a way the compiler may not elide. Safe on NULL/0. */
+ void VcSecureWipe (volatile void *pbData, size_t cbData);
+ 
++/* ---- process memory-hygiene lockdown ----------------------------------------------------- */
++
++/* Bits returned by VcKeyMemoryLockdown reporting which protections were applied. */
++#define VC_LOCKDOWN_MLOCK     0x01   /* mlockall: pages will not be swapped out */
++#define VC_LOCKDOWN_NO_CORE   0x02   /* RLIMIT_CORE = 0: no core dump can leak keys */
++#define VC_LOCKDOWN_NO_DUMP   0x04   /* PR_SET_DUMPABLE 0: no ptrace attach / no core */
++
++/*
++ * Best-effort process hardening against key material leaking OUT of RAM: prevent swapping (so a key
++ * never reaches an unencrypted swap file), disable core dumps, and mark the process non-dumpable
++ * (blocks ptrace-based live extraction). Scrubbing RAM does not help if the key already reached swap
++ * or a hibernation image — call this once at startup, before any secret is derived. Returns a bitmask
++ * of the VC_LOCKDOWN_* protections that succeeded (mlockall commonly needs privilege and may be 0).
++ * NOTE: hibernation writes the whole of RAM to disk and is NOT prevented by mlock — warn users to
++ * disable hibernation on machines holding mounted volumes (see docs/MEMORY-SCRUB.md).
++ */
++int VcKeyMemoryLockdown (void);
++
+ /* ---- scrub registry ---------------------------------------------------------------------- */
+ 
+ /* Maximum number of secret regions tracked at once. Small and fixed: no allocation on the scrub
+diff --git a/Core/KeyScrubEvents.cpp b/Core/KeyScrubEvents.cpp
+index 752442a..9c99f4f 100644
+--- a/Core/KeyScrubEvents.cpp
++++ b/Core/KeyScrubEvents.cpp
+@@ -78,6 +78,7 @@ namespace VeraCrypt
+ 		pthread_mutex_lock (&Lock);
+ 		if (!Enabled)
+ 		{
++			VcKeyMemoryLockdown ();   // no swap / no core / no ptrace, before any secret is derived
+ 			VcKsRamProtectInit (&KeyScrubManager::RandSeed);
+ 			Enabled = true;
+ 			IdleTimeoutSeconds = idleTimeoutSeconds;

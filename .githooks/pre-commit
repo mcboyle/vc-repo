@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Pre-commit secret scan (ROI item 38). Enable once with:  git config core.hooksPath .githooks
+# Blocks a commit if a staged file contains a private key or a cloud/service token.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACM)
+[ ${#staged[@]} -eq 0 ] && exit 0
+if ! "$root/scripts/secrets-scan.sh" "${staged[@]}"; then
+	echo "pre-commit: secret-like content detected in staged files — commit blocked." >&2
+	echo "  (if this is a false positive, adjust scripts/secrets-scan.sh patterns)" >&2
+	exit 1
+fi

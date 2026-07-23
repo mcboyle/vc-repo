@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""guard_lint.py — guard-complementarity lint (ROI-TOP-50 item 12).
+
+The HKFScrubActiveConfig defect was a symbol defined in TWO .c files under #if guards that were NOT
+complementary: KeyScrub.c under `VC_ENABLE_KEYSCRUB && !VC_ENABLE_HKF` and HardwareKeyFactor.c under
+`VC_ENABLE_KEYSCRUB` alone — so a KEYSCRUB-on/HKF-off build defined it twice. A comment *claimed* the
+guards were complementary; nothing enforced it. This lint enforces it mechanically, at the source
+level (no compile needed):
+
+  * scan the fork .c/.cpp files for EXTERNAL-linkage function definitions (skip `static` / `VC_INLINE`
+    / `inline` — those have internal or inline linkage and cannot collide at link time);
+  * track the enclosing #if/#ifdef/#ifndef/#else/#elif/#endif guard stack for each definition;
+  * for any symbol defined in >= 2 places, SAT-check whether some assignment of the guard macros makes
+    two definitions' guards BOTH true. If so, that combination link-collides -> report and fail.
+
+Exit 0 = every multiply-defined external symbol has pairwise-disjoint (complementary) guards.
+Exit 1 = a collision is reachable. `--self-test` re-runs against a deliberately broken guard and
+asserts the lint flags it (negative control).
+"""
+import sys, os, re, itertools
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SRC  = os.path.join(HERE, "..", "src")
+
+# Fork .c/.cpp files that carry VC_ENABLE_* guards (the surface where a partial combo can collide).
+FILES = [
+    "Common/HardwareKeyFactor.c", "Common/KeyScrub.c", "Common/DuressToken.c",
+    "Common/Keyslot.c", "Common/KeyslotStore.c", "Common/AfSplit.c", "Common/KeyslotAreaFile.c",
+    "Common/Shamir.c", "Common/ShamirMac.c", "Common/ShareCode.c",
+    "Core/KeyScrubEvents.cpp",
+]
+
+CTRL_KW = {"if", "for", "while", "switch", "return", "sizeof", "else", "do", "case"}
+# a line that starts (column 0) an external function definition: `type ... name(` , not ending in ';'
+DEF_RE = re.compile(r'^([A-Za-z_][\w\s\*]*?)\b([A-Za-z_]\w*)\s*\(')
+
+_PYKW = {"and", "or", "not", "True", "False"}
+
+def cond_to_expr(cond):
+    """Turn a C preprocessor condition into a python boolean expression with macros as bare names."""
+    cond = cond.strip()
+    cond = re.sub(r'defined\s*\(\s*([A-Za-z_]\w*)\s*\)', r'\1', cond)   # defined(X) -> X
+    cond = re.sub(r'defined\s+([A-Za-z_]\w*)', r'\1', cond)            # defined X  -> X
+    cond = cond.replace("&&", " and ").replace("||", " or ").replace("!", " not ")
+    return cond if cond.strip() else "True"
+
+def macros_in(expr):
+    return set(t for t in re.findall(r'[A-Za-z_]\w*', expr) if t not in _PYKW)
+
+def guard_of(stack):
+    """AND of the guard stack -> single python expression."""
+    parts = [p for p in stack if p]
+    return " and ".join("(%s)" % p for p in parts) if parts else "True"
+
+def scan(path, text):
+    """Return list of (symbol, guard_expr, lineno)."""
+    out = []
+    stack = []          # list of active conditions (python expr strings)
+    group = []          # parallel stack of "conditions already taken in this #if group" for #elif/#else
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        s = raw.strip()
+        if s.startswith("#"):
+            m = re.match(r'#\s*(ifdef|ifndef|if|elif|else|endif)\b(.*)', s)
+            if not m:
+                continue
+            kind, rest = m.group(1), m.group(2).strip()
+            if kind == "ifdef":
+                stack.append(cond_to_expr("defined(%s)" % rest)); group.append([])
+            elif kind == "ifndef":
+                stack.append(cond_to_expr("not defined(%s)" % rest)); group.append([])
+            elif kind == "if":
+                stack.append(cond_to_expr(rest)); group.append([])
+            elif kind == "elif":
+                if stack:
+                    prev = group[-1] + [stack[-1]]
+                    group[-1] = prev
+                    neg = " and ".join("(not %s)" % p for p in prev)
+                    stack[-1] = "(%s) and (%s)" % (neg, cond_to_expr(rest)) if neg else cond_to_expr(rest)
+            elif kind == "else":
+                if stack:
+                    prev = group[-1] + [stack[-1]]
+                    group[-1] = prev
+                    stack[-1] = " and ".join("(not %s)" % p for p in prev)
+            elif kind == "endif":
+                if stack: stack.pop(); group.pop()
+            continue
+        # code line: is it an external function definition?
+        if not raw or raw[0].isspace():
+            continue
+        if raw.lstrip().startswith(("static", "VC_INLINE", "inline", "typedef", "//", "/*", "*")):
+            continue
+        if s.endswith(";"):          # a prototype / forward decl, not a definition
+            continue
+        m = DEF_RE.match(raw)
+        if not m:
+            continue
+        name = m.group(2)
+        if name in CTRL_KW:
+            continue
+        # crude linkage/definition sanity: the return-type chunk should look like a type, and the line
+        # (or a soon-following one) opens a body. Accept if it has a '(' and no '=' before it.
+        out.append((name, guard_of(stack), lineno))
+    return out
+
+def overlaps(g1, g2):
+    """True if some macro assignment makes both guards true; returns the witnessing assignment."""
+    macs = sorted(macros_in(g1) | macros_in(g2))
+    if len(macs) > 22:
+        macs = macs[:22]
+    for bits in itertools.product([False, True], repeat=len(macs)):
+        ns = dict(zip(macs, bits))
+        try:
+            if eval(g1, {"__builtins__": {}}, ns) and eval(g2, {"__builtins__": {}}, ns):
+                return {k: v for k, v in ns.items() if v}
+        except Exception:
+            return {"_uneval": True}   # be conservative: unparseable guard -> treat as overlap
+    return None
+
+def run(file_overrides=None):
+    defs = {}   # symbol -> list of (file, guard, lineno)
+    for rel in FILES:
+        path = os.path.normpath(os.path.join(SRC, rel))
+        text = (file_overrides or {}).get(rel)
+        if text is None:
+            if not os.path.exists(path):
+                continue
+            with open(path, "r", errors="replace") as fh:
+                text = fh.read()
+        for name, guard, lineno in scan(path, text):
+            defs.setdefault(name, []).append((rel, guard, lineno))
+
+    findings = []
+    for name, places in defs.items():
+        if len(places) < 2:
+            continue
+        for i in range(len(places)):
+            for j in range(i + 1, len(places)):
+                (f1, g1, l1), (f2, g2, l2) = places[i], places[j]
+                ov = overlaps(g1, g2)
+                if ov is not None:
+                    findings.append((name, f1, l1, g1, f2, l2, g2, ov))
+    return findings
+
+def report(findings):
+    if not findings:
+        print("    guard-lint: OK — every multiply-defined external symbol has complementary guards")
+        return 0
+    for (name, f1, l1, g1, f2, l2, g2, ov) in findings:
+        print("    GUARD-COLLISION: '%s' defined in %s:%d and %s:%d with overlapping guards" % (name, f1, l1, f2, l2))
+        print("        %s guard: %s" % (f1, g1))
+        print("        %s guard: %s" % (f2, g2))
+        print("        both true when: %s" % {k: v for k, v in ov.items()})
+    return 1
+
+if __name__ == "__main__":
+    if "--self-test" in sys.argv:
+        # Negative control: break the HardwareKeyFactor guard back to the historical (non-complementary)
+        # form and assert the lint flags the KEYSCRUB-only collision.
+        rel = "Common/HardwareKeyFactor.c"
+        with open(os.path.normpath(os.path.join(SRC, rel)), "r", errors="replace") as fh:
+            broken = fh.read().replace(
+                "#if defined(VC_ENABLE_KEYSCRUB) && defined(VC_ENABLE_HKF)",
+                "#if defined(VC_ENABLE_KEYSCRUB)")
+        f = run(file_overrides={rel: broken})
+        real = run()
+        hits = [x for x in f if x[0] == "HKFScrubActiveConfig"]
+        ok = bool(hits) and not any(x[0] == "HKFScrubActiveConfig" for x in real)
+        print("    self-test: broken guard flagged=%s, real tree clean=%s -> %s"
+              % (bool(hits), not any(x[0]=="HKFScrubActiveConfig" for x in real), "PASS" if ok else "FAIL"))
+        sys.exit(0 if ok else 1)
+    sys.exit(report(run()))

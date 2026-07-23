@@ -370,8 +370,37 @@ namespace VeraCrypt
 
 		ea->SetMode (mode);
 
+#if defined(VC_ENABLE_KEYSLOTS)
+		// Stash the leading effective-plaintext bytes (everything Deserialize reads: magic, geometry,
+		// master-key area). This is the keyslot payload — wrapping it under another passphrase reproduces
+		// this exact open, and it is what a mount-time keyslot search recovers to rebuild the header.
+		if (header.Size() >= GetKeyslotPayloadSize())
+		{
+			EffectivePlaintext.Allocate (GetKeyslotPayloadSize());
+			EffectivePlaintext.CopyFrom (header.GetRange (0, GetKeyslotPayloadSize()));
+		}
+#endif
+
 		return true;
 	}
+
+#if defined(VC_ENABLE_KEYSLOTS)
+	bool VolumeHeader::RebuildFromKeyslot (const ConstBufferPtr &plaintext, shared_ptr <EncryptionAlgorithm> ea, shared_ptr <EncryptionMode> mode, shared_ptr <Pkcs5Kdf> kdf)
+	{
+		if (plaintext.Size() != GetKeyslotPayloadSize())
+			return false;
+		// Deserialize needs a buffer of exactly EncryptedHeaderDataSize; the reserved tail beyond the
+		// effective plaintext is not covered by any field or CRC, so zero-pad it.
+		SecureBuffer full (EncryptedHeaderDataSize);
+		full.Zero();
+		full.GetRange (0, GetKeyslotPayloadSize()).CopyFrom (plaintext);
+		if (!Deserialize (full, ea, mode))
+			return false;
+		EA = ea;
+		Pkcs5 = kdf;
+		return true;
+	}
+#endif
 
 	template <typename T>
 	T VolumeHeader::DeserializeEntry (const ConstBufferPtr &header, size_t &offset) const

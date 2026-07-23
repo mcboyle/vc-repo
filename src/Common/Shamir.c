@@ -5,46 +5,61 @@
 #include "Shamir.h"
 #include <string.h>
 
-/* ---- GF(2^8) with reduction polynomial 0x11B (AES), generator 0x03 ---- */
+/* ---- GF(2^8), reduction polynomial 0x11B (AES) — constant-time, no tables ----
+ *
+ * Both operands in the reconstruction path are secret (share bytes and Lagrange terms), so the
+ * multiply and inverse must not branch on, nor index memory by, secret values. The previous
+ * table-based `gf_exp[gf_log[a] + gf_log[b]]` with an `if (a==0||b==0)` early-out leaked through cache
+ * timing and branch prediction — a side channel in the strongest coercion primitive. These
+ * fixed-iteration, branchless, table-free versions remove that channel while computing byte-identical
+ * field results (same AES field, reduction 0x1b), so every existing KAT and share value is unchanged.
+ */
 
-static unsigned char gf_exp[512];
-static unsigned char gf_log[256];
-static int gf_ready = 0;
-
-static void gf_init (void)
-{
-	int i;
-	unsigned int x = 1;
-	for (i = 0; i < 255; i++)
-	{
-		gf_exp[i] = (unsigned char) x;
-		gf_log[x] = (unsigned char) i;
-		/* multiply x by the generator 0x03 in GF(2^8): x = x*2 XOR x, reduce by 0x11B */
-		{
-			unsigned int hi = x & 0x80;
-			x = (x << 1) & 0xff;
-			if (hi) x ^= 0x1b;      /* reduce (0x11B without the x^8 bit) */
-			x ^= gf_exp[i];         /* + original (i.e. *3 = *2 + *1) */
-		}
-	}
-	/* extend the exp table so log sums up to 508 don't need a modulo in the hot path */
-	for (i = 255; i < 512; i++)
-		gf_exp[i] = gf_exp[i - 255];
-	gf_log[0] = 0;                   /* unused; log(0) undefined */
-	gf_ready = 1;
-}
-
+/* a * b in GF(2^8): Russian-peasant multiply, reduction 0x1b. Fixed 8 iterations; the only branches
+   are on the loop counter, never on a or b; no table lookups. */
 static unsigned char gf_mul (unsigned char a, unsigned char b)
 {
-	if (a == 0 || b == 0) return 0;
-	return gf_exp[gf_log[a] + gf_log[b]];
+	unsigned char p = 0;
+	int i;
+	for (i = 0; i < 8; i++)
+	{
+		unsigned char mask = (unsigned char) (0u - (unsigned) (b & 1u));      /* 0x00 or 0xFF */
+		unsigned char hi   = (unsigned char) (0u - (unsigned) ((a >> 7) & 1u)) & 0x1b;
+		p ^= mask & a;                                                        /* if (b&1) p ^= a   */
+		a  = (unsigned char) (((unsigned) a << 1) ^ hi);                      /* a = xtime(a)      */
+		b  = (unsigned char) (b >> 1);
+	}
+	return p;
 }
 
-/* multiplicative inverse: a^(-1) = g^(255 - log a) */
+/* a^(-1) = a^254 in GF(2^8) for a != 0 (Fermat: a^255 = 1). The exponent 254 is a public constant, so
+   the square-and-multiply schedule is fixed and independent of the secret a; a == 0 maps to 0. */
 static unsigned char gf_inv (unsigned char a)
 {
-	/* a != 0 required by callers */
-	return gf_exp[255 - gf_log[a]];
+	unsigned char r = 1, base = a;
+	int i;
+	for (i = 0; i < 8; i++)
+	{
+		if ((254u >> i) & 1u)        /* schedule depends only on the constant 254, not on a */
+			r = gf_mul (r, base);
+		base = gf_mul (base, base);
+	}
+	return r;
+}
+
+/* ---- CRC-32 (standard, polynomial 0xEDB88320) — self-contained, for verifiable reconstruction ---- */
+
+unsigned int shamir_secret_checksum (const unsigned char *secret, int len)
+{
+	unsigned int crc = 0xFFFFFFFFu;
+	int i, b;
+	for (i = 0; i < len; i++)
+	{
+		crc ^= secret[i];
+		for (b = 0; b < 8; b++)
+			crc = (crc >> 1) ^ (0xEDB88320u & (unsigned int) (-(int) (crc & 1u)));
+	}
+	return crc ^ 0xFFFFFFFFu;
 }
 
 /* Evaluate the polynomial with coefficients coef[0..degree] at point x (Horner). */
@@ -67,8 +82,6 @@ int shamir_split (const unsigned char *secret, int secret_len,
 	if (!secret || !random_bytes || !shares_out) return SHAMIR_ERR_PARAM;
 	if (secret_len < 1 || secret_len > SHAMIR_MAX_SECRET) return SHAMIR_ERR_PARAM;
 	if (threshold < 2 || n_shares < threshold || n_shares > SHAMIR_MAX_SHARES) return SHAMIR_ERR_PARAM;
-
-	if (!gf_ready) gf_init();
 
 	for (s = 0; s < n_shares; s++)
 	{
@@ -107,8 +120,6 @@ int shamir_combine (const ShamirShare *shares, int count,
 		for (j = i + 1; j < count; j++)
 			if (shares[i].x == shares[j].x) return SHAMIR_ERR_PARAM;   /* x must be distinct */
 	}
-
-	if (!gf_ready) gf_init();
 
 	/* Lagrange interpolation at x = 0, per secret byte:
 	   secret = sum_i y_i * prod_{j!=i} x_j / (x_j - x_i)   (subtraction == XOR in GF(2^8)) */

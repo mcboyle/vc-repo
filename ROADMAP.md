@@ -44,50 +44,192 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
    reconstructed from any *M-of-N* shares (Shamir over GF(2⁸)) and mixed into the password. Gives
    split trust, a safe (non-destructive) dead-man, and redundancy. A share can be a keyfile,
    passphrase value, YubiKey/FIDO2 response, or network fetch. `docs/SPLIT-KEY-SPEC.md`.
+9. **Cross-platform memory-key scrub** (`src/Common/KeyScrub.{c,h}`, `src/Core/KeyScrubEvents.{h,cpp}`)
+   — closes the Linux/macOS RAM-exposure gap the Windows driver handled alone. User-space secrets (the
+   reconstructed Shamir secret, HardwareKeyFactor material) are kept **ChaCha-encrypted at rest in RAM**
+   (the Windows `VcProtectMemory` scheme — t1ha2 over a 1 MiB decoy area → ChaCha12 — reusing the
+   in-tree primitives) and **erased on unmount / idle timeout / screen-lock / new-device-connect** via
+   a barrier-hardened secure-wipe + scrub registry. The crypto core is proven two ways (independent
+   Python reimpl of t1ha2+ChaCha12 vs. real compiled objects; anchor `d28b461b…`). Gated behind
+   `-DVC_ENABLE_KEYSCRUB` (`make KEYSCRUB=1`). **Honest limits:** the mounted master key lives in the
+   kernel device-mapper, not this process, so it is out of user-space reach; and the screen-lock /
+   new-device triggers are OS glue that must be validated on a real desktop session.
+   `docs/MEMORY-SCRUB.md`, `patches/keyscrub.patch`.
+10. **Safe duress-dismount** (`src/Common/DuressToken.{c,h}`, `UserInterface::DuressDismount`) — a
+   non-destructive coercion response: dismount every volume and scrub user-space RAM secrets (the
+   KeyScrub `ScrubNow()` path), mounting nothing. Triggered by an explicit `--duress-dismount` switch
+   or a **duress passphrase** recognised in user space via `HMAC-SHA256(salt, passphrase)` with a
+   constant-time compare — no plaintext stored, no header change. Verified two ways (independent
+   Python HMAC vs. real compiled Sha2; anchor `3d874ea9…`). Gated `-DVC_ENABLE_DURESS`
+   (`make DURESS=1`). Destroys nothing on disk, leaves no "destruction" tell.
+   `docs/DURESS-DISMOUNT-SPEC.md`, `patches/duress-dismount.patch`.
+11. **Explicit Argon2id parameters** (`Common/Pkcs5.c`, gated `-DVC_ENABLE_ARGON2_PARAMS`,
+   `make ARGON2PARAMS=1`) — expose Argon2's **memory / iterations / parallelism** as explicit CLI
+   inputs (`--argon2-memory/-iterations/-parallelism`) instead of shoehorning them into PIM and fixing
+   parallelism at 1. No header change (supplied like PIM at both create and mount). Verified: the real
+   in-tree Argon2 reproduces the **RFC 9106** Argon2id vector (parallelism 4); the override plumbs
+   parallelism (p=1 == stock, p=4 differs); the resolver matches an independent Python reimpl; and the
+   stock `Pkcs5.o` is byte-for-byte identical without the flag (`verification/argon2_params_test.c`,
+   step `[11]`). `docs/ARGON2-PARAMS-SPEC.md`, `patches/argon2-params.patch`.
+12. **Salt-binding for RAW_SECRET** (`Common/HardwareKeyFactor.c`, gated `-DVC_ENABLE_HKF_SALT_BIND`,
+   `make HKF_SALT_BIND=1`) — the `RAW_SECRET` factor optionally returns `HMAC-SHA256(secret, volume
+   salt)` instead of the raw secret, binding a reconstructed/threshold secret to the specific volume
+   (the same shares yield a different factor per volume, like the challenge-response hardware backends).
+   No header change; CLI `--hkf-bind-salt`. Verified two ways — the real `HKFComputeResponse` over the
+   in-tree `Sha2.c` vs. independent Python HMAC-SHA256, byte-for-byte (anchor `4619ed18…`), plus
+   unbound-unchanged and salt-dependence checks (`verification/saltbind_test.c`, step `[12]`).
+   `docs/SALT-BINDING-SPEC.md`, `patches/salt-binding.patch`.
+13. **Constant-time GF(2⁸) in Shamir** (`Common/Shamir.c`) — P0 hardening (`IDEAS-BACKLOG.md` §P0.1).
+   The reconstruction path's `gf_mul` did `gf_exp[gf_log[a]+gf_log[b]]` with an `if (a==0||b==0)`
+   early-out, and `gf_inv` indexed a table by `gf_log[a]` — both **secret-dependent memory indices and
+   branches**, a cache-timing / branch side channel in the strongest coercion primitive. Replaced with
+   a branchless Russian-peasant multiply (fixed 8 iterations, reduction 0x1b) and `a^254` via a
+   fixed-exponent square-multiply — no tables, no secret-dependent control flow. Proven byte-identical
+   to the table version over **all 65536 inputs** and `a·inv(a)=1` for every `a≠0`; all existing Shamir
+   KATs/threshold checks unchanged (`verification/shamir_test.c`, step `[5]`). **The recommended
+   `dudect` timing-leakage screen is now built** (`verification/shamir_dudect_test.c`, step `[41]`): a
+   Welch t-test over two input classes on the real `gf_mul`/`gf_inv`, made robust by being
+   **self-validating** — the same screen runs on a deliberately variable-time leaky multiply and must
+   flag it (|t| ≈ 700) while clearing the real branchless primitives (|t| < 2), so the pass/fail is a
+   machine-independent *contrast*, not an absolute cycle count. (A screen is evidence, not a proof of
+   constant-timeness.) `patches/shamir-constant-time.patch`.
+15. **Verifiable Shamir reconstruction** (`Common/Shamir.c`) — `shamir_secret_checksum` (CRC-32) so a
+   reconstruction is *verified*: a mistyped share or a below-threshold combine is detected instead of
+   silently returning garbage (the header's own "wrong shares yield an incorrect secret" caveat). Matches
+   Python `zlib.crc32` byte-for-byte (`3b8cfe40`); detection shown in step `[5]`. Self-contained, no new
+   dependency. **The keyed per-share MAC (adversarial share tamper/fabrication) is now built & proven**
+   (`Common/ShamirMac.{c,h}`, gated `-DVC_ENABLE_SHAMIR_MAC`; `HMAC-SHA256(macKey, "VCSMshare1"‖x‖len‖y)`
+   over the real Sha2.c, keeping Shamir.c dependency-free): a flipped, truncated, x-relabelled, or
+   fabricated share is rejected, and the wrong MAC key rejects — proven two ways in step `[40]` (real
+   Shamir.c + ShamirMac.c vs independent Python; tags diffed byte-for-byte). **Feldman/Pedersen
+   *dealer-consistency* VSS stays the prime-field scheme** (steps `[31]`/`[32]`): its homomorphic check
+   `g^{share}==∏C_j^{i^j}` has **no GF(2⁸) analogue**, so it is a parallel verifiable-sharing scheme,
+   not a byte-wise add-on — the MAC and VSS are complementary (share authentication vs dealer honesty),
+   documented in `docs/VSS-SPEC.md`. `IDEAS-BACKLOG.md` §D; `patches/shamir-verifiable-shares.patch`.
+14. **Memory-hygiene lockdown + zeroization tests** (`Common/KeyScrub.c`) — P0 hardening
+   (`IDEAS-BACKLOG.md` §P0.4/§P0.6). `VcKeyMemoryLockdown` (called from `KeyScrubManager::Enable` before
+   any secret is derived): `mlockall` (no swap), `RLIMIT_CORE=0` (no core dump), `PR_SET_DUMPABLE=0`
+   (no ptrace/core) — best-effort, returns a bitmask. Runtime-verified in the sandbox (step `[6]` `[G]`:
+   core disabled + non-dumpable after the call); and a zeroization matrix (`[H]`) asserts `VcSecureWipe`
+   zeroes every size/alignment and survives `-O2`. Hibernation writes all of RAM to disk and is **not**
+   covered — documented in `docs/MEMORY-SCRUB.md`. Gated `-DVC_ENABLE_KEYSCRUB`.
+   `patches/keyscrub-lockdown.patch`.
 
 ---
 
 ## DESIGN — specced, not yet built
 
-- **Cross-platform memory-key scrub** *(top priority; several DONE items lean on it).* VeraCrypt's
-  RAM-key-encryption and key-erase-on-shutdown are **Windows-driver-only**; on Linux/macOS keys sit
-  in RAM exposed to cold-boot and DMA (Thunderbolt/FireWire). Build: scrub derived keys and any
-  reconstructed Shamir secret on unmount / idle timeout / screen-lock / new-device-connect, with a
-  decoy key-derivation region like the Windows ChaCha scheme.
+- **Multiple independent keyslots** (like LUKS2's 8+) — **core built & verified; CLI/mount integration
+  remains.** *(The enabling primitive for per-person keys, rotation, revocation, and a real duress
+  keyslot — the one deliberately fork-only on-disk format.)* One master key, many independent
+  wrappings: slot 0 is the untouched native header, slots 1..N wrap the same VMK, so add/rotate/revoke
+  never re-encrypts the body. Built (`-DVC_ENABLE_KEYSLOTS`, `make KEYSLOTS=1`):
+  `Common/Keyslot.{c,h}` (record wrap/unwrap), `Common/KeyslotStore.{c,h}` (**all three backends** —
+  in-header table, deniable bare-record placement, sidecar), `Common/KeyslotKdf.c` (in-tree
+  `derive_key_sha512` binding). Verified: wrapping two ways (`verification/keyslot_poc.c`, step `[8]`,
+  anchor `56434b53…`) and the full add/open/rotate/revoke + deniable + duress-flag lifecycle against
+  the real modules (`verification/keyslot_store_test.c`, step `[9]`). The **`KeyslotArea` volume-I/O
+  bindings are now built & verified** (`Common/KeyslotAreaFile.{c,h}`, step `[37]`): header-slack
+  window `[512, 64K)` with the real header/hidden-header/data byte-untouched and cold-reopen
+  persistence, whole-file sidecar, and the deniable free-extent binding clamped below a hidden-volume
+  start — with the snapshot diff confined to one blending slot and the multi-snapshot location leak
+  asserted as the documented limitation. AF records (`[36]`) compose through the bindings.
+  **Remaining (real-build):** the C++ stream adapters for the mount path, mount-time slot search +
+  duress-slot hook, the enroll/rotate/revoke CLI, backup-header-group mirroring of the slot table,
+  and deniable-backend validation on real media (`docs/KEYSLOTS-SPEC.md §9`). `docs/KEYSLOTS-SPEC.md`.
+- **Network-bound share source** (Tang/Clevis-style, McCallum–Relyea) — **exchange proven, AND now
+  proven at production parameters (full Ed25519); network client + wire format remain.** A split-key
+  share whose recovery needs a network server's participation, where the **server never sees the key**
+  and a stolen off-network machine stays locked; composes as a Shamir share (no new derivation seam).
+  The **MR exchange is proven** two ways in the toy field (provision `K=S^c`; blinded recover
+  `X=C·g^e`, `Y=X^s`, `K=Y·(S^e)⁻¹`; anchor `cc288fab…`, step `[10]`), and the **production-parameter
+  group is now proven** on the **full Ed25519 curve** (step `[39]`, `verification/netshare_ed25519_poc.c`):
+  a from-scratch extended-coordinate group on the proven 256-bit bignum core, validated against the
+  **official RFC 8032 §7.1 public-key KAT** AND diffed byte-for-byte vs independent Python for the
+  whole MR flow (share anchor `ab8b717f…`; recover==provision, wrong-server-differs,
+  server-sees-only-blinded-X). Remaining (real-build): the client transport, the `C`-blob wire
+  format, the enroll/unlock CLI, and a constant-time group for shipping (the validation group is not
+  side-channel-hardened). `docs/NETWORK-SHARE-SPEC.md`.
+- **Write-only ORAM access-pattern hiding** *(the real mitigation for the multi-snapshot attack — the
+  #1 documented limitation).* Every logical write touches K PRNG-chosen physical blocks with fresh
+  ciphertext, independent of the logical target, so repeat-imaging cannot detect hidden-volume activity.
+  **The access-pattern-hiding property is proven** two ways (public-only vs public+hidden workloads
+  yield a byte-identical observable access trace; correctness reads==writes; real in-tree ChaCha20/Sha2
+  vs. independent Python; anchor `203b068d…`, `verification/oram_poc.c` step `[13]`). The block-layer +
+  position-map integration into the volume layout is a large real-build effort. `docs/ORAM-SPEC.md`.
+- **Anti-forensic (AF) key splitting** (LUKS/TKS1) — **core proven AND keyslot-format integration
+  built & proven (`[FORMAT]` done); real-flash validation remains.** The concrete answer to the
+  SSD-remnant caveat: diffuse a keyslot's wrapped key across s stripes so recovery needs all of them
+  and a partial wear-leveling remnant yields nothing. Core proven two ways (anchor `ddb23937…`,
+  step `[15]`); the record integration is shipping code (`src/Common/AfSplit.{c,h}` +
+  `KeyslotStore.c` `afStripes`: labeled v2 records with authenticated s, field-free bare records,
+  byte-identical legacy when off) and proven two ways in step `[36]` (full record bytes vs.
+  independent Python, bare-record anchor `76b60553…`; partial-remnant defeat at record level; AF +
+  legacy coexistence). Remaining: the write/erase discipline on real flash. `docs/AF-SPLIT-SPEC.md`.
+- **Decoy-fragments-by-default** (upstream issue #1072) — **indistinguishability core proven;
+  write-into-volumes + SSD validation remain.** Write plausible hidden-volume creation artifacts on
+  *every* volume so their presence proves nothing. A real hidden header (`salt || encrypted`) and a
+  decoy fragment (`salt || keystream`) are the same uniform distribution, so a free-space scanner
+  cannot tell a with-hidden volume from a decoy-only one. **Proven** two ways (identical layout; real
+  and decoy batches pass the same integer byte-uniformity test; real in-tree ChaCha20 vs. independent
+  Python, byte-for-byte; anchors `47067dd6…`/`a52a1326…`, `verification/decoyfrag_poc.c` step `[14]`).
+  Strictly indistinguishable-random storage — not fabricated activity (stays on the right side of the
+  DESCOPED line). Remaining (real-build): write the fragments at real hidden-volume offsets on every
+  volume, and validate remnant behaviour on real SSDs. `docs/DECOY-FRAGMENTS-SPEC.md`.
 - **Decoy content generator** (Phase 2 of the decoy) — prepare believable staged content with
   consistent metadata (filesystem vs in-file timestamps, coherent persona). Content helper only.
+  *Caution:* on reflection this sits close to the DESCOPED evidence-fabrication line — keep it to
+  indistinguishable-random storage artifacts, not a synthesized record of user activity.
   `docs/DECOY-VOLUME-SPEC.md §4`.
-- **Salt-binding for RAW_SECRET** — optionally return `HMAC(secret, salt)` instead of the raw secret,
-  binding a reconstructed/threshold secret to the specific volume salt.
 
 ---
 
 ## BACKLOG — good ideas from the research, not started
 
-- **Multiple independent keyslots** (like LUKS2's 8+). VeraCrypt has one password/keyfile set per
-  volume. Keyslots enable per-person keys, key rotation, revocation, and dedicated duress/recovery
-  slots **without re-encrypting the volume body**. Requires a header/keyslot-table format change —
-  the enabling primitive for much of the rest.
-- **Network-bound unlock** (Tang/Clevis-style, McCallum–Relyea). Bind a share/key to a network
-  server's presence; a stolen or off-network machine stays locked; the server never sees the key.
-  Composes cleanly as a **Shamir share source** (fits the split-key factor already built).
-- **Safe duress-dismount.** A password/slot that mounts *nothing*, scrubs keys from RAM, and
-  unmounts — the non-destructive duress action. Strictly better than a destructive wipe (which
-  destroys deniability and can escalate). Pairs with the memory-scrub item.
-- **Argon2id multi-parameter UI.** Argon2id shipped upstream (1.26.29) but its memory/time/
-  parallelism are shoehorned into the single PIM value. Expose them as explicit inputs with sane
-  high-risk defaults. In the same KDF seam this project already works in.
-- **TPM / measured boot / Secure Boot signing.** VeraCrypt deliberately omits the TPM; measured boot
-  and first-class bootloader signing would harden evil-maid resistance beyond the existing bootloader
-  fingerprint check. (The DCS/EFI bootloader has experimental TPM support.)
-- **ORAM access-pattern hiding** (write-only ORAM: HIVE, DataLair). The real mitigation for the
-  multi-snapshot deniability attack — hides which blocks the hidden volume touches.
-- **Decoy-fragments-by-default** (upstream issue #1072). Write fake hidden-volume/creation artifacts
-  on *every* volume so their presence on an SSD (via wear-leveling remnants) proves nothing. Partial
-  SSD-deniability hardening.
-- **Mobile (Android/iOS).** VeraCrypt has none. Academic PDE-for-mobile work (MobiGyges, Mobiflage,
-  MobiPluto) shows demand and flash-specific attacks (capacity-comparison, fill-to-full).
-- **UEFI/GPT hidden OS.** Upstream hidden-OS creation is MBR/legacy-BIOS only.
+The research-grade tracks below are surveyed with honest verifiability/effort/scope assessments in
+**`docs/RESEARCH-NOTES.md`** (read that before starting one). (Write-only **ORAM** and
+**decoy-fragments-by-default** have moved to DESIGN above — their core properties are now proven.) In
+brief:
+
+- **Mobile (Android/iOS).** VeraCrypt has none; academic PDE-for-mobile work shows flash-specific
+  attacks. Very large; a platform port, not sandbox-verifiable.
+- **UEFI/GPT hidden OS.** Upstream hidden-OS creation is MBR/legacy-BIOS only. Firmware/bootloader work;
+  not sandbox-verifiable.
+- **TPM / measured boot / Secure Boot signing.** Hardens evil-maid resistance beyond the bootloader
+  fingerprint check, with a deniability/portability tradeoff. PCR-policy logic could be tested against a
+  software TPM; real sealing needs hardware.
+
+---
+
+- **Balloon memory-hard KDF** (candidate alongside Argon2id, `IDEAS-BACKLOG.md` §C) — **algorithm
+  proven AND wired as a selectable mountable PRF.** Provably memory-hard password hash built on the
+  in-tree SHA-256 (expand/mix `delta=3`/extract). Core proven two ways (anchor `635ebeac…`, step
+  `[16]`); now shipping gated `-DVC_ENABLE_BALLOON_KDF`: `BALLOON` PRF id, `derive_key_balloon` in
+  `Common/Pkcs5.c` (heap buffer, abort fail-closed, dk ≤ 32 = the Balloon output, longer via
+  counter expansion), PIM→(rounds, space-KiB) resolver with an explicit override mirroring the
+  Argon2 params model, `Volumes.c` + thread-pool dispatch, and the `Pkcs5Balloon` C++ class
+  (never shadowing `Pkcs5HmacSha256` in hash→KDF matching). Proven in step `[38]`: the real
+  compiled `Pkcs5.c` TU vs. independent Python (which first re-derives the `[16]` anchor),
+  REF-diffing dk32/dk64/dk192 + the resolver; benchmarked vs the real Argon2id (informational —
+  ~0.4 s at 1 MiB/t=3 vs Argon2id's ~4.5 s at its 416 MiB default; hash-bound vs memory-bound,
+  so equal-time comparisons must be done on target hardware before recommending either).
+  Remaining (real-build): mount/create round-trip with `--hash Balloon` on a real volume.
+  `docs/BALLOON-SPEC.md`.
+- **OPRF password hardening** (2HashDH / CFRG DH-OPRF, `IDEAS-BACKLOG.md` §C) — **protocol proven,
+  AND now proven at production parameters over the full ristretto255 group; server + threshold remain.**
+  The derived key depends on the password AND a rate-limited server's secret; the server never sees the
+  password or output, so a **seized disk cannot be brute-forced offline**. Proven two ways in the toy
+  field (anchor `ca5691bd…`, step `[17]`), and the **production-parameter group is now proven** on the
+  **full ristretto255 curve** (step `[43]`, `verification/oprf_ristretto_poc.c`): a from-scratch
+  ristretto255 (RFC 9496 encode + Elligator2) + `expand_message_xmd(SHA-512)` on the step-`[39]` field,
+  validated against the **official RFC 9496 §A.1 basepoint-multiples KAT** AND diffed byte-for-byte vs
+  independent Python for `Blind`/`Evaluate`/`Finalize` (identity, blind-independence,
+  wrong-key-differs). The **threshold OPRF/PPSS split is now also proven over ristretto255** (step
+  `[44]`, `verification/toprf_ristretto_poc.c`): the server key Shamir-split over the scalar field
+  `Z_L`, `t` partial evaluations combined by Lagrange-in-the-exponent to the byte-identical single-key
+  output, `t-1` differ, servers oblivious; diffed byte-for-byte vs Python (3-of-5). Remaining
+  (real-build): a constant-time group (the validation group is not side-channel-hardened), the
+  rate-limited servers + transport, and RFC 9497 e2e vectors. `docs/OPRF-SPEC.md`.
 
 ---
 

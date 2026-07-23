@@ -1,0 +1,197 @@
+# argon2-params.patch — explicit Argon2id parameters (VC_ENABLE_ARGON2_PARAMS)
+#
+# Paths are relative to src/ (apply with -p1 from src/). The Pkcs5.{c,h} hunks apply onto stock
+# VeraCrypt 1.26.29 (they gate additions around the stock get_argon2_params / derive_key_argon2); the
+# CommandLineInterface.cpp / Makefile hunks assume this fork's prior feature blocks (apply the earlier
+# patches first, or use patches/ALL-changes-vs-1.26.29.patch). Verified to apply cleanly onto the fork
+# baseline; the stock (no-flag) Pkcs5.o is byte-for-byte identical. See docs/ARGON2-PARAMS-SPEC.md.
+#
+diff --git a/Common/Pkcs5.c b/Common/Pkcs5.c
+index cb0f6c1..37c0033 100644
+--- a/Common/Pkcs5.c
++++ b/Common/Pkcs5.c
+@@ -1710,7 +1710,16 @@ int get_pkcs5_iteration_count(int pkcs5_prf_id, int pim, BOOL bBoot, int* pMemor
+ 
+ #ifndef VC_DCS_DISABLE_ARGON2
+ 		case ARGON2:
++#if defined(VC_ENABLE_ARGON2_PARAMS)
++			{
++				uint32 it = 0, mc = 0, par = 1;
++				Argon2GetResolvedParams (pim, &it, &mc, &par);   /* override, else stock PIM formula */
++				iteration_count = (int) it;
++				*pMemoryCost    = (int) mc;
++			}
++#else
+ 			get_argon2_params (pim, &iteration_count, pMemoryCost);
++#endif
+ 			break;
+ 
+ 		case BLAKE2B:
+@@ -1758,7 +1767,11 @@ int derive_key_argon2(const unsigned char *pwd, int pwd_len, const unsigned char
+ 	result = argon2id_hash_raw(
+ 		iterations, // number of iterations
+ 		memcost, // memory cost in KiB
++#if defined(VC_ENABLE_ARGON2_PARAMS)
++		Argon2GetParallelism(), // parallelism factor (explicit override, else 1)
++#else
+ 		1, // parallelism factor (number of threads)
++#endif
+ 		pwd, pwd_len, // password and its length
+ 		salt, salt_len, // salt and its length
+ 		dk, dklen,// derived key and its length
+@@ -1857,6 +1870,45 @@ void get_argon2_params(int pim, int* pIterations, int* pMemcost)
+         *pIterations = 13 + (pim - 31);
+     }
+ }
++
++#if defined(VC_ENABLE_ARGON2_PARAMS)
++/* Process-wide explicit Argon2id parameters (set by the CLI before a create/mount). Not stored in the
++   header — the same values must be supplied at mount as at create, exactly like PIM. */
++static struct { int active; uint32 memCostKiB; uint32 iterations; uint32 parallelism; }
++	g_argon2Override = { 0, 0, 0, 1 };
++
++void Argon2SetParamsOverride (int active, uint32 memCostKiB, uint32 iterations, uint32 parallelism)
++{
++	g_argon2Override.active      = active;
++	g_argon2Override.memCostKiB  = memCostKiB;
++	g_argon2Override.iterations  = iterations;
++	g_argon2Override.parallelism = parallelism ? parallelism : 1;
++}
++
++int Argon2GetResolvedParams (int pim, uint32 *iterations, uint32 *memCostKiB, uint32 *parallelism)
++{
++	if (g_argon2Override.active)
++	{
++		*iterations   = g_argon2Override.iterations;
++		*memCostKiB   = g_argon2Override.memCostKiB;
++		*parallelism  = g_argon2Override.parallelism;
++		return 1;
++	}
++	{
++		int it = 0, mc = 0;
++		get_argon2_params (pim, &it, &mc);   /* stock PIM formula, parallelism 1 */
++		*iterations  = (uint32) it;
++		*memCostKiB  = (uint32) mc;
++		*parallelism = 1;
++	}
++	return 0;
++}
++
++uint32 Argon2GetParallelism (void)
++{
++	return g_argon2Override.active ? g_argon2Override.parallelism : 1;
++}
++#endif
+ #endif
+ 
+ #endif //!TC_WINDOWS_BOOT
+diff --git a/Common/Pkcs5.h b/Common/Pkcs5.h
+index ed37683..dcf2afa 100644
+--- a/Common/Pkcs5.h
++++ b/Common/Pkcs5.h
+@@ -52,6 +52,22 @@ wchar_t *get_kdf_name (int kdf_id);
+ int derive_key_argon2(const unsigned char *pwd, int pwd_len, const unsigned char *salt, int salt_len, uint32 iterations, uint32 memcost, unsigned char *dk, int dklen, long volatile *pAbortKeyDerivation);
+ void get_argon2_params(int pim, int* pIterations, int* pMemcost);
+ 
++#if defined(VC_ENABLE_ARGON2_PARAMS)
++/*
++ * Explicit Argon2id parameter override. Stock VeraCrypt shoehorns Argon2's memory/time cost into the
++ * single PIM value (get_argon2_params) and fixes parallelism at 1. This lets the caller (the CLI) set
++ * memory (KiB), iterations, and parallelism explicitly for the current process's create/mount, exactly
++ * the way PIM is supplied: the values are NOT stored in the header, so the same three must be given at
++ * mount as at create. See docs/ARGON2-PARAMS-SPEC.md. Gated; a build without it is byte-for-byte stock.
++ */
++void   Argon2SetParamsOverride (int active, uint32 memCostKiB, uint32 iterations, uint32 parallelism);
++/* Resolve the effective (iterations, memCostKiB, parallelism) for a PIM: the override when active,
++   else the stock PIM formula with parallelism 1. Returns 1 if the override was used, 0 otherwise. */
++int    Argon2GetResolvedParams (int pim, uint32 *iterations, uint32 *memCostKiB, uint32 *parallelism);
++/* Effective parallelism (override when active, else 1) — used at the argon2id_hash_raw call site. */
++uint32 Argon2GetParallelism (void);
++#endif
++
+ /* HMAC-BLAKE2b-512 PRF. Output written to d/input_digest which must be at least 64 bytes long.
+    Gated with Argon2 as it reuses the BLAKE2b primitive that ships with Argon2. */
+ void hmac_blake2b (unsigned char *key, int keylen, unsigned char *input_digest, int len);
+diff --git a/Main/CommandLineInterface.cpp b/Main/CommandLineInterface.cpp
+index 87ac46e..1bb69bf 100644
+--- a/Main/CommandLineInterface.cpp
++++ b/Main/CommandLineInterface.cpp
+@@ -20,6 +20,9 @@
+ #if defined(VC_ENABLE_DURESS)
+ #include "Common/DuressToken.h"
+ #endif
++#if defined(VC_ENABLE_ARGON2_PARAMS)
++#include "Common/Pkcs5.h"
++#endif
+ #include "Application.h"
+ #include "CommandLineInterface.h"
+ #include "LanguageStrings.h"
+@@ -144,6 +147,11 @@ namespace VeraCrypt
+ 		parser.AddSwitch (L"",	L"duress-dismount",		_("Safe duress action: dismount all volumes + scrub RAM keys, mount nothing (non-destructive)"));
+ 		parser.AddOption (L"",	L"duress-hash",			_("Duress passphrase tag (hex, 32 bytes): if the mount password matches, run the safe duress action instead of mounting"));
+ 		parser.AddOption (L"",	L"duress-salt",			_("Duress passphrase salt (hex, 16 bytes), paired with --duress-hash"));
++#endif
++#if defined(VC_ENABLE_ARGON2_PARAMS)
++		parser.AddOption (L"",	L"argon2-memory",		_("Argon2id memory cost in MiB (explicit; overrides the PIM-derived default). Supply the same at mount as at create"));
++		parser.AddOption (L"",	L"argon2-iterations",	_("Argon2id time cost / iterations (explicit; overrides the PIM-derived default)"));
++		parser.AddOption (L"",	L"argon2-parallelism",	_("Argon2id parallelism / lanes (explicit; stock is fixed at 1)"));
+ #endif
+ 		parser.AddSwitch (L"h", L"help",				_("Display detailed command line help"), wxCMD_LINE_OPTION_HELP);
+ 		parser.AddSwitch (L"",	L"import-token-keyfiles", _("Import keyfiles to security token"));
+@@ -633,6 +641,29 @@ namespace VeraCrypt
+ 		}
+ #endif
+ 
++#if defined(VC_ENABLE_ARGON2_PARAMS)
++		{
++			// Explicit Argon2id parameters override the PIM-derived defaults for this process's
++			// create/mount. They are NOT stored in the header, so the same values must be given at
++			// mount as at create (like PIM). If any one is set, the others take sane high-risk
++			// defaults (1024 MiB, 4 iterations, 4 lanes). See docs/ARGON2-PARAMS-SPEC.md.
++			wxString v;
++			bool anyArgon2 = parser.Found (L"argon2-memory") || parser.Found (L"argon2-iterations")
++			              || parser.Found (L"argon2-parallelism");
++			if (anyArgon2)
++			{
++				uint32 memMiB = 1024, iters = 4, par = 4;
++				if (parser.Found (L"argon2-memory", &v))      memMiB = (uint32) StringConverter::ToUInt32 (wstring (v));
++				if (parser.Found (L"argon2-iterations", &v))  iters  = (uint32) StringConverter::ToUInt32 (wstring (v));
++				if (parser.Found (L"argon2-parallelism", &v)) par    = (uint32) StringConverter::ToUInt32 (wstring (v));
++				if (memMiB < 8)  memMiB = 8;      // Argon2 needs >= 8*parallelism KiB; keep a sane floor
++				if (iters < 1)   iters = 1;
++				if (par < 1)     par = 1;
++				Argon2SetParamsOverride (1, memMiB * 1024u, iters, par);   // MiB -> KiB
++			}
++		}
++#endif
++
+ 		if (parser.Found (L"protect-hidden", &str))
+ 		{
+ 			if (str == L"yes")
+diff --git a/Makefile b/Makefile
+index ba038a3..709b9af 100644
+--- a/Makefile
++++ b/Makefile
+@@ -150,6 +150,7 @@ export ENABLE_WOLFCRYPT ?= 0
+ export VC_ENABLE_KEYSCRUB ?= 0
+ export VC_ENABLE_DURESS ?= 0
+ export VC_ENABLE_KEYSLOTS ?= 0
++export VC_ENABLE_ARGON2_PARAMS ?= 0
+ 
+ export GCC_GTEQ_440 := 0
+ export GCC_GTEQ_430 := 0
+@@ -227,6 +228,14 @@ ifeq "$(origin KEYSLOTS)" "command line"
+ 	C_CXX_FLAGS += -DVC_ENABLE_KEYSLOTS
+ endif
+ 
++# Explicit Argon2id parameters (opt-in). `make ARGON2PARAMS=1` exposes --argon2-memory/-iterations/
++# -parallelism, overriding the PIM-derived defaults. Only touches Common/Pkcs5.c (already in the
++# build) + the CLI; a plain `make` stays byte-for-byte stock. See docs/ARGON2-PARAMS-SPEC.md.
++ifeq "$(origin ARGON2PARAMS)" "command line"
++	VC_ENABLE_ARGON2_PARAMS := 1
++	C_CXX_FLAGS += -DVC_ENABLE_ARGON2_PARAMS
++endif
++
+ #------ Linux configuration ------
+ 
+ ifeq "$(shell uname -s)" "Linux"
