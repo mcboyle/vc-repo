@@ -2184,3 +2184,25 @@ if [ -n "$GD_CC" ] \
 else
 	skip_step " no compiler for the hctr2 gf_dot dudect screen (see /tmp/gd_log)"
 fi
+
+echo ""
+echo "[83] Flash-media deniability probe (src/Common/FlashProbe.c) — fail-closed, fixture-tested (batch-2 C3)"
+# Hidden-volume deniability does NOT survive flash (FTL residue, TRIM) and is defeated on rotational
+# media by a two-snapshot classifier. FlashProbe warns unless a device verifies clean on every axis and
+# on ANY unknown input (fail closed). This unit-tests the Linux rotational/discard probe against injected
+# /sys FIXTURE trees, the ATA (word169/69) + NVMe (DLFEAT) bit decoders against synthetic buffers, and
+# the fail-closed contract as a named check. Windows (IOCTL)/macOS probes are compile-checked, real-build.
+FP_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then FP_CC="$c"; break; fi; done
+if [ -n "$FP_CC" ] && "$FP_CC" -O2 -I"$SRCROOT" "$HERE/flash_probe_test.c" -o /tmp/flash_probe 2>/tmp/fp_log; then
+	if /tmp/flash_probe > /tmp/fp_out.txt; then
+		grep -E 'PASS$|FAIL$' /tmp/fp_out.txt | sed 's/^/    /'
+		if grep -q '^FLASH PROBE TESTS PASSED' /tmp/fp_out.txt; then
+			echo "    Linux probe unit-tested against fixtures; Windows/macOS probes compile-checked, need a real build"
+		else
+			echo "    FLASH PROBE TESTS FAILED"; exit 1
+		fi
+	else grep -E 'FAIL$' /tmp/fp_out.txt | sed 's/^/    /'; echo "    FLASH PROBE TESTS FAILED"; exit 1; fi
+else
+	skip_step " no compiler for the flash-probe test (see /tmp/fp_log)"
+fi
