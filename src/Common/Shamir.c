@@ -13,6 +13,11 @@
  * timing and branch prediction — a side channel in the strongest coercion primitive. These
  * fixed-iteration, branchless, table-free versions remove that channel while computing byte-identical
  * field results (same AES field, reduction 0x1b), so every existing KAT and share value is unchanged.
+ *
+ * NOTE ON THE TWO CONSTANTS — both are correct, do NOT "unify" them: 0x11B is the full 9-bit reduction
+ * polynomial x^8+x^4+x^3+x+1; 0x1B is the same polynomial with its x^8 term dropped — the value XORed
+ * back in AFTER a left shift already carried the high bit out of the byte (`if (hi) a ^= 0x1b`). A
+ * future reader "fixing" one to match the other would break the field arithmetic.
  */
 
 /* a * b in GF(2^8): Russian-peasant multiply, reduction 0x1b. Fixed 8 iterations; the only branches
