@@ -1,0 +1,169 @@
+diff --git a/src/Common/AtomicHeader.c b/src/Common/AtomicHeader.c
+new file mode 100644
+index 0000000..cba3bfc
+--- /dev/null
++++ b/src/Common/AtomicHeader.c
+@@ -0,0 +1,91 @@
++/*
++ * AtomicHeader — see AtomicHeader.h. A/B header pair + generation + commit tag over the in-tree Sha2.
++ */
++#include "AtomicHeader.h"
++
++#if defined(VC_ENABLE_ATOMIC_HEADER)
++
++#include <string.h>
++#include "Crypto/Sha2.h"
++
++#define SHA256_BLOCK 64
++#define SHA256_DIGEST 32
++
++static void ah_hmac (const unsigned char key[32],
++                     const unsigned char *m1, size_t l1, const unsigned char *m2, size_t l2,
++                     unsigned char out[SHA256_DIGEST])
++{
++	sha256_ctx c;
++	unsigned char k0[SHA256_BLOCK], pad[SHA256_BLOCK], inner[SHA256_DIGEST];
++	int i;
++	memcpy (k0, key, 32); memset (k0 + 32, 0, SHA256_BLOCK - 32);
++	for (i = 0; i < SHA256_BLOCK; i++) pad[i] = k0[i] ^ 0x36;
++	sha256_begin (&c); sha256_hash (pad, SHA256_BLOCK, &c);
++	if (l1) sha256_hash (m1, (uint_32t) l1, &c);
++	if (l2) sha256_hash (m2, (uint_32t) l2, &c);
++	sha256_end (inner, &c);
++	for (i = 0; i < SHA256_BLOCK; i++) pad[i] = k0[i] ^ 0x5c;
++	sha256_begin (&c); sha256_hash (pad, SHA256_BLOCK, &c); sha256_hash (inner, SHA256_DIGEST, &c);
++	sha256_end (out, &c);
++}
++
++static void put_gen (unsigned char *p, uint64 g)
++{ int i; for (i = 7; i >= 0; i--) { p[i] = (unsigned char)(g & 0xff); g >>= 8; } }
++static uint64 read_gen (const unsigned char *p)
++{ uint64 g = 0; int i; for (i = 0; i < 8; i++) g = (g << 8) | p[i]; return g; }
++
++/* constant-time-ish tag compare (not secret-dependent branching on the tag content) */
++static int tag_equal (const unsigned char *a, const unsigned char *b)
++{ int i, d = 0; for (i = 0; i < ATOMIC_HEADER_TAG_SIZE; i++) d |= a[i] ^ b[i]; return d == 0; }
++
++void AtomicHeaderBuild (const unsigned char K[32], const unsigned char *header, int headerLen,
++                        uint64 gen, unsigned char *out)
++{
++	unsigned char genb[ATOMIC_HEADER_GEN_SIZE];
++	memmove (out, header, (size_t) headerLen);
++	put_gen (genb, gen);
++	memcpy (out + headerLen, genb, ATOMIC_HEADER_GEN_SIZE);
++	/* commitTag = HMAC(K, header || gen) */
++	ah_hmac (K, out, (size_t) headerLen, genb, ATOMIC_HEADER_GEN_SIZE,
++	         out + headerLen + ATOMIC_HEADER_GEN_SIZE);
++}
++
++int AtomicHeaderValid (const unsigned char K[32], const unsigned char *copy, int headerLen)
++{
++	unsigned char tag[ATOMIC_HEADER_TAG_SIZE];
++	ah_hmac (K, copy, (size_t) headerLen, copy + headerLen, ATOMIC_HEADER_GEN_SIZE, tag);
++	return tag_equal (tag, copy + headerLen + ATOMIC_HEADER_GEN_SIZE);
++}
++
++uint64 AtomicHeaderGen (const unsigned char *copy, int headerLen)
++{ return read_gen (copy + headerLen); }
++
++int AtomicHeaderSelect (const unsigned char K[32],
++                        const unsigned char *copyA, const unsigned char *copyB, int headerLen,
++                        unsigned char *outHeader, uint64 *outGen)
++{
++	int va = AtomicHeaderValid (K, copyA, headerLen);
++	int vb = AtomicHeaderValid (K, copyB, headerLen);
++	int chosen;
++	if (!va && !vb) return -1;                                   /* fail closed */
++	if (va && !vb) chosen = 0;
++	else if (vb && !va) chosen = 1;
++	else chosen = (AtomicHeaderGen (copyB, headerLen) > AtomicHeaderGen (copyA, headerLen)) ? 1 : 0;
++	{
++		const unsigned char *c = chosen ? copyB : copyA;
++		if (outHeader) memcpy (outHeader, c, (size_t) headerLen);
++		if (outGen) *outGen = AtomicHeaderGen (c, headerLen);
++	}
++	return chosen;
++}
++
++uint64 AtomicHeaderNextGen (const unsigned char K[32],
++                            const unsigned char *copyA, const unsigned char *copyB, int headerLen)
++{
++	uint64 g = 0;
++	if (AtomicHeaderValid (K, copyA, headerLen)) { uint64 ga = AtomicHeaderGen (copyA, headerLen); if (ga > g) g = ga; }
++	if (AtomicHeaderValid (K, copyB, headerLen)) { uint64 gb = AtomicHeaderGen (copyB, headerLen); if (gb > g) g = gb; }
++	return g + 1;
++}
++
++#endif /* VC_ENABLE_ATOMIC_HEADER */
+diff --git a/src/Common/AtomicHeader.h b/src/Common/AtomicHeader.h
+new file mode 100644
+index 0000000..763b00e
+--- /dev/null
++++ b/src/Common/AtomicHeader.h
+@@ -0,0 +1,66 @@
++/*
++ * AtomicHeader — atomic, power-loss-resilient header writes (ROI-TOP-50 item 50).
++ *
++ * VeraCrypt keeps a primary header and a backup header. A crash BETWEEN writing the two during a
++ * password/keyfile change (or a keyslot add/rotate/revoke) can leave both stale-or-torn and brick the
++ * volume. This treats the two copies as an A/B pair with a monotonic generation counter and a commit
++ * tag, so a torn write of one copy is always recoverable from the other:
++ *
++ *   committed copy = header[headerLen] || gen[8 big-endian] || commitTag[32]
++ *   commitTag      = HMAC-SHA256(K, header || gen)          (K = a volume-derived key, 32 bytes)
++ *
++ *   write:  compute newGen = max(valid gens)+1; write the INACTIVE (older/invalid) copy fully; fsync;
++ *           it is now the newest by gen. A half-written copy fails its commitTag (not "committed").
++ *   mount:  pick the VALID copy with the greatest gen; if the newest is torn, fall back to the older
++ *           valid one; if NEITHER is valid, fail closed (refuse to mount stale/garbage).
++ *
++ * The 8-byte gen never wraps in practice. Rollback to an older COMPLETE copy is out of scope (needs a
++ * monotonic counter in tamper-resistant storage). True power-loss recovery needs real hardware; what is
++ * proven in-sandbox is the torn-write recovery logic (see verification/atomic_header_test.c).
++ *
++ * Gated behind VC_ENABLE_ATOMIC_HEADER; default build stays byte-for-byte stock.
++ */
++#ifndef TC_HEADER_Common_AtomicHeader
++#define TC_HEADER_Common_AtomicHeader
++
++#include "Tcdefs.h"
++
++#if defined(VC_ENABLE_ATOMIC_HEADER)
++
++#if defined(__cplusplus)
++extern "C" {
++#endif
++
++#define ATOMIC_HEADER_GEN_SIZE  8
++#define ATOMIC_HEADER_TAG_SIZE  32
++#define ATOMIC_HEADER_OVERHEAD  (ATOMIC_HEADER_GEN_SIZE + ATOMIC_HEADER_TAG_SIZE)   /* 40 */
++
++/* Build a committed copy at 'out' (needs headerLen + ATOMIC_HEADER_OVERHEAD bytes):
++   header || gen[8 BE] || HMAC-SHA256(K, header || gen). K is 32 bytes. */
++void AtomicHeaderBuild (const unsigned char K[32], const unsigned char *header, int headerLen,
++                        uint64 gen, unsigned char *out);
++
++/* 1 if 'copy' carries a valid commit tag (fully written / committed), 0 if torn or corrupt. */
++int AtomicHeaderValid (const unsigned char K[32], const unsigned char *copy, int headerLen);
++
++/* Read the gen field of a copy (only meaningful when AtomicHeaderValid()==1). */
++uint64 AtomicHeaderGen (const unsigned char *copy, int headerLen);
++
++/* Select the VALID copy with the greatest gen, copying its header into outHeader (headerLen bytes) and
++   its gen into *outGen (if non-NULL). Returns 0 (A chosen) or 1 (B chosen), or -1 if NEITHER copy is
++   valid — fail closed, refuse to mount. */
++int AtomicHeaderSelect (const unsigned char K[32],
++                        const unsigned char *copyA, const unsigned char *copyB, int headerLen,
++                        unsigned char *outHeader, uint64 *outGen);
++
++/* Next generation to write = max(valid gens) + 1 (1 when neither copy is valid). */
++uint64 AtomicHeaderNextGen (const unsigned char K[32],
++                            const unsigned char *copyA, const unsigned char *copyB, int headerLen);
++
++#if defined(__cplusplus)
++}
++#endif
++
++#endif /* VC_ENABLE_ATOMIC_HEADER */
++
++#endif /* TC_HEADER_Common_AtomicHeader */

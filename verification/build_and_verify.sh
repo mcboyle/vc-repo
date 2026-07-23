@@ -1927,3 +1927,96 @@ d["components"]=comps; json.dump(d, open("/tmp/vc_sbom_bad.json","w"))'
 else
 	sed 's/^/    /' /tmp/sbom_val.txt 2>/dev/null; echo "    SBOM VALIDATION FAILED"; exit 1
 fi
+
+echo ""
+echo "[75] Keyslot-area MAC: authenticate the slot table (ROI item 42 [FORMAT])"
+# KeyslotAreaMac adds HMAC-SHA256(K_area=HKDF(VMK), "VCKSAREA1"||count||slots) in an area trailer, so
+# deleting/reordering/truncating the SET of records is detected even though each surviving record still
+# opens. Two ways: the HKDF+HMAC tag vs an independent python reimpl (byte-for-byte over the real region
+# bytes), plus behavioural detection. Negative controls: flip a slot byte / DROP a slot / REORDER slots
+# / wrong K_area all -> KAM_TAMPERED; an area with no trailer -> KAM_NO_TRAILER (old area, warn+continue).
+AM_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then AM_CC="$c"; break; fi; done
+AM_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+AM_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+AM_DEF="-DVC_ENABLE_KEYSLOTS -DVC_ENABLE_KEYSLOT_AREA_MAC"
+AM_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$AM_CC" ] \
+   && "$AM_CC" -O2 $AM_WNO $AM_NOASM $AM_DEF $AM_INC "$HERE/keyslot_areamac_test.c" \
+        "$SRCROOT/Common/KeyslotAreaMac.c" "$SRCROOT/Common/KeyslotStore.c" "$SRCROOT/Common/Keyslot.c" \
+        "$SRCROOT/Common/AfSplit.c" "$SRCROOT/Crypto/Sha2.c" "$SRCROOT/Crypto/chacha256.c" \
+        -o /tmp/keyslot_areamac_test 2>/tmp/am_log; then
+	if /tmp/keyslot_areamac_test > /tmp/am_c.txt; then
+		grep -vE '^VMK|^REGION|^CTAG' /tmp/am_c.txt
+		if python3 "$HERE/keyslot_areamac_reference.py" < /tmp/am_c.txt > /tmp/am_py.txt 2>&1 \
+		   && grep -q '^MATCH' /tmp/am_py.txt && grep -q '^PASS' /tmp/am_c.txt; then
+			sed 's/^/    /' /tmp/am_py.txt
+			echo "    MATCH: area MAC == independent python HKDF+HMAC; set-level tamper detected; old area warns"
+		else
+			sed 's/^/    /' /tmp/am_py.txt; echo "    AREA MAC CROSS-CHECK FAILED"; exit 1
+		fi
+	else grep -vE '^VMK|^REGION|^CTAG' /tmp/am_c.txt; echo "    AREA MAC FAILED"; exit 1; fi
+else
+	skip_step " no compiler for the keyslot area-MAC test (see /tmp/am_log)"
+fi
+
+echo ""
+echo "[76] Encrypted volume labels (ROI item 43 [FORMAT])"
+# VolumeLabel stores a human name as an AEAD keyslot record ("LBL1"||len||label padded to 64) — no new
+# crypto, only payload framing over the already-anchored KeyslotWrap. Two ways: the framing emitted as
+# FRAME lines diffed byte-for-byte vs volume_label_reference.py, plus a Set->Get round-trip over the real
+# keyslot AEAD. Negative controls: wrong passphrase / tampered record -> no label; the label cleartext
+# never appears in the 128-byte record; a 49-byte label is rejected; the fixed plaintext hides length.
+VL_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then VL_CC="$c"; break; fi; done
+VL_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+VL_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+VL_DEF="-DVC_ENABLE_KEYSLOTS -DVC_ENABLE_VOLUME_LABEL"
+VL_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$VL_CC" ] \
+   && "$VL_CC" -O2 $VL_WNO $VL_NOASM $VL_DEF $VL_INC "$HERE/volume_label_test.c" \
+        "$SRCROOT/Common/VolumeLabel.c" "$SRCROOT/Common/Keyslot.c" "$SRCROOT/Crypto/Sha2.c" \
+        "$SRCROOT/Crypto/chacha256.c" -o /tmp/volume_label_test 2>/tmp/vl_log; then
+	if /tmp/volume_label_test > /tmp/vl_c.txt; then
+		grep -v '^FRAME' /tmp/vl_c.txt
+		grep '^FRAME' /tmp/vl_c.txt > /tmp/vl_c_frame.txt
+		python3 "$HERE/volume_label_reference.py" > /tmp/vl_py.txt
+		if diff -q /tmp/vl_c_frame.txt /tmp/vl_py.txt >/dev/null && grep -q '^PASS' /tmp/vl_c.txt; then
+			echo "    MATCH: label framing == independent python; round-trip + no-leak + tamper-reject all hold"
+		else
+			echo "    MISMATCH / label test failed"; diff /tmp/vl_c_frame.txt /tmp/vl_py.txt | head; exit 1
+		fi
+	else grep -v '^FRAME' /tmp/vl_c.txt; echo "    VOLUME LABEL FAILED"; exit 1; fi
+else
+	skip_step " no compiler for the volume label test (see /tmp/vl_log)"
+fi
+
+echo ""
+echo "[77] Atomic power-loss-resilient header writes (ROI item 50 [FORMAT])"
+# AtomicHeader treats primary+backup as an A/B pair + 8-byte gen + commitTag = HMAC(K, header||gen).
+# A torn write of one copy is always recoverable from the other. Two ways: the commit-tag layout vs an
+# independent python reimpl (byte-for-byte), plus a torn-write SIMULATION over an in-memory medium
+# (crash at every offset) asserting recovery always selects a valid newest-committed copy. Negative
+# controls: corrupt the chosen copy -> fall back; corrupt BOTH -> fail closed (-1). Real power-loss
+# needs hardware and is out of scope (documented).
+AH_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then AH_CC="$c"; break; fi; done
+AH_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+AH_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+AH_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$AH_CC" ] \
+   && "$AH_CC" -O2 $AH_WNO $AH_NOASM -DVC_ENABLE_ATOMIC_HEADER $AH_INC "$HERE/atomic_header_test.c" \
+        "$SRCROOT/Common/AtomicHeader.c" "$SRCROOT/Crypto/Sha2.c" -o /tmp/atomic_header_test 2>/tmp/ah_log; then
+	if /tmp/atomic_header_test > /tmp/ah_c.txt; then
+		grep -vE '^K |^HEADER |^GEN |^CTAG ' /tmp/ah_c.txt
+		if python3 "$HERE/atomic_header_reference.py" < /tmp/ah_c.txt > /tmp/ah_py.txt 2>&1 \
+		   && grep -q '^MATCH' /tmp/ah_py.txt && grep -q '^PASS' /tmp/ah_c.txt; then
+			sed 's/^/    /' /tmp/ah_py.txt
+			echo "    MATCH: commit tag == independent python; torn writes recover; both-bad fails closed"
+		else
+			sed 's/^/    /' /tmp/ah_py.txt; echo "    ATOMIC HEADER CROSS-CHECK FAILED"; exit 1
+		fi
+	else grep -vE '^K |^HEADER |^GEN |^CTAG ' /tmp/ah_c.txt; echo "    ATOMIC HEADER FAILED"; exit 1; fi
+else
+	skip_step " no compiler for the atomic header test (see /tmp/ah_log)"
+fi

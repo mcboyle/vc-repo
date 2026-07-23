@@ -8,6 +8,12 @@ layout, so per the project rule they are proposed here first. All three would be
 
 ## Item 42 — Authenticate the keyslot area / header MAC `[M][FORMAT]`
 
+> **BUILT (reviewed & approved 2026-07-23):** option **A** (VMK-derived `K_area`), **warn-and-continue**
+> on old unauthenticated areas. Implemented in `Common/KeyslotAreaMac.{c,h}` (gated
+> `VC_ENABLE_KEYSLOT_AREA_MAC`); verified at suite step `[75]` (`keyslot_areamac_test.c` +
+> `keyslot_areamac_reference.py`). Items 43 and 50 below remain design-only. The C++ mount-path call
+> and header-slack/sidecar trailer placement are the remaining real-build wiring.
+
 ### What is already authenticated (important)
 
 Each keyslot **record** is already an AEAD: `KeyslotWrap` produces a 32-byte tag over the wrapped
@@ -61,6 +67,10 @@ areaMac = HMAC-SHA256(K_area, "VCKSAREA1" || slotCount || slot[0] || slot[1] || 
 
 ## Item 43 — Encrypted volume labels `[S][FORMAT]`
 
+> **BUILT (reviewed & approved 2026-07-23):** fixed-48-in-64 padded record. Implemented in
+> `Common/VolumeLabel.{c,h}` (gated `VC_ENABLE_VOLUME_LABEL`); verified at suite step `[76]`
+> (`volume_label_test.c` + `volume_label_reference.py`). Only item 50 below remains design-only.
+
 ### Goal
 A human-readable label ("work-laptop-backup") the owner can list, without leaking it to an examiner who
 images the disk. VeraCrypt has no volume-name field on purpose (deniability). We want the *name* private.
@@ -89,6 +99,12 @@ Fixed max length 48 vs 64 vs variable-padded-to-bucket? (Lean fixed 48 in a 64-b
 ---
 
 ## Item 50 — Atomic, power-loss-resilient header writes `[M][FORMAT]`
+
+> **BUILT (reviewed & approved 2026-07-23):** 8-byte generation counter; keyslot-area A/B rides the
+> existing backup-header mirroring. Implemented in `Common/AtomicHeader.{c,h}` (gated
+> `VC_ENABLE_ATOMIC_HEADER`); verified at suite step `[77]` (`atomic_header_test.c` +
+> `atomic_header_reference.py`) — torn-write recovery proven; true power-loss stays real-build-only.
+> All three Tier-5 [FORMAT] items (42, 43, 50) are now built.
 
 ### Problem
 VeraCrypt keeps a primary header and a backup header (at the end of the volume). A crash *between*
