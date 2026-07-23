@@ -57,20 +57,83 @@ independent Python reference reproduces every value byte-for-byte over 10 vector
   forward jump (the hardware property the whole scheme rests on).
 - **Wrong key detected** — a `commit_key` off by one bit fails verification.
 
+## Operational policy — the central design decision (was open)
+
+The crypto is complete and verified; the *operational policy* — what to do on a counter mismatch, which
+anchors to trust, how to recover, and how this interacts with deniability — is the design decision the
+spec previously left open ("a recovery path must be specified"). Fixed here.
+
+### 1. Fail-WARN, not fail-stop (default)
+
+Rollback *prevention* on disk alone is provably impossible: an in-band, disk-only counter is rewound by
+the same snapshot that rewinds the data (van Dijk et al., *Offline Untrusted Storage with Immutable
+Attestation*, STC '07). Detection requires **external non-rewindable state**, and even then the
+increment-then-store step has an unavoidable window — Ariadne (Kaptchuk et al., USENIX Security 2016)
+shows a correct scheme needs "at least a single bit flip per update," and at the instant of a crash
+between *increment counter* and *store state* a **benign power loss is indistinguishable from a rollback
+attack**. Therefore the honest default for a **portable** tool is fail-warn:
+
+| Observation | Verdict | Action |
+|---|---|---|
+| anchor counter **==** stored state counter | OK | mount normally |
+| anchor **newer by exactly 1** | **WARN** — probable interrupted commit / crash | surface a clear warning, let the user proceed after acknowledging (a benign crash lands here) |
+| anchor **newer by > 1** | **ALARM** — probable rollback / replay | refuse by default; require explicit override with a stern warning |
+
+**Do not "harden" this to fail-stop by default.** A fail-stop default lets an ordinary power loss brick a
+journalist's volume — turning a freshness feature into an availability weapon against exactly the user it
+is meant to protect. Fail-stop may be offered as an opt-in for a threat model that prefers unavailability
+to any replay risk, but it is not the default, and this reasoning is recorded so it is not silently
+reversed later.
+
+### 2. Anchor taxonomy (ranked; some sources are explicitly NOT dependable)
+
+The external non-rewindable state is the entire trust anchor. Ranked by dependability:
+
+1. **TPM 2.0 NV monotonic counter** (`TPM2_NV_Increment` on an NV index with `TPMA_NV_COUNTER`) — the
+   strongest widely-available anchor where present.
+2. **Hardware token / phone / paper checkpoint** — a YubiKey or phone app that stores the last counter,
+   or a written-down checkpoint value, for **portability** across machines without a usable TPM. Weaker
+   (user-mediated, loseable) but real external state.
+3. **Explicitly NOT dependable — do not use as the anchor:**
+   - **FIDO2 signature counters** — optional in the spec and per-credential; many authenticators keep
+     them at 0 or do not increment reliably. Not a general monotonic counter.
+   - **Intel SGX monotonic counters** — the `sgx_create_monotonic_counter` API was **deprecated/removed**
+     (limited write endurance, rollback issues); do not build on it.
+
+### 3. Recovery path (was flagged, now specified)
+
+For the dead-TPM / lost-token case, the shipping default is **escrowed higher-counter re-seal**: at
+enrollment the user records a recovery secret (paper/offline) that authorizes a one-time re-seal of the
+state to a counter value **strictly greater than any previously used** on a new anchor. Because the new
+value is higher than every prior value, the re-seal cannot itself be used to roll the volume back. The
+alternative, for users who reject any escrow, is an **explicit opt-out**: freshness protection off, with
+the volume reverting to modification-detection-only (Merkle / per-sector auth) and the loss of rollback
+detection stated plainly. Pick escrowed-re-seal as the default; expose the opt-out.
+
+### 4. Deniability caveat for hidden volumes
+
+An **off-device freshness anchor for a *hidden* volume is itself a tell**: a TPM NV index, token slot, or
+paper checkpoint that exists *only* because a hidden volume needs freshness betrays that the hidden volume
+exists. For a hidden volume, either anchor freshness **locally / on paper in a form whose existence is
+independently deniable**, or use **padded, indistinguishable anchor records** (an anchor that looks the
+same whether or not a hidden volume is present). Never provision a hidden-volume-specific external anchor
+that a decoy would not also have. Cross-reference `docs/THREAT-MODEL.md` and `docs/KEY-DISCLOSURE-LEGAL.md`.
+
 ## Integration & honest notes
 
 - **The counter source is `[HW]` and is the entire trust anchor.** The crypto here is complete; what it
   needs is a real monotonic counter: TPM 2.0 NV index with a monotonic attribute (`TPM2_NV_Increment`),
-  a hardware token that exposes a counter, or a secure element. A purely on-disk "counter" buys nothing —
-  the attacker rewinds it with the snapshot. Selecting and provisioning that source is the real-build
-  work; this PoC deliberately models it.
+  a hardware token that exposes a counter, or a secure element (see the ranked taxonomy above). A purely
+  on-disk "counter" buys nothing — the attacker rewinds it with the snapshot. Selecting and provisioning
+  that source is the real-build work; this PoC deliberately models it.
 - **One counter increment per commit, not per write.** Incrementing on every sector write would exhaust
   a TPM NV counter and murder performance. The counter advances once per *commit* (a batch of writes
   flushed with a new top-level `state_root`); pick the commit granularity in the integration.
 - **Availability / bricking risk.** If the hardware counter is lost (dead TPM, lost token) the volume
   cannot be mounted — the same "one lost factor away from losing everything" tradeoff the enrollment
-  docs already flag. A recovery path (an escrowed higher-counter re-seal, or an opt-out) must be
-  specified, and the risk stated to the user.
+  docs already flag. The recovery path is now specified above (escrowed higher-counter re-seal, default;
+  or explicit freshness-off opt-out) — and the fail-warn policy above keeps a benign crash from being
+  treated as an attack. The risk must still be stated to the user at enrollment.
 - **Composes with, does not replace, Merkle / per-sector auth.** Those detect modification; this adds
   freshness. Bind this PoC's `state_root` to the Merkle root so one counter protects the whole volume's
   integrity state at once.
