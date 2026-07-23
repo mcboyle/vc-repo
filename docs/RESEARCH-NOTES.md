@@ -82,3 +82,47 @@ confidentiality/anti-evil-maid use case, not the deniable-volume use case.
    just hold the evidence-fabrication line.
 4. **TPM/measured-boot** — valuable for the anti-evil-maid use case; needs real/simulated TPM.
 5. **UEFI/GPT hidden-OS** and **Mobile** — large, real-hardware, design-study-first.
+
+---
+
+## Batch-2 research — "don't build" verdicts (recorded so a planner does not re-propose them)
+
+Batch-2 research produced mostly *negative* results. These items were ruled out; each is listed so a
+future session does not re-propose a dead line from a stale backlog. One-line reason each; expand from the
+cited sources if reconsidering.
+
+**Modes / ciphers**
+- **AEZ, FAST, XCB, EME2** (wide-block alternatives to Adiantum/HCTR2) — **don't build.** Patent
+  encumbrance and/or known side-channel and analysis concerns; Adiantum (no-AES) and HCTR2 (AES-NI) are
+  the vetted pair already in tree (`docs/ADIANTUM-SPEC.md`, `docs/HCTR2-SPEC.md`). AEZ/FAST/EME2 also
+  appear in `IDEAS-BACKLOG.md`; this is the disposition.
+- **LEA as a no-AES fallback** — **don't build.** Adiantum is the recommended fallback (see HCTR2 spec);
+  do not substitute LEA.
+
+**Storage / deniability**
+- **StegFS / steganographic filesystems** — **don't build** as a deniability upgrade. Anderson–Needham–
+  Shamir lineage; real capacity/reliability costs and no advantage over the free-space model against the
+  multi-snapshot attack (`docs/IDEAS-BACKLOG.md` §G). Research-only.
+- **Ciphertext dispersal (Rabin IDA / AONT-RS)** — **don't build** expecting stronger secrecy. Weaker
+  than the shipped information-theoretic key split, and distributing recognizable shards conflicts with
+  deniability (`docs/IDEAS-BACKLOG.md`, dispersal entry; AFRICACRYPT 2017).
+- **Free-space chaff as a multi-snapshot defense** — **don't build** for that purpose; it does not defeat
+  the change-chain classifier (`docs/IDEAS-BACKLOG.md` §G; MASCOTS 2021).
+- **LUKS-compatible on-disk mode** — **don't build.** This project is deliberately fork-only
+  (`docs/KEYSLOTS-SPEC.md`); matching LUKS2's on-disk metadata would import a large format surface for no
+  security gain and constrain the header-untouched design.
+
+**Recovery / integrity / platform**
+- **Guardian / notary "social recovery"** — **don't build.** Distributing recovery authority to third
+  parties adds coercion and collusion surface and a deniability tell; the shipped Shamir threshold split
+  already covers split-trust recovery without a trusted quorum service.
+- **DIF/DIX end-to-end integrity** — **don't build.** Hardware/storage-stack protection-information is
+  orthogonal to at-rest confidentiality and needs controller support; the integrity tier (Merkle
+  `[19]`, per-sector auth `[21]`) covers the relevant threat in software.
+- **UEFI hidden-OS** — **not now** (`[FORMAT] [RESEARCH]`, `docs/IDEAS-BACKLOG.md`): large,
+  firmware/bootloader project; design-study-first, not a batch-2 build.
+- **Reimplementing BitLocker / FileVault openers** — **don't build.** Out of scope (interop with other
+  vendors' formats), large, and unrelated to this fork's confidentiality/deniability goals.
+
+Anything not on this list that a future session wants to build should still be checked against
+`ROADMAP.md` DESCOPED and the scope boundary in `docs/IDEAS-BACKLOG.md` first.

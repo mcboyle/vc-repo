@@ -41,10 +41,13 @@ unsigned int FlashProbeNvmeDlfeat (unsigned char dlfeat)
 	unsigned int v = (unsigned int) (dlfeat & 0x07);  /* bits 2:0 = read behaviour after deallocate */
 	if (v == 1u || v == 2u)                            /* 001b reads 0x00, 010b reads 0xFF: deterministic */
 		return VC_FLASH_WARN_TRIM;
-	/* 000b (not reported) and reserved 011b..111b: cannot confirm the device is deniability-safe here,
-	   but "no deterministic deallocate" is not itself a flash tell, so this axis is CLEAN and the
-	   rotational axis (which already warns on any SSD) carries the flash decision. */
-	return VC_FLASH_CLEAN;
+	if (v == 0u)                                       /* 000b: deallocate behaviour not reported */
+		return VC_FLASH_CLEAN;                         /*   (no deterministic tell; rotational axis decides) */
+	/* reserved 011b..111b: an encoding this decoder does not understand. Fail closed rather than assume
+	   safe — the incoherent-but-reachable case is a device reporting rotational=1 AND a reserved DLFEAT
+	   (a USB bridge / virtualization layer synthesizing both), where treating "unknown" as clean would
+	   contradict the fail-closed contract this module exists to provide. */
+	return VC_FLASH_WARN_UNKNOWN;
 }
 
 /* read a small sysfs attribute into buf (NUL-terminated, trailing newline stripped). returns 0 on

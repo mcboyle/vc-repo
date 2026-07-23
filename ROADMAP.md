@@ -300,6 +300,10 @@ brief:
   (as upstream guidance recommends); the sound research direction for believability against a capable
   adversary is the ORAM access-pattern hiding above. See `docs/DECOY-VOLUME-SPEC.md §6` and
   `CLAUDE.md`. **A future session should maintain this boundary.**
+  *External corroboration (batch-2 research):* independent legal review identified automated
+  activity-fabrication as **the single feature most likely to convert a defensive storage tool into an
+  obstruction / evidence-tampering charge** — separate support for keeping this permanently descoped.
+  See `docs/KEY-DISCLOSURE-LEGAL.md`.
 
 ---
 

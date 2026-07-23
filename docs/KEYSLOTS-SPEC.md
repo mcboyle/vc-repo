@@ -162,6 +162,17 @@ image taken earlier**; **imaged-first** defeats any on-disk change; and a **dure
 deniable as its backend. None of this fabricates evidence — it is access-control storage, and the
 DESCOPED evidence-fabrication boundary stays where it is (`ROADMAP.md`).
 
+**Indistinguishable (factor-gated) slots need no format work — but ship them as access-control
+convenience, never as a standalone deniability claim.** VeraCrypt's on-disk format already has **no magic
+bytes** and presents as a 64-byte random salt followed by ciphertext, and this fork's existing
+**factor-mixing** (`docs/HARDWARE-2FA.md`, mixed into the password before PBKDF2) already yields
+factor-gated access with **no on-disk change** — a slot that opens only with the extra factor is
+indistinguishable from a plain volume without it. That is worth shipping as **multi-factor access
+control** (split trust, hardware second factor, threshold). It is **not** a standalone deniability
+mechanism: an adversary who knows the tool ships factor-gating knows a hidden factor *may* exist and can
+re-coerce (see `docs/THREAT-MODEL.md`, the Canetti-sense and decoy-can-aggravate notes), and the
+multi-snapshot / media limits apply unchanged. Do not market indistinguishable slots as deniability.
+
 ## 7. Migration & compatibility
 
 Fork-only. A `--keyslot-enable` step reads the volume with the primary password, recovers the VMK, and
@@ -265,3 +276,28 @@ Remaining, real-build only (needs the kernel / real media):
 - **Deniable-backend multi-snapshot robustness** must be validated on real media (same caveat class as
   hidden volumes, `docs/THREAT-MODEL.md`): a before/after image diff reveals that *a* slot-sized region
   changed, though not its contents (step `[37]` asserts this bound honestly).
+
+## 10. Design backlog (documented here; NOT implemented) — record versioning & naming
+
+Two `[FORMAT]`-adjacent design items a future session should carry (design only; do not implement without
+a format review):
+
+- **Record format-version + checksum + anti-relocation field.** Keyslot records currently carry no
+  explicit format-version byte, no self-checksum, and no anti-relocation binding — integrity rests on
+  the wrap MAC and KDF-parameter validation at read time. A robust on-disk format should add, mirroring
+  **LUKS2's `csum` / `csum_alg`** (per-metadata-object checksum with a named algorithm): (1) a
+  **format-version** byte so the reader can reject/upgrade unknown layouts instead of misparsing; (2) a
+  **checksum** over the record so silent corruption is caught before the MAC path; and (3) an
+  **anti-relocation** field binding the record to its slot index / area offset so a valid record cannot
+  be copied to another slot (the same index-binding idea as the per-sector auth tag,
+  `docs/PERSECTOR-AUTH-SPEC.md`). These change the on-disk record, so they are a format decision, not a
+  drop-in.
+- **Backup-header table mirroring** — already flagged in §9 as real-build-remaining; tracked here too so
+  the restore-path work (mirror the primary slack table into the backup-header group) is not lost.
+
+**Naming precision (do not "fix" by renaming).** `KSB_SIDECAR` is a **keyslot sidecar**, not a "detached
+header": it keeps **slot 0 in-volume** (the native VeraCrypt header stays on the data device), and only
+the *extra* slot table lives in the sidecar file. The LUKS2 contrast worth documenting is that a **true
+detached header** leaves the data device with **no signature at all** — a stronger deniability posture,
+and a different feature. Do not relabel `KSB_SIDECAR` as a detached header; if a real detached-header
+mode is ever wanted, it is a separate backend.

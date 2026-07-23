@@ -71,6 +71,21 @@ overselling deniability gets high-risk people hurt.
 - **The tooling itself.** For the decoy, discovery of a decoy scheme undermines it; for split-key,
   **where the shares live and who holds them is the real security**, not the math (a 2-of-3 with all
   shares in one drawer is a 1-of-1).
+- **"Deniable encryption" in the academic (Canetti) sense is implemented in no shipping product — this
+  one included.** The only construction achieving *negligible* detection advantage against an adversary
+  who obtains the ciphertext and demands the coins (Sahai–Waters, deniable encryption from
+  indistinguishability obfuscation) requires **iO** and is not practical. What every deployed tool —
+  VeraCrypt, this fork, LUKS-based schemes — actually provides is **plausible deniability *by
+  construction*: a much weaker, empirical property** (a hidden volume *can* be present, and there is no
+  cheap distinguisher *in the modelled adversary*). Do not describe any feature here as "deniable
+  encryption" in the formal sense; it is plausible-deniability storage with documented limits.
+- **Against an adversary who knows the feature exists, a hidden volume is not neutral — it can
+  aggravate.** The academic deniability property is an *after-the-fact* one against a coercer who accepts
+  the claimed random coins; it says nothing about a **live interrogator** who knows the tool ships this
+  capability and can simply re-coerce ("open the other one"). Combined with the **compelled-disclosure**
+  exposure — where handing over only a decoy can itself be the charged offence — a hidden volume can
+  leave the user *worse off* than a single encrypted volume with no hidden capability. See
+  `docs/KEY-DISCLOSURE-LEGAL.md` for the jurisdiction matrix this pairs with.
 
 ## Verification caveat
 

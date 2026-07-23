@@ -44,8 +44,10 @@ extern "C" {
 unsigned int FlashProbeAtaTrim (const unsigned char *id512);
 
 /* NVMe Identify Namespace DLFEAT byte (byte 33). bits 2:0 == 001b (reads 0x00 after deallocate) or
-   010b (reads 0xFF after deallocate) => deterministic read-after-deallocate => warn. 000b (not
-   reported) and reserved 011b..111b => fail closed (warn). */
+   010b (reads 0xFF after deallocate) => deterministic read-after-deallocate => VC_FLASH_WARN_TRIM.
+   000b (deallocate behaviour not reported) => CLEAN on this axis (no deterministic tell; the rotational
+   axis, which warns on any SSD, carries the flash decision). Reserved 011b..111b => VC_FLASH_WARN_UNKNOWN
+   (fail closed on an encoding this decoder does not understand). */
 unsigned int FlashProbeNvmeDlfeat (unsigned char dlfeat);
 
 /* Linux rotational probe. Reads <sysroot>/block/<dev>/queue/rotational; returns CLEAN only when it
