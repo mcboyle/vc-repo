@@ -1,0 +1,19 @@
+# vc-netshared.socket — socket activation for the network-share unlock server (item 49).
+#
+# Socket activation lets the daemon start on first connection and keeps the listening
+# socket owned by systemd, so the service itself needs no privilege to bind. Bind to
+# localhost by default; front it with a TLS terminator / reverse proxy for remote use
+# (the unlock exchange is already blinded — see docs/NETWORK-SHARE-SPEC.md).
+
+[Unit]
+Description=VeraCrypt-fork network-share unlock server socket
+
+[Socket]
+ListenStream=127.0.0.1:8760
+# Harden the socket itself: no exec on the fd, tight perms.
+SocketMode=0600
+FreeBind=no
+NoDelay=yes
+
+[Install]
+WantedBy=sockets.target

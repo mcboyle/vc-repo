@@ -1739,3 +1739,16 @@ if [ -n "$HB_CC" ] \
 else
 	skip_step " no compiler accepted the sources for the header-backup test (see /tmp/hb_log)"
 fi
+
+echo ""
+echo "[67] systemd unit hardening lint (ROI item 49)"
+# The network-share unlock server is a secret-bearing network daemon; its shipped unit
+# (dist/systemd/vc-netshared.service) must actually drop privilege. systemd_hardening_lint.sh
+# checks it two ways: a required-directive check AND `systemd-analyze security --offline`
+# exposure score (when present). Negative control: a unit with the hardening stripped must FAIL
+# the directive check and score a worse exposure. The lint is self-contained (no build needed).
+if "$HERE/systemd_hardening_lint.sh" | sed 's/^/    /'; then
+	echo "    MATCH: shipped systemd unit is hardened (directives + systemd-analyze); stripped unit fails"
+else
+	echo "    SYSTEMD HARDENING LINT FAILED"; exit 1
+fi
