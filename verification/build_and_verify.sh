@@ -517,30 +517,32 @@ else
 	skip_step " no compiler accepted the stock Crypto sources (see /tmp/km_log)"
 fi
 
-echo "[21] Per-sector authentication (dm-integrity style) — tamper/relocation detection vs independent python"
-# One Poly1305 tag per sector over the ciphertext, bound to the sector index (nonce = index): per-sector
-# independence + relocation resistance a whole-area MAC cannot give. Links the REAL in-tree chacha256.c +
-# the step-18 Poly1305; persector_reference.py is independent. TAG STORAGE is [FORMAT]. See docs/PERSECTOR-AUTH-SPEC.md.
+echo "[21] Per-sector authentication (dm-integrity style) — keyed-BLAKE3 PRF tag vs independent python"
+# One keyed-BLAKE3 tag per sector over le64(index)||ciphertext (encrypt-then-MAC), bound to the sector
+# index: per-sector independence + relocation resistance. A PRF, NOT the old one-time Poly1305 (batch-2
+# C2) — Poly1305 reused its one-time key on every sector REWRITE, which a two-snapshot / stale-FTL-page
+# adversary breaks; a PRF degrades gracefully under key reuse. Reuses the proven step-27 BLAKE3
+# (persector_poc.c includes blake3_poc.c); persector_reference.py is independent. TAG STORAGE is
+# [FORMAT]. See docs/PERSECTOR-AUTH-SPEC.md.
 PS_CC=""
 for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then PS_CC="$c"; break; fi; done
 PS_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
 PS_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
-PS_GC="-ffunction-sections -fdata-sections"
 PS_INC="$INC -I$SRCROOT/Crypto"
-if "$PS_CC" -O2 $PS_WNO $PS_NOASM $PS_GC $PS_INC -c "$SRCROOT/Crypto/chacha256.c" -o /tmp/ps_cc.o 2>/tmp/ps_log \
-   && "$PS_CC" -O2 $PS_WNO $PS_NOASM $PS_INC "$HERE/persector_poc.c" /tmp/ps_cc.o -Wl,--gc-sections -o /tmp/ps_poc 2>>/tmp/ps_log; then
-	/tmp/ps_poc > /tmp/ps_c.txt; grep -E '^REF (accept|tamper|relocation|wrongkey)' /tmp/ps_c.txt
+if "$PS_CC" -O2 $PS_WNO $PS_NOASM $PS_INC "$HERE/persector_poc.c" -o /tmp/ps_poc 2>/tmp/ps_log; then
+	/tmp/ps_poc > /tmp/ps_c.txt; grep -E '^REF (accept|tamper|relocation|wrongkey|rewrite)' /tmp/ps_c.txt
 	python3 "$HERE/persector_reference.py" > /tmp/ps_py.txt
 	grep '^REF' /tmp/ps_c.txt > /tmp/ps_c_ref.txt; grep '^REF' /tmp/ps_py.txt > /tmp/ps_py_ref.txt
 	if diff -q /tmp/ps_c_ref.txt /tmp/ps_py_ref.txt >/dev/null; then
-		echo "    MATCH: per-sector auth (real chacha256 + Poly1305) == independent python over $(wc -l < /tmp/ps_c_ref.txt) vectors"
+		echo "    MATCH: per-sector auth (real keyed BLAKE3) == independent python over $(wc -l < /tmp/ps_c_ref.txt) vectors"
 	else
 		echo "    MISMATCH"; diff /tmp/ps_c_ref.txt /tmp/ps_py_ref.txt; exit 1
 	fi
-	for k in accept_all tamper_only_5_fails relocation_detected wrongkey_detected; do
+	# five properties incl. the NEW rewrite_reuse_safe that the old one-time-MAC construction fails
+	for k in accept_all tamper_only_5_fails relocation_detected wrongkey_detected rewrite_reuse_safe; do
 		grep -q "^REF $k YES$" /tmp/ps_c.txt || { echo "    PROPERTY $k FAILED"; exit 1; }
 	done
-	echo "    per-sector independence, relocation resistance, and wrong-key all hold"
+	echo "    per-sector independence, relocation resistance, wrong-key, and rewrite/key-reuse safety all hold"
 else
 	skip_step " no compiler accepted the stock Crypto sources (see /tmp/ps_log)"
 fi
@@ -2152,4 +2154,55 @@ if [ -n "$WW_CC" ] \
 	else grep -vE '^PASSWORD|^RESPONSE|^MIXV2 ' /tmp/ww_c.txt; echo "    HKF MIX V2 WIRING FAILED"; exit 1; fi
 else
 	skip_step " no compiler for the hkf mix-v2 wiring test (see /tmp/ww_log)"
+fi
+
+echo ""
+echo "[82] HCTR2 gf_dot constant-time dudect screen (branch-free POLYVAL; research batch-2 C1)"
+# gf_dot's operands are both secret (POLYVAL key h=AES_k(0^128) + key/message accumulator), so the
+# original two data-dependent `if`s were a timing/branch channel that leaks h and defeats HCTR2's SPRP.
+# gf_dot is now branch-free via arithmetic masks — the SAME pattern Shamir.c uses (step [41]). This is
+# a self-validating dudect (Welch t) screen over the REAL gf_dot vs a deliberately-branchy leaky copy:
+# it must FLAG the leaky one and CLEAR the real one (contrast-based verdict, stable across machines).
+GD_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then GD_CC="$c"; break; fi; done
+GD_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+GD_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+GD_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$GD_CC" ] \
+   && "$GD_CC" -O2 $GD_WNO $GD_NOASM $GD_INC -c "$SRCROOT/Crypto/Aescrypt.c" -o /tmp/gd_aescrypt.o 2>/tmp/gd_log \
+   && "$GD_CC" -O2 $GD_WNO $GD_NOASM $GD_INC -c "$SRCROOT/Crypto/Aeskey.c"   -o /tmp/gd_aeskey.o 2>>/tmp/gd_log \
+   && "$GD_CC" -O2 $GD_WNO $GD_NOASM $GD_INC -c "$SRCROOT/Crypto/Aestab.c"   -o /tmp/gd_aestab.o 2>>/tmp/gd_log \
+   && "$GD_CC" -O2 $GD_WNO $GD_NOASM $GD_INC "$HERE/hctr2_dudect_test.c" /tmp/gd_aescrypt.o /tmp/gd_aeskey.o /tmp/gd_aestab.o -lm -o /tmp/hctr2_dudect 2>>/tmp/gd_log; then
+	if /tmp/hctr2_dudect > /tmp/gd_out.txt; then
+		grep -E 'agree on|dudect max|screen (flags|clears)|contrast' /tmp/gd_out.txt
+		if grep -q '^HCTR2 GF_DOT DUDECT SCREEN PASSED$' /tmp/gd_out.txt; then
+			echo "    SCREEN: real gf_dot cleared, leaky flagged (contrast-based; mirrors Shamir.c step [41])"
+		else
+			echo "    GF_DOT DUDECT SCREEN FAILED"; exit 1
+		fi
+	else grep -E 'agree on|dudect max|screen' /tmp/gd_out.txt; echo "    GF_DOT DUDECT SCREEN FAILED (leak flagged on real impl or clean impl flagged)"; exit 1; fi
+else
+	skip_step " no compiler for the hctr2 gf_dot dudect screen (see /tmp/gd_log)"
+fi
+
+echo ""
+echo "[83] Flash-media deniability probe (src/Common/FlashProbe.c) — fail-closed, fixture-tested (batch-2 C3)"
+# Hidden-volume deniability does NOT survive flash (FTL residue, TRIM) and is defeated on rotational
+# media by a two-snapshot classifier. FlashProbe warns unless a device verifies clean on every axis and
+# on ANY unknown input (fail closed). This unit-tests the Linux rotational/discard probe against injected
+# /sys FIXTURE trees, the ATA (word169/69) + NVMe (DLFEAT) bit decoders against synthetic buffers, and
+# the fail-closed contract as a named check. Windows (IOCTL)/macOS probes are compile-checked, real-build.
+FP_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then FP_CC="$c"; break; fi; done
+if [ -n "$FP_CC" ] && "$FP_CC" -O2 -I"$SRCROOT" "$HERE/flash_probe_test.c" -o /tmp/flash_probe 2>/tmp/fp_log; then
+	if /tmp/flash_probe > /tmp/fp_out.txt; then
+		grep -E 'PASS$|FAIL$' /tmp/fp_out.txt | sed 's/^/    /'
+		if grep -q '^FLASH PROBE TESTS PASSED' /tmp/fp_out.txt; then
+			echo "    Linux probe unit-tested against fixtures; Windows/macOS probes compile-checked, need a real build"
+		else
+			echo "    FLASH PROBE TESTS FAILED"; exit 1
+		fi
+	else grep -E 'FAIL$' /tmp/fp_out.txt | sed 's/^/    /'; echo "    FLASH PROBE TESTS FAILED"; exit 1; fi
+else
+	skip_step " no compiler for the flash-probe test (see /tmp/fp_log)"
 fi

@@ -4,58 +4,70 @@
 # separate tag area, over the sector CIPHERTEXT (encrypt-then-MAC) and BOUND to
 # the sector index so a valid (ciphertext, tag) pair cannot be relocated.
 #
-#   nonce_i = le64(sector_index)                 # distinct per sector
-#   otk_i   = ChaCha20(sector_mac_key, nonce_i)[0..32]
-#   tag_i   = Poly1305(otk_i, ciphertext_i)
+#   tag_i = keyed_BLAKE3(K_mac, le64(sector_index) || ciphertext_i)[0..16]   # 128-bit tag
 #
-# nonce = index gives every sector its own one-time Poly1305 key, so tags are
-# independent AND relocation-resistant (swapping two sectors' ciphertext+tag
-# yields the wrong otk on both). Reuses the step-18/step-20 building blocks;
-# persector_poc.c drives the real in-tree objects. REF lines diffed byte-for-byte.
+# A PRF, not a one-time MAC (research batch-2 item C2). The prior construction
+# (otk_i = ChaCha20(mac_key, le64(index)); tag_i = Poly1305(otk_i, ct_i)) reused
+# the same one-time Poly1305 key on every REWRITE of a sector, which a two-snapshot
+# adversary breaks. keyed BLAKE3 degrades gracefully under key reuse. le64(index)
+# stays inside the PRF input (relocation resistance). Reuses the independent
+# BLAKE3 from blake3_reference.py (step [27]); persector_poc.c drives the real
+# in-tree BLAKE3. REF lines diffed byte-for-byte.
 import sys
-from keyslot_mac_reference import chacha20_block
-from poly1305_reference import poly1305_mac
+from blake3_reference import blake3_keyed
 
 SECTOR = 64
 N = 8
+TAGLEN = 16
 
 def le64(x):
     return x.to_bytes(8, 'little')
 
-def otk(sector_mac_key, index):
-    return chacha20_block(sector_mac_key, 0, le64(index), 20)[:32]
+def sector_tag(kmac, index, ciphertext):
+    return blake3_keyed(le64(index) + ciphertext, kmac, TAGLEN)
 
-def sector_tag(sector_mac_key, index, ciphertext):
-    return poly1305_mac(ciphertext, otk(sector_mac_key, index))
-
-def verify(sector_mac_key, index, ciphertext, tag):
-    return sector_tag(sector_mac_key, index, ciphertext) == tag
+def verify(kmac, index, ciphertext, tag):
+    return sector_tag(kmac, index, ciphertext) == tag
 
 def make_ciphertext():
     return [bytes((i * 53 + j * 7 + 1) & 0xff for j in range(SECTOR)) for i in range(N)]
 
 if __name__ == "__main__":
-    smk = bytes((0x40 + i) & 0xff for i in range(32))
+    kmac = bytes((0x40 + i) & 0xff for i in range(32))
     ct = make_ciphertext()
-    tags = [sector_tag(smk, i, ct[i]) for i in range(N)]
+    tags = [sector_tag(kmac, i, ct[i]) for i in range(N)]
     for i in range(N):
         print("REF tag_%d %s" % (i, tags[i].hex()))
 
-    # all sectors verify
-    print("REF accept_all " + ("YES" if all(verify(smk, i, ct[i], tags[i]) for i in range(N)) else "NO"))
+    # (1) all sectors verify
+    print("REF accept_all " + ("YES" if all(verify(kmac, i, ct[i], tags[i]) for i in range(N)) else "NO"))
 
-    # tamper sector 5 -> only sector 5 fails (per-sector independence)
+    # (2) per-sector independence: tamper sector 5 -> only sector 5 fails
     t = list(ct); t[5] = bytes([t[5][0] ^ 0x01]) + t[5][1:]
-    fail5 = not verify(smk, 5, t[5], tags[5])
-    others_ok = all(verify(smk, i, ct[i], tags[i]) for i in range(N) if i != 5)
+    fail5 = not verify(kmac, 5, t[5], tags[5])
+    others_ok = all(verify(kmac, i, ct[i], tags[i]) for i in range(N) if i != 5)
     print("REF tamper_only_5_fails " + ("YES" if (fail5 and others_ok) else "NO"))
 
-    # relocation: swap the (ciphertext, tag) of sectors 3 and 5; verify at their
-    # NEW positions (nonce = new index) -> both rejected
-    reloc_5 = verify(smk, 5, ct[3], tags[3])   # sector 3's data+tag now at slot 5
-    reloc_3 = verify(smk, 3, ct[5], tags[5])   # sector 5's data+tag now at slot 3
+    # (3) relocation: swap the (ciphertext, tag) of sectors 3 and 5; verify at their
+    # NEW positions (le64(index) inside the PRF input) -> both rejected
+    reloc_5 = verify(kmac, 5, ct[3], tags[3])   # sector 3's data+tag now at slot 5
+    reloc_3 = verify(kmac, 3, ct[5], tags[5])   # sector 5's data+tag now at slot 3
     print("REF relocation_detected " + ("YES" if (not reloc_5 and not reloc_3) else "NO"))
 
-    # wrong master key -> tag differs
-    wk = bytearray(smk); wk[0] ^= 0x01
+    # (4) wrong master key -> tag differs
+    wk = bytearray(kmac); wk[0] ^= 0x01
     print("REF wrongkey_detected " + ("YES" if not verify(bytes(wk), 0, ct[0], tags[0]) else "NO"))
+
+    # (5) NEW — rewrite/key-reuse safety (the property the one-time Poly1305 construction FAILED):
+    # two rewrites of the SAME sector under the SAME K_mac produce INDEPENDENT tags; each verifies
+    # only its own content and neither forges the other. No (r,s) one-time key exists to recover.
+    v1 = bytes((j * 3 + 11) & 0xff for j in range(SECTOR))
+    v2 = bytes((j * 5 + 200) & 0xff for j in range(SECTOR))
+    tg1 = sector_tag(kmac, 5, v1)
+    tg2 = sector_tag(kmac, 5, v2)
+    diff = tg1 != tg2
+    v1ok = verify(kmac, 5, v1, tg1)
+    v2ok = verify(kmac, 5, v2, tg2)
+    cross1 = not verify(kmac, 5, v2, tg1)
+    cross2 = not verify(kmac, 5, v1, tg2)
+    print("REF rewrite_reuse_safe " + ("YES" if (diff and v1ok and v2ok and cross1 and cross2) else "NO"))

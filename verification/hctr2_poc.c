@@ -43,22 +43,27 @@ static void gf_dot (const uint64_t a[2], const uint64_t b[2], uint64_t out[2])
 {
 	u256 c; int i, limb;
 	memset (&c, 0, sizeof c);
+	/* Branch-free: both operands are secret here (POLYVAL key h = AES_k(0^128) and the
+	   key/message-derived accumulator s), so a data-dependent `if` over their bits is a timing/
+	   branch-prediction side channel that leaks h. Mirror the arithmetic-mask, fixed-iteration,
+	   table-free pattern src/Common/Shamir.c uses for GF(2^8), scaled to 128 bits: replace each
+	   secret-conditioned XOR with `(value & mask)` where mask = 0-bit is all-ones or all-zeros.
+	   The `s ? ...: 0` guards below are on s = i & 63, a PUBLIC loop index, not secret. */
 	for (i = 0; i < 128; i++) {
-		if ((a[i >> 6] >> (i & 63)) & 1) {
-			/* c ^= b << i */
-			int w = i >> 6, s = i & 63;
-			c.w[w]     ^= b[0] << s;
-			c.w[w + 1] ^= (s ? (b[0] >> (64 - s)) : 0) ^ (b[1] << s);
-			c.w[w + 2] ^= s ? (b[1] >> (64 - s)) : 0;
-		}
+		/* c ^= (b << i) when bit i of a is set — folded under a mask instead of a branch */
+		uint64_t m = 0ULL - ((a[i >> 6] >> (i & 63)) & 1ULL);
+		int w = i >> 6, s = i & 63;
+		c.w[w]     ^= (b[0] << s) & m;
+		c.w[w + 1] ^= (((s ? (b[0] >> (64 - s)) : 0) ^ (b[1] << s)) & m);
+		c.w[w + 2] ^= ((s ? (b[1] >> (64 - s)) : 0) & m);
 	}
 	/* multiply by x^-128: 128 exact halvings; P has bits 0,121,126,127,128 */
 	for (i = 0; i < 128; i++) {
-		if (c.w[0] & 1) {
-			c.w[0] ^= 1ULL;                                   /* bit 0   */
-			c.w[1] ^= (1ULL << 57) | (1ULL << 62) | (1ULL << 63); /* 121,126,127 */
-			c.w[2] ^= 1ULL;                                   /* bit 128 */
-		}
+		/* conditional reduction when the low bit is set — masked, not branched */
+		uint64_t r = 0ULL - (c.w[0] & 1ULL);
+		c.w[0] ^= 1ULL & r;                                          /* bit 0   */
+		c.w[1] ^= (((1ULL << 57) | (1ULL << 62) | (1ULL << 63)) & r); /* 121,126,127 */
+		c.w[2] ^= 1ULL & r;                                          /* bit 128 */
 		for (limb = 0; limb < 3; limb++)
 			c.w[limb] = (c.w[limb] >> 1) | (c.w[limb + 1] << 63);
 		c.w[3] >>= 1;
@@ -188,6 +193,8 @@ static size_t hamming (const unsigned char *a, const unsigned char *b, size_t n)
 	return c;
 }
 
+#ifndef HCTR2_NO_MAIN   /* the gf_dot dudect screen (hctr2_dudect_test.c) includes this file to reach
+                           the real static gf_dot, and supplies its own main; step [26] leaves it defined */
 int main (void)
 {
 	unsigned char key[32], tweak[MAXTWK], pt[MAXMSG], ct[MAXMSG], got[MAXMSG], back[MAXMSG];
@@ -271,3 +278,4 @@ int main (void)
 	}
 	return ok ? 0 : 1;
 }
+#endif /* HCTR2_NO_MAIN */

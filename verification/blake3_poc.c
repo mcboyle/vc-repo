@@ -172,6 +172,8 @@ static void hex (const unsigned char *b, size_t n) { size_t i; for (i = 0; i < n
 #define OUTLEN 131
 static unsigned char pattern[102400];
 
+#ifndef BLAKE3_NO_MAIN   /* persector_poc.c includes this file to reuse the proven keyed BLAKE3 and
+                            supplies its own main; step [27] leaves it defined */
 int main (void)
 {
 	unsigned char out[OUTLEN], expect[OUTLEN];
@@ -206,3 +208,4 @@ int main (void)
 	printf ("REF all_match %s\n", all ? "YES" : "NO");
 	return all ? 0 : 1;
 }
+#endif /* BLAKE3_NO_MAIN */

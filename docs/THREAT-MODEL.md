@@ -27,15 +27,31 @@ overselling deniability gets high-risk people hurt.
 - **Multi-snapshot / repeat imaging.** Using a hidden volume writes into the decoy's "free" space; an
   adversary who images the disk two or more times can detect a hidden volume from the block-change
   pattern (Fredrickson, Barker & Long, *A Multiple Snapshot Attack on Deniable Storage Systems*,
-  2021). Applies to essentially all hidden-volume systems, this fork included. A decoy does not fix
-  it; the real mitigation is write-only ORAM access-pattern hiding (backlog).
-- **SSDs.** TRIM leaks the free-space map; the flash translation layer's out-of-place writes and
-  wear-leveling can retain fragments — including of the hidden-volume creation itself. Classic
-  hidden-volume deniability is **weak on flash**. Prefer factor/threshold protection (confidentiality)
-  over relying on deniability on an SSD. Two mitigations now have proven cores (keyslot/format
-  integration pending): **anti-forensic key splitting** (`docs/AF-SPLIT-SPEC.md`) makes a *partial*
-  keyslot remnant worthless, and **decoy-fragments-by-default** (`docs/DECOY-FRAGMENTS-SPEC.md`) makes a
-  hidden-volume artifact's presence uninformative.
+  2021). A published classifier over changed-block run-lengths detects hidden volumes ≥ 0.75 GB at
+  recall ≈ 1.0. This applies to essentially all hidden-volume systems, this fork included, **and it
+  holds even on a rotational disk** — it is a *logical* attack on the access pattern, not a
+  media-residue one. A decoy does not fix it; the real mitigation is write-only ORAM access-pattern
+  hiding (backlog). **State this plainly to users: if the device may be imaged on more than one
+  occasion, hidden-volume deniability should not be relied on regardless of media.**
+- **Flash media (SSD, NVMe, SD/eMMC, USB flash) — do not claim deniability on flash.** TRIM/discard
+  leaks the free-space map; the flash translation layer's out-of-place writes, wear-leveling and
+  over-provisioning retain sub-block fragments — including of the hidden-volume creation itself — that
+  chip-off recovers, and sanitisation commands are unreliable in practice across a wide range of
+  drives. The earlier "weak on flash" wording understated this: **classic hidden-volume deniability
+  does not hold on flash, and should not be claimed there.** Prefer factor/threshold protection
+  (confidentiality) over relying on deniability on any flash device. The fork now surfaces this **in
+  the path the user actually walks**, not only here: `src/Common/FlashProbe.c` (gated
+  `-DVC_ENABLE_FLASH_WARN`, batch-2 C3) probes the target device — Linux `rotational`/`discard` via
+  sysfs, ATA `IDENTIFY` (TRIM/DRAT/RZAT) and NVMe `DLFEAT` bit decoding — and emits a prominent
+  "deniability does NOT hold on this device" warning on creating/mounting a hidden or decoy volume
+  unless every axis verifies clean, **failing closed** (any unknown or unverifiable input warns). The
+  decoders are unit-tested against fixtures and synthetic buffers (suite step `[83]`); the
+  creation-path gate and the Windows/macOS device probes are real-build integration. Two further
+  mitigations have proven cores (keyslot/format integration pending): **anti-forensic key splitting**
+  (`docs/AF-SPLIT-SPEC.md`) makes a *partial* keyslot remnant worthless, and
+  **decoy-fragments-by-default** (`docs/DECOY-FRAGMENTS-SPEC.md`) makes a hidden-volume artifact's
+  presence uninformative — but neither restores deniability on flash; they reduce specific residue
+  channels.
 - **Imaged-first.** An adversary who copies the disk *before* coercion holds an untouched copy; no
   post-hoc measure on your machine affects it. (This is also why destructive duress-wipe is a trap —
   it hits a copy that no longer matters, and destroys deniability by leaving a "destruction"
