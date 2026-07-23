@@ -94,8 +94,8 @@ int main (void)
 	check ("DLFEAT bits2:0 = 000b (not reported) -> CLEAN", FlashProbeNvmeDlfeat (0x00) == VC_FLASH_CLEAN);
 	check ("DLFEAT bits2:0 = 001b (reads 0x00) -> WARN_TRIM", FlashProbeNvmeDlfeat (0x01) == VC_FLASH_WARN_TRIM);
 	check ("DLFEAT bits2:0 = 010b (reads 0xFF) -> WARN_TRIM", FlashProbeNvmeDlfeat (0x02) == VC_FLASH_WARN_TRIM);
-	check ("DLFEAT reserved 101b -> CLEAN on this axis (rotational carries the flash decision)",
-	       FlashProbeNvmeDlfeat (0x05) == VC_FLASH_CLEAN);
+	check ("DLFEAT reserved 101b -> WARN_UNKNOWN (fail closed on an unparseable encoding)",
+	       FlashProbeNvmeDlfeat (0x05) == VC_FLASH_WARN_UNKNOWN);
 	check ("DLFEAT high bits ignored (0xFA -> bits2:0=010b) -> WARN_TRIM",
 	       FlashProbeNvmeDlfeat (0xFA) == VC_FLASH_WARN_TRIM);
 
