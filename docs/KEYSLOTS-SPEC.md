@@ -162,6 +162,17 @@ image taken earlier**; **imaged-first** defeats any on-disk change; and a **dure
 deniable as its backend. None of this fabricates evidence — it is access-control storage, and the
 DESCOPED evidence-fabrication boundary stays where it is (`ROADMAP.md`).
 
+**Indistinguishable (factor-gated) slots need no format work — but ship them as access-control
+convenience, never as a standalone deniability claim.** VeraCrypt's on-disk format already has **no magic
+bytes** and presents as a 64-byte random salt followed by ciphertext, and this fork's existing
+**factor-mixing** (`docs/HARDWARE-2FA.md`, mixed into the password before PBKDF2) already yields
+factor-gated access with **no on-disk change** — a slot that opens only with the extra factor is
+indistinguishable from a plain volume without it. That is worth shipping as **multi-factor access
+control** (split trust, hardware second factor, threshold). It is **not** a standalone deniability
+mechanism: an adversary who knows the tool ships factor-gating knows a hidden factor *may* exist and can
+re-coerce (see `docs/THREAT-MODEL.md`, the Canetti-sense and decoy-can-aggravate notes), and the
+multi-snapshot / media limits apply unchanged. Do not market indistinguishable slots as deniability.
+
 ## 7. Migration & compatibility
 
 Fork-only. A `--keyslot-enable` step reads the volume with the primary password, recovers the VMK, and
