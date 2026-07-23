@@ -512,6 +512,17 @@ int HKFComputeResponse (const HKFConfig *cfg,
 	return rc;
 }
 
+/* Rec 1 (addendum §5): salt-binding on by default for RAW_SECRET, with an explicit opt-out. */
+void HKFApplySaltBindDefault (HKFConfig *cfg)
+{
+#if defined(VC_ENABLE_HKF_SALT_BIND_DEFAULT) && defined(VC_ENABLE_HKF_SALT_BIND)
+	if (cfg && cfg->backend == HKF_BACKEND_RAW_SECRET && !cfg->rawSecretNoBindSalt)
+		cfg->rawSecretBindSalt = 1;
+#else
+	(void) cfg;
+#endif
+}
+
 /* ------------------------------------------------------------------ *
  *  Active-config hook for the mount / format derivation call-sites    *
  * ------------------------------------------------------------------ */

@@ -156,7 +156,7 @@ Tracking which of the addendum's recommendations are implemented in-tree. Update
 | Recommendation | Status | Where |
 |---|---|---|
 | §6 — unconditional length conditioning (`>32 bytes → sha256()→32`) | **IMPLEMENTED** behind `VC_ENABLE_HKF_LEN_CONDITION` | `HKFComputeResponse` wrapper in `src/Common/HardwareKeyFactor.c`; verified at `verification/build_and_verify.sh` step `[78]` (`hkf_lencond_test.c` + `hkf_lencond_reference.py`) |
-| §5 / Rec 1 — salt-binding **on by default** | available today via `VC_ENABLE_HKF_SALT_BIND` + `--hkf-bind-salt` (opt-in); making it the default is a policy/CLI change, not yet flipped | `src/Common/HardwareKeyFactor.c` (`rawSecretBindSalt`), `docs/SALT-BINDING-SPEC.md` |
+| §5 / Rec 1 — salt-binding **on by default** | **IMPLEMENTED** behind `VC_ENABLE_HKF_SALT_BIND_DEFAULT` (`HKFApplySaltBindDefault`, opt-out `--hkf-no-bind-salt`/`rawSecretNoBindSalt`); verified at step `[79]` (`hkf_saltdefault_test.c` + `hkf_saltdefault_reference.py`) | `src/Common/HardwareKeyFactor.c` |
 | Rank-1 HKDF migration (v2 derivation) + mount-time version-try loop | not started (long-term) | — |
 
 ### §6 implementation notes
@@ -177,3 +177,17 @@ Tracking which of the addendum's recommendations are implemented in-tree. Update
   on-disk format change).
 
 Default builds (and HKF builds without the flag) remain byte-for-byte stock.
+
+### Rec 1 implementation notes
+
+`HKFApplySaltBindDefault(cfg)` — called by the config/CLI layer just before derivation — turns
+salt-binding ON by default for a RAW_SECRET factor when built with `VC_ENABLE_HKF_SALT_BIND_DEFAULT`,
+unless the caller set `rawSecretNoBindSalt` (CLI `--hkf-no-bind-salt`) to keep the legacy raw behaviour
+for a volume enrolled without salt-binding. Because a salt-bound response is always exactly 32 bytes
+(`HMAC-SHA256(secret, salt)`), enabling this closes **both** gaps the report and addendum identify in one
+config change: cross-volume factor reuse, and the >32-byte pool-wrap exposure (it lands every RAW_SECRET
+invocation at the top of the proven-injective regime, so the §6 conditioning becomes a no-op on that
+path — the two changes are complementary, not redundant). It is a no-op without the default-on flag, for
+a non-RAW_SECRET backend, or when the caller opts out. The `--hkf-no-bind-salt` CLI option in
+`CommandLineInterface.cpp` and the call site are the remaining real-build wiring; the policy function and
+its effect through the real `HKFComputeResponse` are proven here.

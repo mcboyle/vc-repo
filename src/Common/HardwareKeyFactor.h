@@ -94,6 +94,12 @@ typedef struct HKFConfig_struct
 	   the feature is not compiled in. See docs/SALT-BINDING-SPEC.md. */
 	int           rawSecretBindSalt;
 
+	/* Salt-binding default (VC_ENABLE_HKF_SALT_BIND_DEFAULT — addendum Rec 1). When that build flag is
+	   set, HKFApplySaltBindDefault() turns salt-binding ON by default for a RAW_SECRET factor; the caller
+	   sets this opt-out flag (CLI --hkf-no-bind-salt) to keep the legacy raw behaviour for a volume that
+	   was enrolled without salt-binding. Ignored unless the default-on flag is compiled in. */
+	int           rawSecretNoBindSalt;
+
 	/* Application policy: which header(s) the factor gates. */
 	int           applyPolicy; /* HKF_APPLY_ALL (default) or HKF_APPLY_HIDDEN_ONLY */
 } HKFConfig;
@@ -107,6 +113,16 @@ typedef struct HKFConfig_struct
 int HKFComputeResponse (const HKFConfig *cfg,
                         const unsigned char *challenge, int challenge_len,
                         unsigned char *response_out, int *response_len_out);
+
+/*
+ * Apply the salt-binding default policy to a config (addendum Rec 1). When built with
+ * VC_ENABLE_HKF_SALT_BIND_DEFAULT (and VC_ENABLE_HKF_SALT_BIND), a RAW_SECRET factor gets
+ * rawSecretBindSalt=1 unless the caller set rawSecretNoBindSalt (CLI --hkf-no-bind-salt). Salt-binding
+ * makes the response always 32 bytes = HMAC-SHA256(secret, salt), which closes BOTH cross-volume factor
+ * reuse AND the >32-byte pool-wrap exposure in one config change. A no-op without the default-on flag,
+ * for a non-RAW_SECRET backend, or when the caller opted out. Idempotent. See docs/CRC-SEAM-ADDENDUM.md.
+ */
+void HKFApplySaltBindDefault (HKFConfig *cfg);
 
 /*
  * Mix a token response into a password buffer, byte-for-byte identically to how VeraCrypt mixes a
