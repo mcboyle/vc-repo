@@ -1714,3 +1714,28 @@ if [ -n "$JS_CC" ] \
 else
 	skip_step " no compiler accepted the sources for the json test (see /tmp/js_log)"
 fi
+
+echo ""
+echo "[66] Integrity-checked header/keyslot-area backup (ROI item 44)"
+# HeaderBackupCreate/Verify/Restore over a real populated keyslot area: backup -> corrupt the live area
+# -> restore recovers the slots. Negative controls: a flipped byte in the backup fails verification
+# (HB_ERR_INTEGRITY) and Restore REFUSES it, leaving the area untouched; bad magic / truncation are
+# rejected as HB_ERR_FORMAT.
+HB_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then HB_CC="$c"; break; fi; done
+HB_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+HB_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+HB_GC="-ffunction-sections -fdata-sections"
+HB_DEF="-DVC_ENABLE_KEYSLOTS -DVC_ENABLE_HEADER_BACKUP"
+HB_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$HB_CC" ] \
+   && "$HB_CC" -O2 $HB_WNO $HB_NOASM $HB_GC $HB_DEF $HB_INC "$HERE/header_backup_test.c" \
+        "$SRCROOT/Common/Keyslot.c" "$SRCROOT/Common/KeyslotStore.c" "$SRCROOT/Common/AfSplit.c" \
+        "$SRCROOT/Common/HeaderBackup.c" "$SRCROOT/Crypto/Sha2.c" "$SRCROOT/Crypto/chacha256.c" \
+        -Wl,--gc-sections -o /tmp/header_backup_test 2>/tmp/hb_log; then
+	if /tmp/header_backup_test > /tmp/hb_c.txt; then cat /tmp/hb_c.txt
+		echo "    MATCH: backup restores the area and integrity detects/refuses corruption"
+	else cat /tmp/hb_c.txt; echo "    HEADER BACKUP FAILED"; exit 1; fi
+else
+	skip_step " no compiler accepted the sources for the header-backup test (see /tmp/hb_log)"
+fi

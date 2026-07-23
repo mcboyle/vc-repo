@@ -288,7 +288,8 @@ flag matrix. Honest limit (documented): this is a LOGICAL overwrite; on SSD/CoW 
 block may persist — the attestation records the logical erase, it does not defeat wear-levelling.
 **42. Authenticate the keyslot area / header MAC** `[M][FORMAT]` — 02-5, 02-6 — XTS has no integrity — **DESIGN (awaiting review)** — `docs/TIER5-FORMAT-DESIGN.md §42`. (Note: keyslot *records* are already per-record AEAD-authenticated; this proposes an area-level MAC, VMK-derived, to catch table truncation/reorder/rollback.)
 **43. Encrypted volume labels** `[S][FORMAT]` — 04-11 — human names without leaking to an examiner — **DESIGN (awaiting review)** — `docs/TIER5-FORMAT-DESIGN.md §43` (a padded AEAD label record reusing the keyslot machinery; leaks nothing without the passphrase).
-**44. Header backup with integrity check + reminders** `[S]` — 03-35
+**44. Header backup with integrity check + reminders** `[S]` — 03-35 — **DONE**
+`Common/HeaderBackup.{c,h}` (gated `VC_ENABLE_HEADER_BACKUP`) serialises a keyslot area into a self-describing blob (`magic || ver || len || area || SHA-256`) so a backup is **verified before it is trusted** and a corrupted area detected and restored. Suite step `[66]`: backup → corrupt the live area (slot stops opening) → restore recovers all slots. Negative controls: a flipped byte in the backup fails verification (`HB_ERR_INTEGRITY`) and `Restore` **refuses** it, leaving the area untouched; bad magic / truncation → `HB_ERR_FORMAT`. gcc-13 + clang-18; in the flag matrix. (The 'reminders' nag is CLI/UI, not built here.)
 **45. Multi-token OR-set (any of N enrolled works)** `[M]` — 03-18
 **46. PKCS#11 / PIV smartcard factor** `[M][HW]` — 03-11 — VeraCrypt already speaks PKCS#11
 **47. Structured error taxonomy + stable exit codes** `[S]` — 11-6, 16-39 — **DONE**
