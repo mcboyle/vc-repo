@@ -100,6 +100,12 @@ Fixed max length 48 vs 64 vs variable-padded-to-bucket? (Lean fixed 48 in a 64-b
 
 ## Item 50 — Atomic, power-loss-resilient header writes `[M][FORMAT]`
 
+> **BUILT (reviewed & approved 2026-07-23):** 8-byte generation counter; keyslot-area A/B rides the
+> existing backup-header mirroring. Implemented in `Common/AtomicHeader.{c,h}` (gated
+> `VC_ENABLE_ATOMIC_HEADER`); verified at suite step `[77]` (`atomic_header_test.c` +
+> `atomic_header_reference.py`) — torn-write recovery proven; true power-loss stays real-build-only.
+> All three Tier-5 [FORMAT] items (42, 43, 50) are now built.
+
 ### Problem
 VeraCrypt keeps a primary header and a backup header (at the end of the volume). A crash *between*
 writing the two during a password/keyfile change can leave both stale-or-torn, bricking the volume.
