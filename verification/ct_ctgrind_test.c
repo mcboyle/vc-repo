@@ -175,7 +175,10 @@ int main (int argc, char **argv)
 	{
 		unsigned char a[32], b[32]; int i, r = 0;
 		for (i = 0; i < 32; i++) { a[i] = (unsigned char)(i * 3 + 1); b[i] = (unsigned char)(i * 3 + 1); }
-		b[31] ^= 0x01;                     /* differ in the LAST byte — worst case for an early-out */
+		/* differ in the LAST byte: this is the worst case for TIMING (a dudect early-out leaks most
+		   here). Under taint-tracking the leaky compare branches on secret data at i=0 regardless of
+		   where the difference sits — the last-byte choice just maximizes the leaky error count. */
+		b[31] ^= 0x01;
 		SECRET (a, sizeof a); SECRET (b, sizeof b);
 		r = leaky ? ct_eq_leaky (a, b, 32) : KeyslotConstTimeEqual (a, b, 32);
 		PUBLIC (a, sizeof a); PUBLIC (b, sizeof b);
