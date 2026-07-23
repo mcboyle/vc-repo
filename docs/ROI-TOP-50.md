@@ -176,8 +176,8 @@ compiled negative control (`-DVC_SELFTEST_CORRUPT` perturbs one expected value �
 flag it). gcc-13 + clang-18; added to the flag matrix. (Wiring the call into the wx mount path is the
 product-build piece.)
 
-**18. One-command security-posture report** `[M]` — 12-1
-Factors, slots, lockdown bits, integrity state, last check.
+**18. One-command security-posture report** `[M]` — 12-1 — **DONE**
+Factors, slots, lockdown bits, integrity state, last check. `Common/VcPosture.{c,h}` (gated `VC_ENABLE_POSTURE`, needs `VC_ENABLE_JSON`) emits a machine-readable posture report — a JSON object built with the item-48 `VcJson` escaper whose boolean fields (keyslots / duress / keyscrub / hardware_factor / multi_token_or / argon2_params / header_backup / self_test) are derived from the real `VC_ENABLE_*` compile guards, plus a `features_on` count and a `hardened` summary. Because the fields come from the guards, a feature that is off genuinely reports false — no hand-maintained list to drift. Suite step `[71]` builds it three ways: (A) keyslots+duress ON → those true, rest false, `features_on:2`; (B) stock → all false, `features_on:0`, `hardened:false`, and the JSON validates in python's parser; (C) negative control `-DVP_NEGCTL` built with no features LIES (`keyslots:true`), proving (B)'s false values track the guards rather than a hardcoded list. gcc-13 + clang-18; in the flag matrix. (The runtime facts — mounted slots, last integrity check — are added by the CLI at the real-build layer.)
 
 **19. Verification-coverage display** `[S]` — 12-5 — **DONE**
 Show which claims are machine-verified versus documented. Directly addresses the "all green" problem.

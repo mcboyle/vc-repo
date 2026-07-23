@@ -1838,3 +1838,35 @@ if [ -n "$CB_CC" ] \
 else
 	skip_step " no compiler for the argon2 calibration test (see /tmp/cb.log)"
 fi
+
+echo ""
+echo "[71] Security-posture report reflects compiled features (ROI item 18)"
+# VcPosture emits a JSON report whose booleans come from the real VC_ENABLE_* compile guards.
+# Built three ways: (A) keyslots+duress ON -> those true, rest false, features_on=2; (B) stock ->
+# all false, features_on=0, hardened=false, and the JSON validates in python's parser; (C) negative
+# control -DVP_NEGCTL built with NO features LIES (keyslots:true) -> proving (B)'s false values
+# genuinely track the guards, not a hardcoded list.
+PO_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then PO_CC="$c"; break; fi; done
+PO_SRC="$SRCROOT/Common/VcPosture.c $SRCROOT/Common/VcJson.c"
+PO_BASE="-DVC_ENABLE_JSON -DVC_ENABLE_POSTURE"
+if [ -n "$PO_CC" ] \
+   && "$PO_CC" -O2 -w $PO_BASE -DVC_ENABLE_KEYSLOTS -DVC_ENABLE_DURESS $INC "$HERE/vcposture_test.c" $PO_SRC -o /tmp/po_A 2>/tmp/po.log \
+   && "$PO_CC" -O2 -w $PO_BASE $INC "$HERE/vcposture_test.c" $PO_SRC -o /tmp/po_B 2>>/tmp/po.log \
+   && "$PO_CC" -O2 -w $PO_BASE -DVP_NEGCTL $INC "$HERE/vcposture_test.c" $PO_SRC -o /tmp/po_C 2>>/tmp/po.log; then
+	/tmp/po_A > /tmp/po_a.txt; /tmp/po_B > /tmp/po_b.txt; /tmp/po_C > /tmp/po_c.txt
+	sed 's/^/    A: /' /tmp/po_a.txt; sed 's/^/    B: /' /tmp/po_b.txt
+	ok=1
+	grep -q '"keyslots":true' /tmp/po_a.txt && grep -q '"duress":true' /tmp/po_a.txt && grep -q '"hardware_factor":false' /tmp/po_a.txt && grep -q 'COUNT=2' /tmp/po_a.txt || ok=0
+	grep -q '"keyslots":false' /tmp/po_b.txt && grep -q '"features_on":0' /tmp/po_b.txt && grep -q '"hardened":false' /tmp/po_b.txt || ok=0
+	head -1 /tmp/po_b.txt | python3 -c 'import sys,json; json.loads(sys.stdin.readline())' 2>/dev/null || ok=0
+	# negative control: the liar build (no features) must wrongly report keyslots:true
+	if ! grep -q '"keyslots":true' /tmp/po_c.txt; then echo "    NEGCTL did not fire"; ok=0; fi
+	if [ "$ok" = 1 ]; then
+		echo "    MATCH: posture report tracks the compile guards (A on, B off, valid JSON); negctl liar detected"
+	else
+		echo "    POSTURE REPORT FAILED"; exit 1
+	fi
+else
+	skip_step " no compiler for the posture report test (see /tmp/po.log)"
+fi
