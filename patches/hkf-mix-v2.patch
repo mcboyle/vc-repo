@@ -1,0 +1,155 @@
+diff --git a/src/Common/HardwareKeyFactor.c b/src/Common/HardwareKeyFactor.c
+index 185c499..8254ea6 100644
+--- a/src/Common/HardwareKeyFactor.c
++++ b/src/Common/HardwareKeyFactor.c
+@@ -8,8 +8,8 @@
+ 
+ #include "HardwareKeyFactor.h"
+ #include <string.h>
+-#if defined(VC_ENABLE_HKF_LEN_CONDITION)
+-#include "Crypto/Sha2.h"   /* sha256() for response length conditioning (CRC-seam addendum §6) */
++#if defined(VC_ENABLE_HKF_LEN_CONDITION) || defined(VC_ENABLE_HKF_MIX_V2)
++#include "Crypto/Sha2.h"   /* sha256() for §6 length conditioning and the Rank-1 v2 HKDF mix */
+ #endif
+ 
+ /* ------------------------------------------------------------------ *
+@@ -78,6 +78,96 @@ void HKFMixResponseIntoPassword (unsigned char *password, int *password_len,
+ 	}
+ }
+ 
++#if defined(VC_ENABLE_HKF_MIX_V2)
++/* --- Rank-1 v2 mixing: HKDF-SHA256 over (password || response), domain-separated ------------------ */
++
++#define HKF_HMAC_BLOCK  64
++#define HKF_HMAC_DIGEST 32
++
++/* HMAC-SHA256 over up to two message segments, using the in-tree sha256(). */
++static void hkf_v2_hmac (const unsigned char *key, int keyLen,
++                         const unsigned char *m1, int l1, const unsigned char *m2, int l2,
++                         unsigned char out[HKF_HMAC_DIGEST])
++{
++	sha256_ctx c;
++	unsigned char k0[HKF_HMAC_BLOCK], pad[HKF_HMAC_BLOCK], inner[HKF_HMAC_DIGEST];
++	int i;
++	if (keyLen > HKF_HMAC_BLOCK) {
++		sha256_begin (&c); sha256_hash (key, (uint_32t) keyLen, &c); sha256_end (k0, &c);
++		memset (k0 + HKF_HMAC_DIGEST, 0, HKF_HMAC_BLOCK - HKF_HMAC_DIGEST);
++	} else {
++		if (keyLen > 0) memcpy (k0, key, (size_t) keyLen);
++		memset (k0 + (keyLen > 0 ? keyLen : 0), 0, HKF_HMAC_BLOCK - (keyLen > 0 ? keyLen : 0));
++	}
++	for (i = 0; i < HKF_HMAC_BLOCK; i++) pad[i] = (unsigned char)(k0[i] ^ 0x36);
++	sha256_begin (&c); sha256_hash (pad, HKF_HMAC_BLOCK, &c);
++	if (l1 > 0) sha256_hash (m1, (uint_32t) l1, &c);
++	if (l2 > 0) sha256_hash (m2, (uint_32t) l2, &c);
++	sha256_end (inner, &c);
++	for (i = 0; i < HKF_HMAC_BLOCK; i++) pad[i] = (unsigned char)(k0[i] ^ 0x5c);
++	sha256_begin (&c); sha256_hash (pad, HKF_HMAC_BLOCK, &c); sha256_hash (inner, HKF_HMAC_DIGEST, &c);
++	sha256_end (out, &c);
++	{ volatile unsigned char *p = k0; size_t n = sizeof k0; while (n--) *p++ = 0; }
++}
++
++void HKFMixResponseIntoPasswordV2 (unsigned char *password, int *password_len,
++                                   const unsigned char *response, int response_len)
++{
++	/* Domain-separated HKDF info label (subsumes item 97's cSHAKE labels). */
++	static const unsigned char HKF_V2_INFO[] = "VeraCrypt/HKF/mix/v2";
++	static const unsigned char HKF_V2_ZERO_SALT[HKF_HMAC_DIGEST] = { 0 };
++	unsigned char prk[HKF_HMAC_DIGEST];
++	unsigned char okm[HKF_POOL_SIZE];
++	unsigned char T[HKF_HMAC_DIGEST];
++	int infoLen = (int) sizeof (HKF_V2_INFO) - 1;      /* drop the NUL terminator */
++	int blocks = (HKF_POOL_SIZE + HKF_HMAC_DIGEST - 1) / HKF_HMAC_DIGEST;
++	int blk, pw = *password_len, got = 0, tLen = 0;
++
++	/* Extract: PRK = HMAC(salt=0^32, IKM = password || response). */
++	hkf_v2_hmac (HKF_V2_ZERO_SALT, HKF_HMAC_DIGEST, password, pw, response, response_len, prk);
++
++	/* Expand: T(i) = HMAC(PRK, T(i-1) || info || i); OKM = T(1) || T(2) || ... truncated to L. */
++	for (blk = 1; blk <= blocks; blk++) {
++		unsigned char ctr = (unsigned char) blk;
++		sha256_ctx c;
++		unsigned char k0[HKF_HMAC_BLOCK], pad[HKF_HMAC_BLOCK], inner[HKF_HMAC_DIGEST];
++		int i, n;
++		/* HMAC(PRK, [T] || info || ctr) — inline to feed three segments */
++		memcpy (k0, prk, HKF_HMAC_DIGEST); memset (k0 + HKF_HMAC_DIGEST, 0, HKF_HMAC_BLOCK - HKF_HMAC_DIGEST);
++		for (i = 0; i < HKF_HMAC_BLOCK; i++) pad[i] = (unsigned char)(k0[i] ^ 0x36);
++		sha256_begin (&c); sha256_hash (pad, HKF_HMAC_BLOCK, &c);
++		if (tLen > 0) sha256_hash (T, (uint_32t) tLen, &c);
++		sha256_hash (HKF_V2_INFO, (uint_32t) infoLen, &c);
++		sha256_hash (&ctr, 1, &c);
++		sha256_end (inner, &c);
++		for (i = 0; i < HKF_HMAC_BLOCK; i++) pad[i] = (unsigned char)(k0[i] ^ 0x5c);
++		sha256_begin (&c); sha256_hash (pad, HKF_HMAC_BLOCK, &c); sha256_hash (inner, HKF_HMAC_DIGEST, &c);
++		sha256_end (T, &c);
++		tLen = HKF_HMAC_DIGEST;
++		n = (HKF_POOL_SIZE - got < HKF_HMAC_DIGEST) ? (HKF_POOL_SIZE - got) : HKF_HMAC_DIGEST;
++		for (i = 0; i < n; i++) okm[got + i] = T[i];
++		got += n;
++		{ volatile unsigned char *p = k0; size_t z = sizeof k0; while (z--) *p++ = 0; }
++	}
++
++	memcpy (password, okm, HKF_POOL_SIZE);
++	*password_len = HKF_POOL_SIZE;
++
++	{ volatile unsigned char *p = prk; size_t z = sizeof prk; while (z--) *p++ = 0; }
++	{ volatile unsigned char *p = T;   size_t z = sizeof T;   while (z--) *p++ = 0; }
++	{ volatile unsigned char *p = okm; size_t z = sizeof okm; while (z--) *p++ = 0; }
++}
++
++void HKFMixResponseIntoPasswordVer (int version, unsigned char *password, int *password_len,
++                                    const unsigned char *response, int response_len)
++{
++	if (version == HKF_MIX_V2)
++		HKFMixResponseIntoPasswordV2 (password, password_len, response, response_len);
++	else
++		HKFMixResponseIntoPassword (password, password_len, response, response_len);
++}
++#endif /* VC_ENABLE_HKF_MIX_V2 */
++
+ /* ================================================================== *
+  *  Software simulator (TESTING ONLY): self-contained SHA-1 + HMAC     *
+  * ================================================================== */
+diff --git a/src/Common/HardwareKeyFactor.h b/src/Common/HardwareKeyFactor.h
+index 63a9ebf..bad1748 100644
+--- a/src/Common/HardwareKeyFactor.h
++++ b/src/Common/HardwareKeyFactor.h
+@@ -133,6 +133,38 @@ void HKFApplySaltBindDefault (HKFConfig *cfg);
+ void HKFMixResponseIntoPassword (unsigned char *password, int *password_len,
+                                  const unsigned char *response, int response_len);
+ 
++/* Mixing versions for the version-try loop (CRC-seam addendum, Rank-1 migration). */
++#define HKF_MIX_V1  1   /* legacy CRC-32 keyfile-pool mix (HKFMixResponseIntoPassword)   */
++#define HKF_MIX_V2  2   /* HKDF-SHA256 mix (HKFMixResponseIntoPasswordV2)                */
++
++#if defined(VC_ENABLE_HKF_MIX_V2)
++/*
++ * Rank-1 v2 mixing (addendum §7): replace the CRC-32 keyfile-pool combine with an HKDF-SHA256
++ * derivation, which is a PRF over (password || response) and so preserves entropy unconditionally —
++ * no pool wrap-around, no CRC folding, injective by construction for any response length up to
++ * HKF_MAX_RESPONSE. A versioned domain-separation label goes in the HKDF info parameter, which
++ * subsumes cSHAKE-style KDF labels:
++ *
++ *   password[0..HKF_POOL_SIZE) = HKDF-SHA256(salt = <empty>,
++ *                                            IKM  = original-password || response,
++ *                                            info = "VeraCrypt/HKF/mix/v2",
++ *                                            L    = HKF_POOL_SIZE)
++ *   *password_len = HKF_POOL_SIZE
++ *
++ * This changes the value fed to PBKDF2/Argon2 versus v1 but leaves the on-disk header untouched, so a
++ * volume enrolled under v1 still opens via the mount-time version-try loop (try v2, then v1). New
++ * volumes are created under v2. 'password' must have room for HKF_POOL_SIZE bytes. Gated behind
++ * VC_ENABLE_HKF_MIX_V2. See docs/HKF-MIX-V2-SPEC.md.
++ */
++void HKFMixResponseIntoPasswordV2 (unsigned char *password, int *password_len,
++                                   const unsigned char *response, int response_len);
++
++/* Dispatch to the v1 (CRC) or v2 (HKDF) mix by version (HKF_MIX_V1 / HKF_MIX_V2). The mount path tries
++   HKF_MIX_V2 first and falls back to HKF_MIX_V1; create always uses HKF_MIX_V2. */
++void HKFMixResponseIntoPasswordVer (int version, unsigned char *password, int *password_len,
++                                    const unsigned char *response, int response_len);
++#endif
++
+ /*
+  * Optional process-wide active configuration, set by the mount/format caller (the UI or CLI layer)
+  * just before a volume operation; NULL means the hardware factor is disabled and derivation is

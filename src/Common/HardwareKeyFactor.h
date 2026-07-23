@@ -133,6 +133,38 @@ void HKFApplySaltBindDefault (HKFConfig *cfg);
 void HKFMixResponseIntoPassword (unsigned char *password, int *password_len,
                                  const unsigned char *response, int response_len);
 
+/* Mixing versions for the version-try loop (CRC-seam addendum, Rank-1 migration). */
+#define HKF_MIX_V1  1   /* legacy CRC-32 keyfile-pool mix (HKFMixResponseIntoPassword)   */
+#define HKF_MIX_V2  2   /* HKDF-SHA256 mix (HKFMixResponseIntoPasswordV2)                */
+
+#if defined(VC_ENABLE_HKF_MIX_V2)
+/*
+ * Rank-1 v2 mixing (addendum §7): replace the CRC-32 keyfile-pool combine with an HKDF-SHA256
+ * derivation, which is a PRF over (password || response) and so preserves entropy unconditionally —
+ * no pool wrap-around, no CRC folding, injective by construction for any response length up to
+ * HKF_MAX_RESPONSE. A versioned domain-separation label goes in the HKDF info parameter, which
+ * subsumes cSHAKE-style KDF labels:
+ *
+ *   password[0..HKF_POOL_SIZE) = HKDF-SHA256(salt = <empty>,
+ *                                            IKM  = original-password || response,
+ *                                            info = "VeraCrypt/HKF/mix/v2",
+ *                                            L    = HKF_POOL_SIZE)
+ *   *password_len = HKF_POOL_SIZE
+ *
+ * This changes the value fed to PBKDF2/Argon2 versus v1 but leaves the on-disk header untouched, so a
+ * volume enrolled under v1 still opens via the mount-time version-try loop (try v2, then v1). New
+ * volumes are created under v2. 'password' must have room for HKF_POOL_SIZE bytes. Gated behind
+ * VC_ENABLE_HKF_MIX_V2. See docs/HKF-MIX-V2-SPEC.md.
+ */
+void HKFMixResponseIntoPasswordV2 (unsigned char *password, int *password_len,
+                                   const unsigned char *response, int response_len);
+
+/* Dispatch to the v1 (CRC) or v2 (HKDF) mix by version (HKF_MIX_V1 / HKF_MIX_V2). The mount path tries
+   HKF_MIX_V2 first and falls back to HKF_MIX_V1; create always uses HKF_MIX_V2. */
+void HKFMixResponseIntoPasswordVer (int version, unsigned char *password, int *password_len,
+                                    const unsigned char *response, int response_len);
+#endif
+
 /*
  * Optional process-wide active configuration, set by the mount/format caller (the UI or CLI layer)
  * just before a volume operation; NULL means the hardware factor is disabled and derivation is

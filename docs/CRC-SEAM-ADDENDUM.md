@@ -157,7 +157,8 @@ Tracking which of the addendum's recommendations are implemented in-tree. Update
 |---|---|---|
 | §6 — unconditional length conditioning (`>32 bytes → sha256()→32`) | **IMPLEMENTED** behind `VC_ENABLE_HKF_LEN_CONDITION` | `HKFComputeResponse` wrapper in `src/Common/HardwareKeyFactor.c`; verified at `verification/build_and_verify.sh` step `[78]` (`hkf_lencond_test.c` + `hkf_lencond_reference.py`) |
 | §5 / Rec 1 — salt-binding **on by default** | **IMPLEMENTED** behind `VC_ENABLE_HKF_SALT_BIND_DEFAULT` (`HKFApplySaltBindDefault`, opt-out `--hkf-no-bind-salt`/`rawSecretNoBindSalt`); verified at step `[79]` (`hkf_saltdefault_test.c` + `hkf_saltdefault_reference.py`) | `src/Common/HardwareKeyFactor.c` |
-| Rank-1 HKDF migration (v2 derivation) + mount-time version-try loop | not started (long-term) | — |
+| Rank-1 HKDF migration (v2 derivation) + mount-time version-try loop | **CORE BUILT** behind `VC_ENABLE_HKF_MIX_V2` (`HKFMixResponseIntoPasswordV2` / `…Ver`); verified at step `[80]` (`hkf_mixv2_test.c` + `hkf_mixv2_reference.py`). Mount/create integration across both derivation paths is the remaining real-build wiring. | `src/Common/HardwareKeyFactor.c`, `docs/HKF-MIX-V2-SPEC.md` |
+| §7 — cSHAKE domain-separated KDF labels (item 97) | **SUBSUMED** by Rank-1's HKDF `info` label `"VeraCrypt/HKF/mix/v2"` | `docs/HKF-MIX-V2-SPEC.md` |
 
 ### §6 implementation notes
 

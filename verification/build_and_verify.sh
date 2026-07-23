@@ -2097,3 +2097,30 @@ if [ -n "$SD_CC" ] \
 else
 	skip_step " no compiler for the salt-bind-default test (see /tmp/sd_log)"
 fi
+
+echo ""
+echo "[80] Rank-1 v2 mixing (HKDF) + mount-time version-try loop (CRC-seam addendum §7)"
+# v2 replaces the CRC-32 keyfile-pool combine with HKDF-SHA256 over (password||response) — a PRF that
+# preserves entropy unconditionally, domain-separated by a versioned info label. The header is
+# unchanged, so a v1 volume still opens via a version-try loop (try v2, then v1). Two ways: the v2
+# mixed password vs an independent python HKDF (byte-for-byte), plus the try-loop behaviour. Negative
+# controls: a wrong response opens NEITHER version; v1 != v2; a 1-bit response change avalanches v2.
+MV_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then MV_CC="$c"; break; fi; done
+MV_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+MV_INC="$INC -I$SRCROOT/Crypto"
+MV_SRC="$SRCROOT/Common/HardwareKeyFactor.c $SRCROOT/Crypto/Sha2.c"
+if [ -n "$MV_CC" ] \
+   && "$MV_CC" -O2 -Wno-implicit-function-declaration -DVC_ENABLE_HKF -DVC_ENABLE_HKF_MIX_V2 $MV_NOASM $MV_INC "$HERE/hkf_mixv2_test.c" $MV_SRC -o /tmp/mixv2_test 2>/tmp/mv_log; then
+	if /tmp/mixv2_test > /tmp/mv_c.txt; then
+		grep -vE '^PASSWORD|^RESPONSE|^MIXV2 ' /tmp/mv_c.txt
+		A=$(awk '/^MIXV2 /{print $2}' /tmp/mv_c.txt); P=$(python3 "$HERE/hkf_mixv2_reference.py" < /tmp/mv_c.txt | awk '/^MIXV2EXP/{print $2}')
+		if [ -n "$A" ] && [ "$A" = "$P" ] && grep -q '^PASS' /tmp/mv_c.txt; then
+			echo "    MATCH: v2 mix == independent python HKDF; try-loop opens v1+v2; wrong factor opens neither"
+		else
+			echo "    MIXV2 MISMATCH (A=${A:0:16} P=${P:0:16}) or harness failed"; exit 1
+		fi
+	else grep -vE '^PASSWORD|^RESPONSE|^MIXV2 ' /tmp/mv_c.txt; echo "    HKF MIX V2 FAILED"; exit 1; fi
+else
+	skip_step " no compiler for the hkf mix-v2 test (see /tmp/mv_log)"
+fi
