@@ -2020,3 +2020,43 @@ if [ -n "$AH_CC" ] \
 else
 	skip_step " no compiler for the atomic header test (see /tmp/ah_log)"
 fi
+
+echo ""
+echo "[78] HKF response length conditioning (CRC-seam addendum §6)"
+# The CRC pool mix writes 4 bytes/input-byte into a 128-byte pool, so wrap (and unproven injectivity)
+# begins at 33 input bytes. A raw Shamir RAW_SECRET may be 33..64 bytes and wraps. VC_ENABLE_HKF_LEN_
+# CONDITION folds any >32-byte response through sha256()->32, keeping every backend inside the proven
+# regime. Built TWICE (cond/nocond). cond: <=32 unchanged, >32 == sha256(secret) (byte-for-byte vs
+# python). NEGATIVE CONTROL (nocond): a 64-byte secret stays 64 bytes (the reachable gap) and the §2
+# counter shows it wraps (2 writes) while the conditioned 32 does not (1).
+LC_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then LC_CC="$c"; break; fi; done
+LC_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+LC_INC="$INC -I$SRCROOT/Crypto"
+LC_SRC="$SRCROOT/Common/HardwareKeyFactor.c $SRCROOT/Crypto/Sha2.c"
+if [ -n "$LC_CC" ] \
+   && "$LC_CC" -O2 -Wno-implicit-function-declaration -DVC_ENABLE_HKF -DVC_ENABLE_HKF_LEN_CONDITION $LC_NOASM $LC_INC "$HERE/hkf_lencond_test.c" $LC_SRC -o /tmp/lc_cond 2>/tmp/lc_log \
+   && "$LC_CC" -O2 -Wno-implicit-function-declaration -DVC_ENABLE_HKF $LC_NOASM $LC_INC "$HERE/hkf_lencond_test.c" $LC_SRC -o /tmp/lc_nocond 2>>/tmp/lc_log; then
+	/tmp/lc_cond > /tmp/lc_c.txt; /tmp/lc_nocond > /tmp/lc_n.txt
+	sed 's/^/    cond:   /'   /tmp/lc_c.txt | grep -E 'RESP (33|64)|WRAP (32|64)' 
+	sed 's/^/    nocond: /' /tmp/lc_n.txt | grep -E 'RESP (33|64)|WRAP (32|64)'
+	ok=1
+	# (1) cond == independent python (conditioning rule + §2 wrap counts)
+	python3 "$HERE/hkf_lencond_reference.py" > /tmp/lc_py.txt
+	diff <(sed -n 's/^RESP/EXP/p; s/^WRAP/WRAPEXP/p' /tmp/lc_c.txt) /tmp/lc_py.txt >/dev/null || { echo "    cond != python"; ok=0; }
+	# (2) cond: no response longer than 32 bytes
+	awk '$1=="RESP"{ if ($3+0 > 32) exit 1 }' /tmp/lc_c.txt || { echo "    a cond response exceeded 32 bytes"; ok=0; }
+	# (3) no-op for <=32: the RESP 20 / RESP 32 lines are identical cond vs nocond
+	if ! diff <(grep -E '^RESP (20|32) ' /tmp/lc_c.txt) <(grep -E '^RESP (20|32) ' /tmp/lc_n.txt) >/dev/null; then echo "    <=32 not a no-op"; ok=0; fi
+	# (4) negative control: nocond keeps the 64-byte factor at 64 (gap); cond conditions it to 32
+	grep -q '^RESP 64 64 ' /tmp/lc_n.txt || { echo "    negctl: nocond did NOT keep 64 bytes"; ok=0; }
+	grep -q '^RESP 64 32 ' /tmp/lc_c.txt || { echo "    cond did NOT condition the 64-byte factor"; ok=0; }
+	grep -q '^WRAP 64 2$' /tmp/lc_c.txt && grep -q '^WRAP 32 1$' /tmp/lc_c.txt || { echo "    §2 wrap boundary not confirmed"; ok=0; }
+	if [ "$ok" = 1 ]; then
+		echo "    MATCH: >32 conditioned to sha256 (==python); <=32 a no-op; nocond 64-byte gap + wrap shown"
+	else
+		echo "    HKF LENGTH CONDITIONING FAILED"; exit 1
+	fi
+else
+	skip_step " no compiler for the hkf length-conditioning test (see /tmp/lc_log)"
+fi

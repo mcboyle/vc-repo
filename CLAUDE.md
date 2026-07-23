@@ -44,6 +44,10 @@ src/Common/HardwareKeyFactor.{c,h}   the factor module: backends + mixing + gati
    g_hkfActiveConfig / HKFSetActiveConfig() -> process-wide active config (set by CLI before op)
    rawSecretBindSalt (gated -DVC_ENABLE_HKF_SALT_BIND) -> RAW_SECRET returns HMAC-SHA256(secret,salt);
      CLI --hkf-bind-salt; binds a reconstructed/threshold secret to the volume (docs/SALT-BINDING-SPEC.md)
+   HKFComputeResponse length conditioning (gated -DVC_ENABLE_HKF_LEN_CONDITION) -> folds any response
+     >32 bytes through sha256()->32, keeping a raw 33..64-byte Shamir RAW_SECRET inside the CRC pool's
+     proven-injective regime (wrap begins at 33 bytes). No-op for <=32 (all HW backends + salt-bound).
+     Security-analysis addendum §6; docs/CRC-SEAM-ADDENDUM.md; changes derived key for >32B factors.
 src/Common/Shamir.{c,h}              Shamir M-of-N over GF(2^8); shamir_split/shamir_combine
 src/Common/ShamirMac.{c,h}           keyed per-share MAC (gated -DVC_ENABLE_SHAMIR_MAC): adversarial
    share tamper/fabrication detection = HMAC-SHA256(macKey,"VCSMshare1"||x||len||y) over Sha2.c [40]
