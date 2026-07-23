@@ -1690,3 +1690,27 @@ if [ -n "$SS_CC" ] && "$SS_CC" -O2 -Wno-implicit-function-declaration -DVC_ENABL
 else
 	skip_step " no compiler accepted the sources for the status taxonomy test (see /tmp/ss_log)"
 fi
+
+echo ""
+echo "[65] --json output correctness + escaping (ROI item 48)"
+# Emits JSON via the real VcJson.c + VcStatus.c; python's own parser (json_reference.py) is the oracle.
+# Checks valid JSON, round-trip, and that a hostile string value (quotes/backslash/newline + a fake
+# injected field) is ESCAPED, not injected. Negative control: a naive unescaped emitter whose output
+# the parser must reject -> proves the escaping is load-bearing.
+JS_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then JS_CC="$c"; break; fi; done
+JS_DEF="-DVC_ENABLE_JSON -DVC_ENABLE_STATUS"
+if [ -n "$JS_CC" ] \
+   && "$JS_CC" -O2 -Wno-implicit-function-declaration $JS_DEF $INC "$HERE/json_test.c" "$SRCROOT/Common/VcJson.c" "$SRCROOT/Common/VcStatus.c" -o /tmp/json_test 2>/tmp/js_log \
+   && "$JS_CC" -O2 -Wno-implicit-function-declaration $JS_DEF -DVC_JSON_NEGCTL $INC "$HERE/json_test.c" "$SRCROOT/Common/VcJson.c" "$SRCROOT/Common/VcStatus.c" -o /tmp/json_test_nc 2>>/tmp/js_log; then
+	/tmp/json_test | sed 's/^/    /'
+	if /tmp/json_test | python3 "$HERE/json_reference.py" >/tmp/js_ok.txt 2>&1 \
+	   && /tmp/json_test_nc | python3 "$HERE/json_reference.py" --negctl >/tmp/js_nc.txt 2>&1; then
+		sed 's/^/    /' /tmp/js_ok.txt; sed 's/^/    /' /tmp/js_nc.txt
+		echo "    MATCH: --json output is valid + escapes hostile values; negative control (unescaped) is rejected"
+	else
+		sed 's/^/    /' /tmp/js_ok.txt; sed 's/^/    /' /tmp/js_nc.txt; echo "    JSON OUTPUT FAILED"; exit 1
+	fi
+else
+	skip_step " no compiler accepted the sources for the json test (see /tmp/js_log)"
+fi
