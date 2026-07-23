@@ -233,3 +233,62 @@ Writing this surfaced a real product-build break: `Common/KeyslotStore.c` calls 
 (commit adds `AfSplit.o` + `KeyslotAreaFile.o` and `BALLOON`/`SHAMIRMAC`/`SHARECODE` make knobs). The
 verification suite never caught it because it compiles the Common objects individually — exactly the gap
 this real-build layer exists to close.
+
+## Boundary fact — what the sandbox CAN and CANNOT do for the HKF v2 (Rank-1) wiring
+
+*Recorded 2026-07-23 from a timeboxed compile probe, so no future session re-derives it.*
+
+**Sandbox CAN (verified):** the C++ Volume/Core sources that carry the derivation seam **compile clean
+in this environment** with the project's own flags + `wx-config`:
+
+```sh
+cd src; WX=$(wx-config --cxxflags)
+BASE="-D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -D_LARGE_FILES -DARGON2_NO_THREADS \
+      -DTC_NO_GUI -DwxUSE_GUI=0 -DVC_ENABLE_HKF -I. -ICrypto -ICrypto/Argon2/include -IVolume -ICore -IPlatform"
+g++ -std=c++11 -c        $BASE $WX Volume/VolumeHeader.cpp -o /tmp/VolumeHeader.o   # -> rc 0, 367 KB object
+g++ -std=c++11 -fsyntax-only $BASE $WX Core/VolumeCreator.cpp                        # -> rc 0
+```
+
+So a **compile-clean check of the C++ wiring edits** — `VolumeHeader::Decrypt` (the compute-once v2→v1
+loop + the extracted `DecryptWithEffectivePassword` helper), both `VolumeCreator.cpp` create sites, and
+the `HKFMixPasswordWithResponse` / `HKFMixPasswordVer` overloads in `Volume/HardwareKeyFactorMix.h` — IS
+sandbox-feasible across stock / `VC_ENABLE_HKF` / `+VC_ENABLE_HKF_MIX_V2` flag sets, and was run
+(`g++ -std=c++14 -fsyntax-only`, both clean).
+
+**The C path (`Common/Volumes.c`) is a special case — corrected finding.** An earlier draft of this
+note claimed Volumes.c "compiles as a Common object and is covered by the flag matrix." **That was
+wrong.** Confirmed 2026-07-23: `Common/Volumes.c` is **not compiled by the Linux build at all** — it is
+in **no** `.make` `OBJS` list (`Core.make`, `Common.make`, `Volume.make`, `Main.make`), and it is **not**
+in `flag_matrix.sh`'s `MODULES` list. It is Windows-driver / shared-format code: it `#include <io.h>` and
+uses `WORD` / `TC_EVENT` / `HANDLE`, all Windows types. On Linux the mount/create path runs entirely
+through the **C++** path (`VolumeHeader.cpp` + `VolumeCreator.cpp`). Consequence: the Volumes.c v2 wiring
+(the `ReadVolumeHeaderWithAbort` compute-once wrapper + `CreateVolumeHeaderInMemory` v2 create) **cannot
+be compiled in this Linux sandbox and can only build under the Windows driver toolchain.** What the
+sandbox does verify for the C path: the **new wrapper's logic** (constants, seam-function signatures,
+control flow) compiles clean against the real `Common/HardwareKeyFactor.h` in an isolated micro-TU on
+gcc + clang; the pattern mirrors the pre-existing `#if defined(VC_ENABLE_HKF)` block two lines above.
+
+**Sandbox CANNOT (permanent — real-build only):** a behavioural **header round-trip** through the real
+`CreateVolumeHeaderInMemory` → `ReadVolumeHeader` (C path, Windows) or `VolumeHeader::Decrypt` (C++ path).
+That requires *linking the whole mount/create pipeline* — every cipher, `EncryptionModeXTS`, `Pkcs5`, the
+`EncryptionThreadPool` runtime — which the verification suite has never done and is not its convention.
+Confirmed: `build_and_verify.sh` references `Volumes.c` only in a comment (never links it); `hkf_cpp.cpp`
+is a reference-only harness ("needs the compiled VeraCrypt C++ objects"). Therefore the v2/v1 version-try
+**mount round-trip, the wrong-factor rejection end-to-end, and real-token round-trips are REAL-BUILD
+acceptance items**, not suite steps. The sandbox proof stops at the **seam level** (suite step `[81]`,
+`hkf_mixv2_wiring_test.c`): the process-wide active-config seam (`HKFSetActiveConfig`), compute-once
+(`HKFComputeActiveResponse`, one backend query across both version attempts), v2-first/v1-fallback
+dispatch over the real `HKFApplyIfConfiguredVer`, wrong-factor-opens-neither, and cross-path
+byte-identity (C create path == the C++ overload's operations) — all over the real compiled
+`HardwareKeyFactor.o`, with the v2-enrolled key additionally cross-checked against the independent
+python HKDF.
+
+Acceptance items to run on a real build for the Rank-1 wiring:
+1. Create a factored volume with the flag on (⇒ v2); mount it — succeeds on the **first** (v2) attempt.
+2. Create a factored volume with the flag off / forced v1; mount with the flag on — succeeds via the
+   **v1 fallback** (v2 tried first and failed).
+3. Wrong factor: mount opens **neither** version.
+4. No factor configured: single-pass mount, derived header key byte-identical to a control build without
+   `VC_ENABLE_HKF_MIX_V2`.
+5. YubiKey/FIDO2: the try loop performs **one** token round-trip per mount attempt, not two (compute the
+   response once, mix v2 then v1 over the same bytes).

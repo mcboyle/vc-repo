@@ -112,8 +112,35 @@ namespace VeraCrypt
 
 		ConstBufferPtr salt (encryptedData.GetRange (SaltOffset, SaltSize));
 
-#if defined(VC_ENABLE_HKF)
-		// Optional hardware key factor: derive an effective password with the token's response
+#if defined(VC_ENABLE_HKF_MIX_V2)
+		// Optional hardware key factor (v2-capable): compute the token response ONCE over this header's
+		// salt, then try the v2 (HKDF) mix first and fall back to v1 (CRC pool) for a legacy volume — a
+		// hardware token is hit at most once even across the two attempts (compute-once, mix-twice).
+		if (applyHardwareFactor && g_hkfActiveConfig && g_hkfActiveConfig->backend != HKF_BACKEND_NONE)
+		{
+			SecureBuffer resp (HKF_MAX_RESPONSE);
+			int rlen = 0;
+			if (HKFComputeActiveResponse (salt.Get(), (int) salt.Size(), resp.Ptr(), &rlen) != HKF_OK)
+				throw ExternalException (SRC_POS);   /* configured token missing or failed */
+
+			const int versions[2] = { HKF_MIX_V2, HKF_MIX_V1 };
+			for (int vi = 0; vi < 2; ++vi)
+			{
+				shared_ptr <VolumePassword> mixed = HKFMixPasswordWithResponse (password, resp.Ptr(), rlen, versions[vi]);
+				if (DecryptWithEffectivePassword (encryptedData, *mixed, pim, kdf, keyDerivationFunctions, encryptionAlgorithms, encryptionModes))
+					return true;
+			}
+			return false;
+		}
+		// no factor configured: a single unmixed pass
+		return DecryptWithEffectivePassword (encryptedData, password, pim, kdf, keyDerivationFunctions, encryptionAlgorithms, encryptionModes);
+	}
+
+	bool VolumeHeader::DecryptWithEffectivePassword (const ConstBufferPtr &encryptedData, const VolumePassword &effectivePassword, int pim, shared_ptr <Pkcs5Kdf> kdf, const Pkcs5KdfList &keyDerivationFunctions, const EncryptionAlgorithmList &encryptionAlgorithms, const EncryptionModeList &encryptionModes)
+	{
+		ConstBufferPtr salt (encryptedData.GetRange (SaltOffset, SaltSize));
+#elif defined(VC_ENABLE_HKF)
+		// Optional hardware key factor (v1 only): derive an effective password with the token's response
 		// (computed over THIS header's salt) mixed in. With no factor configured this is 'password'.
 		shared_ptr <VolumePassword> hkfPassword;
 		const VolumePassword *effectivePasswordPtr = &password;

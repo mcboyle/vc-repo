@@ -151,7 +151,14 @@ namespace VeraCrypt
 				SecureBuffer backupHeaderSalt (VolumeHeader::GetSaltSize());
 				RandomNumberGenerator::GetData (backupHeaderSalt);
 
-#if defined(VC_ENABLE_HKF)
+#if defined(VC_ENABLE_HKF_MIX_V2)
+				// Gate by volume type: the hidden volume's headers get the factor; a decoy (Normal)
+				// outer volume under HKF_APPLY_HIDDEN_ONLY is created password-only. New volumes enroll
+				// under the v2 (HKDF) mix; the mount path's v2->v1 try loop still opens legacy v1 volumes.
+				shared_ptr <VolumePassword> creatorPassword =
+					HKFShouldApply (g_hkfActiveConfig, Options->Type == VolumeType::Hidden)
+						? HKFMixPasswordVer (*PasswordKey, backupHeaderSalt, HKF_MIX_V2) : PasswordKey;
+#elif defined(VC_ENABLE_HKF)
 				// Gate by volume type: the hidden volume's headers get the factor; a decoy (Normal)
 				// outer volume under HKF_APPLY_HIDDEN_ONLY is created password-only.
 				shared_ptr <VolumePassword> creatorPassword =
@@ -368,7 +375,12 @@ namespace VeraCrypt
 			// Header key
 			HeaderKey.Allocate (VolumeHeader::GetHeaderKeyDerivationSize (options->VolumeHeaderKdf));
 			PasswordKey = Keyfile::ApplyListToPassword (options->Keyfiles, options->Password, options->EMVSupportEnabled);
-#if defined(VC_ENABLE_HKF)
+#if defined(VC_ENABLE_HKF_MIX_V2)
+			// New volumes enroll under the v2 (HKDF) mix; the mount path's v2->v1 try loop opens legacy v1.
+			shared_ptr <VolumePassword> creatorPassword =
+				HKFShouldApply (g_hkfActiveConfig, options->Type == VolumeType::Hidden)
+					? HKFMixPasswordVer (*PasswordKey, salt, HKF_MIX_V2) : PasswordKey;
+#elif defined(VC_ENABLE_HKF)
 			shared_ptr <VolumePassword> creatorPassword =
 				HKFShouldApply (g_hkfActiveConfig, options->Type == VolumeType::Hidden)
 					? HKFMixPassword (*PasswordKey, salt) : PasswordKey;

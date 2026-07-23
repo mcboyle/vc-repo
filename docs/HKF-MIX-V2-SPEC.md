@@ -1,7 +1,10 @@
 # HKF v2 mixing (Rank-1) — HKDF derivation with a version-try loop
 
-*Status: core primitive + version-try loop built and verified in-sandbox (suite step `[80]`); the
-mount/create integration across both derivation code paths is the remaining real-build wiring.*
+*Status: core primitive + version-try loop verified in-sandbox (suite step `[80]`); the mount/create
+call sites are now WIRED on both derivation paths and the wiring seam is verified in-sandbox (suite step
+`[81]`). What remains is the behavioural header round-trip on a real build (mount/create pipeline link)
+and, for the C path, the Windows driver toolchain — both real-build-only, see
+`docs/REAL-BUILD-VALIDATION.md`.*
 
 This is the addendum's **Rank-1** remediation: replace the CRC-32 keyfile-pool mixing seam
 (`HKFMixResponseIntoPassword`, "v1") with an HKDF-SHA256 derivation ("v2"). Gated behind
@@ -55,10 +58,43 @@ same input (so the try-loop is genuinely necessary); a 1-bit change in the respo
 the v2 output (511/1024 bits — PRF diffusion, unlike the localized CRC mix). gcc-13 + clang-18; in the
 flag matrix.
 
+## Wiring — done, and the compute-once seam
+
+Both derivation code paths are now wired (gated `VC_ENABLE_HKF_MIX_V2`; default and `VC_ENABLE_HKF`-only
+builds are unchanged):
+
+- **C path** (`Common/Volumes.c`, Windows driver / shared): `CreateVolumeHeaderInMemory` mixes under
+  `HKF_MIX_V2` via `HKFApplyIfConfiguredVer`. `ReadVolumeHeaderWithAbort` became a thin wrapper that
+  computes the factor response **once** (`HKFComputeActiveResponse`, reading the header salt directly),
+  then calls the unchanged 600-line derivation body (renamed `ReadVolumeHeaderWithAbortImpl`, now taking
+  a precomputed response + version) under `HKF_MIX_V2`; on `ERR_PASSWORD_WRONG` it resets the shared
+  abort flag and retries under `HKF_MIX_V1`. A single backend query serves both attempts.
+- **C++ path** (`Volume/VolumeHeader.cpp` + `Core/VolumeCreator.cpp`, via `Volume/HardwareKeyFactorMix.h`,
+  the path Linux actually runs): both `VolumeCreator.cpp` create sites use `HKFMixPasswordVer(..,
+  HKF_MIX_V2)`. `VolumeHeader::Decrypt` computes the response once (`HKFComputeActiveResponse`) and calls
+  the extracted `DecryptWithEffectivePassword` helper under v2 then v1, mixing the same response via
+  `HKFMixPasswordWithResponse` — no second token round-trip.
+
+**Compute-once, mix-twice:** the token/backend is queried exactly once per mount even though the mix runs
+under two versions. This is required for hardware backends (a YubiKey/FIDO2 round-trip per version would
+double the touch prompts) and is the reason the seam exposes `HKFComputeActiveResponse` separately from
+the mix.
+
+## Verified in-sandbox (suite step `[81]`, `hkf_mixv2_wiring_test.c`)
+
+Over the real compiled `HardwareKeyFactor.o`, driving the process-wide active config
+(`HKFSetActiveConfig`, as the CLI does): create-under-v2 via `HKFApplyIfConfiguredVer`; the mount
+wrapper opens a v2-enrolled volume on the first attempt and a v1-enrolled (legacy) volume via the v1
+fallback, **querying the backend exactly once** across both; `HKFComputeActiveResponse` equals a direct
+`HKFComputeResponse(active cfg)`; and the **C create path derives byte-identical keys to the C++
+overload's operations** (cross-path identity). Negative controls: a wrong active factor opens **neither**
+version; v1 ≠ v2 (the version argument is genuinely consumed). The v2-enrolled key is additionally
+cross-checked byte-for-byte against the independent python HKDF (`hkf_mixv2_reference.py`).
+
 ## Remaining real-build wiring
 
-The two derivation code paths (`Common/Volumes.c` C path; `Volume/VolumeHeader.cpp::Decrypt` +
-`Core/VolumeCreator.cpp` C++ path, via `Volume/HardwareKeyFactorMix.h`) call the mix at a single site
-each. Rank-1 finishes by: create → `HKFMixResponseIntoPasswordVer(HKF_MIX_V2, …)`; mount → the v2→v1
-try loop around the existing header-decrypt attempt. That is behavioural on a real volume and validated
-by the acceptance harness (`docs/REAL-BUILD-VALIDATION.md`), not sandbox-testable here.
+The behavioural **header round-trip** (create a volume, then mount it through the real KDF/cipher
+pipeline) links the whole mount/create stack and is validated by the acceptance harness
+(`docs/REAL-BUILD-VALIDATION.md`), not sandbox-testable here. The C-path edits additionally build only
+under the **Windows driver toolchain** — `Common/Volumes.c` is Windows-only (not in any Linux `.make`,
+uses `<io.h>`/`WORD`/`TC_EVENT`); the Linux mount/create runs entirely through the C++ path.

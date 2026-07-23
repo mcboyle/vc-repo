@@ -2124,3 +2124,32 @@ if [ -n "$MV_CC" ] \
 else
 	skip_step " no compiler for the hkf mix-v2 test (see /tmp/mv_log)"
 fi
+
+echo ""
+echo "[81] Rank-1 v2 WIRING seam (mount/create call sites): active-config, compute-once, cross-path"
+# Step [80] proved the v2 mix + try-loop logic in isolation. This proves the seam the mount/create call
+# sites use: the process-wide active config (HKFSetActiveConfig) driving HKFComputeActiveResponse
+# (compute-once) and HKFApplyIfConfiguredVer (the create C-path call), plus the operations the C++
+# overload (HKFMixPasswordWithResponse) performs — showing both derivation paths derive identical keys.
+# Two ways: the v2-enrolled key (through the real seam) vs the independent python HKDF (byte-for-byte),
+# plus the seam behaviours over real objects. Negative controls: wrong factor opens NEITHER version; the
+# mount wrapper queries the backend exactly once across both attempts (compute-once); v1 != v2.
+WW_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then WW_CC="$c"; break; fi; done
+WW_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+WW_INC="$INC -I$SRCROOT/Crypto"
+WW_SRC="$SRCROOT/Common/HardwareKeyFactor.c $SRCROOT/Crypto/Sha2.c"
+if [ -n "$WW_CC" ] \
+   && "$WW_CC" -O2 -Wno-implicit-function-declaration -DVC_ENABLE_HKF -DVC_ENABLE_HKF_MIX_V2 $WW_NOASM $WW_INC "$HERE/hkf_mixv2_wiring_test.c" $WW_SRC -o /tmp/mixv2_wiring 2>/tmp/ww_log; then
+	if /tmp/mixv2_wiring > /tmp/ww_c.txt; then
+		grep -vE '^PASSWORD|^RESPONSE|^MIXV2 ' /tmp/ww_c.txt
+		A=$(awk '/^MIXV2 /{print $2}' /tmp/ww_c.txt); P=$(python3 "$HERE/hkf_mixv2_reference.py" < /tmp/ww_c.txt | awk '/^MIXV2EXP/{print $2}')
+		if [ -n "$A" ] && [ "$A" = "$P" ] && grep -q '^PASS' /tmp/ww_c.txt; then
+			echo "    MATCH: v2-enrolled key (real HKFApplyIfConfiguredVer seam) == independent python HKDF; wiring behaviours verified"
+		else
+			echo "    WIRING MISMATCH (A=${A:0:16} P=${P:0:16}) or harness failed"; exit 1
+		fi
+	else grep -vE '^PASSWORD|^RESPONSE|^MIXV2 ' /tmp/ww_c.txt; echo "    HKF MIX V2 WIRING FAILED"; exit 1; fi
+else
+	skip_step " no compiler for the hkf mix-v2 wiring test (see /tmp/ww_log)"
+fi

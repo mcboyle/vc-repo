@@ -166,6 +166,29 @@ void HKFMixResponseIntoPasswordVer (int version, unsigned char *password, int *p
 	else
 		HKFMixResponseIntoPassword (password, password_len, response, response_len);
 }
+
+int HKFComputeActiveResponse (const unsigned char *salt, int salt_len,
+                              unsigned char *respOut, int *rlenOut)
+{
+	const HKFConfig *cfg = g_hkfActiveConfig;
+	*rlenOut = 0;
+	if (!cfg || cfg->backend == HKF_BACKEND_NONE)
+		return HKF_OK;                       /* factor disabled: caller does a single unmixed pass */
+	return HKFComputeResponse (cfg, salt, salt_len, respOut, rlenOut);
+}
+
+int HKFApplyIfConfiguredVer (int version, unsigned char *userKey, int *keyLength,
+                             const unsigned char *salt, int salt_len)
+{
+	unsigned char resp[HKF_MAX_RESPONSE];
+	int rlen = 0, rc = HKFComputeActiveResponse (salt, salt_len, resp, &rlen);
+	if (rc != HKF_OK)
+		return rc;                           /* token missing/failed: caller aborts */
+	if (rlen > 0)
+		HKFMixResponseIntoPasswordVer (version, userKey, keyLength, resp, rlen);
+	{ volatile unsigned char *p = resp; size_t n = sizeof (resp); while (n--) *p++ = 0; }
+	return HKF_OK;
+}
 #endif /* VC_ENABLE_HKF_MIX_V2 */
 
 /* ================================================================== *

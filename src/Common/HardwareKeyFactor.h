@@ -163,6 +163,21 @@ void HKFMixResponseIntoPasswordV2 (unsigned char *password, int *password_len,
    HKF_MIX_V2 first and falls back to HKF_MIX_V1; create always uses HKF_MIX_V2. */
 void HKFMixResponseIntoPasswordVer (int version, unsigned char *password, int *password_len,
                                     const unsigned char *response, int response_len);
+
+/* Compute the ACTIVE factor's response exactly once, so the mount version-try loop hits a hardware
+   token only once and then mixes the same response under both versions (design constraint: no double
+   token round-trip). Returns HKF_OK with *rlenOut=0 when no factor is configured (caller does a single
+   unmixed pass); HKF_OK with the response bytes otherwise; or a negative HKF_ERR_* if a configured
+   token failed. respOut must hold >= HKF_MAX_RESPONSE bytes. */
+int HKFComputeActiveResponse (const unsigned char *salt, int salt_len,
+                              unsigned char *respOut, int *rlenOut);
+
+/* Apply the active factor to (userKey,*keyLength) under a specific mix version (compute + mix in one
+   call). Used by the CREATE path (single version, single compute). The MOUNT loop should prefer
+   compute-once via HKFComputeActiveResponse + HKFMixResponseIntoPasswordVer to avoid a second token
+   round-trip. Returns HKF_OK (including the no-factor no-op) or a negative HKF_ERR_*. */
+int HKFApplyIfConfiguredVer (int version, unsigned char *userKey, int *keyLength,
+                             const unsigned char *salt, int salt_len);
 #endif
 
 /*

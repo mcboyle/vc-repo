@@ -104,6 +104,12 @@ namespace VeraCrypt
 #endif
 
 	protected:
+#if defined(VC_ENABLE_HKF_MIX_V2)
+		/* The KDF sweep + header-key trial for one already-effective password (post hardware-factor mix).
+		   Decrypt() computes the factor response once and calls this under each mix version (v2 then v1)
+		   so a volume enrolled under either mix opens with a single token round-trip. */
+		bool DecryptWithEffectivePassword (const ConstBufferPtr &encryptedData, const VolumePassword &effectivePassword, int pim, shared_ptr <Pkcs5Kdf> kdf, const Pkcs5KdfList &keyDerivationFunctions, const EncryptionAlgorithmList &encryptionAlgorithms, const EncryptionModeList &encryptionModes);
+#endif
 		bool DecryptWithHeaderKey (const ConstBufferPtr &encryptedData, shared_ptr <Pkcs5Kdf> pkcs5, const ConstBufferPtr &headerKey, const EncryptionAlgorithmList &encryptionAlgorithms, const EncryptionModeList &encryptionModes);
 		bool Deserialize (const ConstBufferPtr &header, shared_ptr <EncryptionAlgorithm> &ea, shared_ptr <EncryptionMode> &mode);
 		template <typename T> T DeserializeEntry (const ConstBufferPtr &header, size_t &offset) const;
