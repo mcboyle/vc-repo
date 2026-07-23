@@ -95,8 +95,8 @@ The keyslot table exists but is inert without management commands.
 Removes the need to put plaintext passwords in scripts — the most-repeated public complaint.
 *Done when:* a scripted mount succeeds with no secret on disk or in argv.
 
-**10. Argon2id auto-calibration to a time budget** `[S]` — 01-32
-You exposed the parameters; most users will pick badly.
+**10. Argon2id auto-calibration to a time budget** `[S]` — 01-32 — **DONE**
+You exposed the parameters; most users will pick badly. `Common/Pkcs5.c` (gated `VC_ENABLE_ARGON2_PARAMS`) adds `Argon2IterationsForBudget` — a pure, deterministic, timing-free policy (`iterations = targetMs*1000 / per-iteration-µs`, clamped to `[floor, cap]`) — and `Argon2CalibrateToTime`, which measures the per-iteration cost with a real `derive_key_argon2` probe at a given memory cost (ISO C `clock()`; the fork builds Argon2 `ARGON2_NO_THREADS` so at parallelism 1 CPU≈wall) and applies the policy. A calibrated cost is not stored — re-supplied at mount like PIM/the explicit override. Suite step `[70]` verifies two ways: the pure policy diffed byte-for-byte against `argon2_calibrate_reference.py` over a 60-point grid, and a real integration probe over the compiled Argon2 that yields monotone, floor/cap-clamped iterations with a back-to-back derive at the larger budget taking longer (measured e.g. 3 iters→0.05s vs 43 iters→0.54s). Negative control: a budget-ignoring policy fails the monotonicity/floor/cap battery. gcc-13 + clang-18; Pkcs5.c is in the flag matrix. Wall-clock calibration accuracy on other hardware and the `--argon2-time` CLI wiring are the real-build parts (the policy + probe are proven here).
 *Done when:* `--iter-time 2000` benchmarks the machine and selects memory/time/parallelism.
 
 ## Tier 2 — Cheap hardening and activating built capability (11–20)

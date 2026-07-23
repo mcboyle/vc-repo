@@ -1801,3 +1801,40 @@ if [ -n "$WP_CC" ] && python3 "$HERE/wycheproof_vectors.py" --emit-header > /tmp
 else
 	skip_step " no compiler/python for the wycheproof edge-vector test (see /tmp/wp_log, /tmp/wp_gen.log)"
 fi
+
+echo ""
+echo "[70] Argon2id auto-calibration to a time budget (ROI item 10)"
+# Argon2IterationsForBudget (pure policy) is diffed byte-for-byte vs argon2_calibrate_reference.py;
+# Argon2CalibrateToTime runs a REAL Argon2id probe over the compiled Argon2, measures a positive
+# per-iteration cost, and yields iteration counts that are monotone in the budget and floor/cap-clamped,
+# with a back-to-back derive at the larger budget taking longer. Negative control: a budget-ignoring
+# policy must FAIL the property battery. Reuses step [11]'s Argon2 link recipe.
+CB_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then CB_CC="$c"; break; fi; done
+CB_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+CB_GC="-ffunction-sections -fdata-sections"
+CB_INC="$INC -I$SRCROOT/Crypto -I$SRCROOT/Crypto/Argon2/include -I$SRCROOT/Crypto/Argon2/src"
+CB_ARG="$SRCROOT/Crypto/Argon2/src"
+printf 'volatile int g_hasSSE2=1,g_hasAVX2=0,g_hasSSE42=0,g_hasAVX=0,g_hasSSSE3=0,g_hasAESNI=0,g_hasSHA256=0,g_isIntel=0,g_isAMD=0,g_hasSSE41=0,g_hasRDRAND=0,g_hasRDSEED=0;\n' > /tmp/cb_stub.c
+if [ -n "$CB_CC" ] \
+   && "$CB_CC" -O2 $CB_WNO $CB_GC -DARGON2_NO_THREADS $CB_INC -c "$CB_ARG/argon2.c" -o /tmp/cb_argon2.o 2>/tmp/cb.log \
+   && "$CB_CC" -O2 $CB_WNO $CB_GC -DARGON2_NO_THREADS $CB_INC -c "$CB_ARG/core.c"   -o /tmp/cb_core.o   2>>/tmp/cb.log \
+   && "$CB_CC" -O2 $CB_WNO $CB_GC -DARGON2_NO_THREADS $CB_INC -c "$CB_ARG/ref.c"    -o /tmp/cb_ref.o    2>>/tmp/cb.log \
+   && "$CB_CC" -O2 $CB_WNO $CB_GC -DARGON2_NO_THREADS $CB_INC -c "$CB_ARG/blake2/blake2b.c" -o /tmp/cb_b2.o 2>>/tmp/cb.log \
+   && "$CB_CC" -O2 $CB_WNO $CB_GC -DARGON2_NO_THREADS -msse2 $CB_INC -c "$CB_ARG/opt_sse2.c" -o /tmp/cb_sse2.o 2>>/tmp/cb.log \
+   && "$CB_CC" -O2 $CB_WNO $CB_GC -DARGON2_NO_THREADS -mavx2 -msse2 $CB_INC -c "$CB_ARG/opt_avx2.c" -o /tmp/cb_avx2.o 2>>/tmp/cb.log \
+   && "$CB_CC" -O2 $CB_WNO $CB_GC -DARGON2_NO_THREADS -DVC_ENABLE_ARGON2_PARAMS $CB_INC -c "$SRCROOT/Common/Pkcs5.c" -o /tmp/cb_pkcs5.o 2>>/tmp/cb.log \
+   && "$CB_CC" -O2 $CB_WNO -DARGON2_NO_THREADS -DVC_ENABLE_ARGON2_PARAMS $CB_INC "$HERE/argon2_calibrate_test.c" /tmp/cb_stub.c \
+        /tmp/cb_pkcs5.o /tmp/cb_argon2.o /tmp/cb_core.o /tmp/cb_ref.o /tmp/cb_b2.o /tmp/cb_sse2.o /tmp/cb_avx2.o \
+        -Wl,--gc-sections -o /tmp/cb_test 2>>/tmp/cb.log; then
+	/tmp/cb_test > /tmp/cb_c.txt; grep -v '^REF' /tmp/cb_c.txt | sed 's/^/    /'
+	grep '^REF' /tmp/cb_c.txt > /tmp/cb_c_ref.txt
+	python3 "$HERE/argon2_calibrate_reference.py" > /tmp/cb_py.txt
+	if diff -q /tmp/cb_c_ref.txt /tmp/cb_py.txt >/dev/null && grep -q '^PASS' /tmp/cb_c.txt; then
+		echo "    MATCH: calibration policy == python; real Argon2 probe monotone/timed; negctl fires"
+	else
+		echo "    MISMATCH / calibration failed"; diff /tmp/cb_c_ref.txt /tmp/cb_py.txt | head; exit 1
+	fi
+else
+	skip_step " no compiler for the argon2 calibration test (see /tmp/cb.log)"
+fi
