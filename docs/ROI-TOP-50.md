@@ -163,8 +163,8 @@ future; a correct open before lockout resets the counter) + a v1 byte-compat che
 and a byte-for-byte payload-layout diff vs `keyslot_policy_reference.py`. gcc-13 + clang-18, added to the
 flag matrix. Not done here: the `--keyslot-*` CLI surface + wx wiring for the flags (product build).
 
-**16. `verify` command — integrity check without mounting** `[M]` — 02-9
-Check a volume without exposing plaintext or taking the mount path.
+**16. `verify` command — integrity check without mounting** `[M]` — 02-9 — **DONE**
+Check a volume without exposing plaintext or taking the mount path. `KeyslotStructuralCheck` in `Common/KeyslotStore.c` (gated `VC_ENABLE_VERIFY`) validates every occupied labeled slot's framing against this build's parameters — known version, shipping KDF id, stored cost and payload-length, record fits the stride — **without the passphrase**, returning a well-formed/malformed count. It detects gross corruption/truncation offline; it deliberately does *not* authenticate a slot's ciphertext (that needs the passphrase, or the area MAC of item 42 which is `[FORMAT]`/pending). Suite step `[72]` proves it accepts a clean 3-slot area and flags each framing corruption (version / cost / payload-length) as malformed. Honest-boundary demonstration: a flipped ciphertext byte is invisible to the structural check, but the mount path (`KeyslotOpen`) still rejects it via the per-record AEAD tag — so the offline check and the mount check are complementary. gcc-13 + clang-18; in the flag matrix. (The `verify` subcommand + header-backup-integrity composition — item 44's `HeaderBackupVerify` — are the CLI/real-build wiring.)
 
 **17. Self-test on mount** `[S]` — 12-11 — **DONE**
 KATs for the algorithms actually in use, at the moment they matter.

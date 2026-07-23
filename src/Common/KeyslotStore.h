@@ -148,6 +148,16 @@ int KeyslotOpenAtPolicy (const KeyslotStoreCfg *cfg, KeyslotArea *area, int inde
                          int *attemptsOut, int *maxAttemptsOut);
 #endif /* VC_ENABLE_KEYSLOT_POLICY */
 
+#if defined(VC_ENABLE_VERIFY)
+/* Offline "verify" (ROI item 16): structurally validate every occupied labeled slot WITHOUT the
+   passphrase — known version, shipping KDF id, stored cost/plen matching this build, record fits the
+   stride. Detects corruption/truncation; cannot authenticate ciphertext (needs the passphrase or the
+   item-42 area MAC). Returns 0 if all occupied slots are well-formed (or the table is empty), -1 if
+   any is malformed or a read failed; *wellFormed / *malformed (optional) get the counts. */
+int KeyslotStructuralCheck (const KeyslotStoreCfg *cfg, KeyslotArea *area,
+                            int *wellFormed, int *malformed);
+#endif
+
 #if defined(__cplusplus)
 }
 #endif

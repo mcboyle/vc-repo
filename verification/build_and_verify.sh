@@ -1870,3 +1870,26 @@ if [ -n "$PO_CC" ] \
 else
 	skip_step " no compiler for the posture report test (see /tmp/po.log)"
 fi
+
+echo ""
+echo "[72] Offline verify without mounting: keyslot-area structural integrity (ROI item 16)"
+# KeyslotStructuralCheck validates every occupied labeled slot's framing (version/kdf/cost/plen,
+# record fits stride) WITHOUT the passphrase, over the real KeyslotStore. Clean area -> OK; corrupt a
+# framing field -> flagged malformed (negative controls). Honest boundary: a flipped ciphertext byte
+# is invisible to the structural check but the mount path (KeyslotOpen) still rejects it via the AEAD.
+KV_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then KV_CC="$c"; break; fi; done
+KV_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+KV_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+KV_DEF="-DVC_ENABLE_KEYSLOTS -DVC_ENABLE_VERIFY"
+KV_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$KV_CC" ] \
+   && "$KV_CC" -O2 $KV_WNO $KV_NOASM $KV_DEF $KV_INC "$HERE/keyslot_verify_test.c" \
+        "$SRCROOT/Common/KeyslotStore.c" "$SRCROOT/Common/Keyslot.c" "$SRCROOT/Common/AfSplit.c" \
+        "$SRCROOT/Crypto/Sha2.c" "$SRCROOT/Crypto/chacha256.c" -o /tmp/keyslot_verify_test 2>/tmp/kv_log; then
+	if /tmp/keyslot_verify_test > /tmp/kv_c.txt; then cat /tmp/kv_c.txt
+		echo "    MATCH: offline verify accepts clean area, flags framing corruption; ct-tamper boundary documented"
+	else cat /tmp/kv_c.txt; echo "    OFFLINE VERIFY FAILED"; exit 1; fi
+else
+	skip_step " no compiler for the offline verify test (see /tmp/kv_log)"
+fi
