@@ -1,0 +1,69 @@
+# vc-netshared.service — hardened systemd unit for the VeraCrypt-fork network-share
+# (McCallum–Relyea / Tang-style) unlock server (ROI-TOP-50 item 49).
+#
+# This daemon holds a long-lived server keypair in RAM and answers blinded unlock
+# requests (docs/NETWORK-SHARE-SPEC.md, verification/netshare_transport_poc.c). It is
+# network-facing and secret-bearing, so it is the natural place to spend a full systemd
+# sandbox: drop every privilege and namespace it does not need, so a compromise of the
+# request parser cannot escalate past the socket.
+#
+# These are packaging config, NOT part of the compiled product — the default build stays
+# byte-for-byte stock. Lint: verification/systemd_hardening_lint.sh (+ `systemd-analyze
+# security --offline=true`). Deploy paths (ExecStart/User) are examples; adjust per distro.
+
+[Unit]
+Description=VeraCrypt-fork network-share unlock server
+Documentation=file:docs/NETWORK-SHARE-SPEC.md
+After=network-online.target
+Wants=network-online.target
+Requires=vc-netshared.socket
+
+[Service]
+Type=notify
+ExecStart=/usr/libexec/vc-netshared --systemd-socket
+Restart=on-failure
+RestartSec=2
+
+# --- identity: no static account, no privilege ---------------------------------------
+DynamicUser=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+
+# --- filesystem: read-only world, no home, private tmp -------------------------------
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectProc=invisible
+ProcSubset=pid
+ReadWritePaths=
+RuntimeDirectory=vc-netshared
+StateDirectory=vc-netshared
+UMask=0077
+
+# --- kernel / device surface --------------------------------------------------------
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# --- process / memory / syscalls ----------------------------------------------------
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @cpu-emulation @debug @mount @swap @reboot @raw-io @module @clock
+
+# --- IPC / keyring hygiene ----------------------------------------------------------
+KeyringMode=private
+RemoveIPC=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -2054,6 +2054,7 @@ void get_argon2_params(int pim, int* pIterations, int* pMemcost)
 }
 
 #if defined(VC_ENABLE_ARGON2_PARAMS)
+#include <time.h>   /* clock() for Argon2CalibrateToTime (ISO C, portable) */
 /* Process-wide explicit Argon2id parameters (set by the CLI before a create/mount). Not stored in the
    header — the same values must be supplied at mount as at create, exactly like PIM. */
 static struct { int active; uint32 memCostKiB; uint32 iterations; uint32 parallelism; }
@@ -2097,6 +2098,53 @@ void Argon2GetParamsOverride (int *active, uint32 *memCostKiB, uint32 *iteration
 	if (memCostKiB)  *memCostKiB  = g_argon2Override.memCostKiB;
 	if (iterations)  *iterations  = g_argon2Override.iterations;
 	if (parallelism) *parallelism = g_argon2Override.parallelism;
+}
+
+/* --- auto-calibration to a wall-clock time budget (ROI-TOP-50 item 10) ---------------------
+ * Picking Argon2 cost by hand is guesswork; the useful knob is "spend ~T ms per derivation on
+ * THIS machine". Argon2 run time at a fixed memory cost is ~linear in the iteration (pass)
+ * count, so the policy is a pure through-origin division: iterations = targetMs / per-iteration
+ * cost, clamped to a sane floor/cap. The policy is deterministic and timing-free (verified
+ * byte-for-byte against an independent python reference); the measurement of the per-iteration
+ * cost is the only machine-dependent part and is isolated in Argon2CalibrateToTime. Like the
+ * explicit override, a calibrated cost is NOT stored — the user re-supplies the same params at
+ * mount (or re-calibrates), exactly like PIM. */
+uint32 Argon2IterationsForBudget (uint32 targetMs, uint32 perIterMicros,
+                                  uint32 floorIters, uint32 capIters)
+{
+	uint64 iters;
+	if (perIterMicros == 0) perIterMicros = 1;   /* guard against a zero-time probe */
+	if (floorIters == 0)    floorIters = 1;
+	if (capIters < floorIters) capIters = floorIters;
+	iters = ((uint64) targetMs * 1000u) / (uint64) perIterMicros;  /* ms->us / per-iter us */
+	if (iters < (uint64) floorIters) iters = floorIters;
+	if (iters > (uint64) capIters)   iters = capIters;
+	return (uint32) iters;
+}
+
+/* Measure the per-iteration cost of a real Argon2id derivation at (memCostKiB, current
+ * parallelism) with a small probe, then return the iteration count that fits targetMs via the
+ * pure policy above. *perIterMicrosOut (optional) gets the measured cost. Returns 0 if the probe
+ * derivation fails. Uses ISO C clock() (CPU time); the fork builds Argon2 with ARGON2_NO_THREADS
+ * so at parallelism 1 CPU time tracks wall time — the intended calibration setting. */
+uint32 Argon2CalibrateToTime (uint32 targetMs, uint32 memCostKiB, uint32 probeIters,
+                              uint32 floorIters, uint32 capIters, uint32 *perIterMicrosOut)
+{
+	unsigned char pw[16] = "argon2-calib-pw", salt[24] = "argon2-calib-salt-00000";
+	unsigned char dk[32];
+	clock_t t0, t1;
+	uint64 elapsedMicros, perIter;
+	if (probeIters == 0) probeIters = 3;
+	t0 = clock ();
+	if (derive_key_argon2 (pw, 15, salt, 23, probeIters, memCostKiB, dk, 32, NULL) != 0)
+		return 0;
+	t1 = clock ();
+	burn (dk, sizeof dk);
+	elapsedMicros = (uint64) ((double) (t1 - t0) * 1000000.0 / (double) CLOCKS_PER_SEC);
+	perIter = elapsedMicros / (uint64) probeIters;
+	if (perIter == 0) perIter = 1;
+	if (perIterMicrosOut) *perIterMicrosOut = (uint32) perIter;
+	return Argon2IterationsForBudget (targetMs, (uint32) perIter, floorIters, capIters);
 }
 #endif
 #endif

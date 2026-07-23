@@ -1,0 +1,73 @@
+diff --git a/src/Common/KeyslotStore.c b/src/Common/KeyslotStore.c
+index 959646c..d4e7a75 100644
+--- a/src/Common/KeyslotStore.c
++++ b/src/Common/KeyslotStore.c
+@@ -597,4 +597,47 @@ int KeyslotOpenAtPolicy (const KeyslotStoreCfg *cfg, KeyslotArea *area, int inde
+ }
+ #endif /* VC_ENABLE_KEYSLOT_POLICY */
+ 
++#if defined(VC_ENABLE_VERIFY)
++/* Offline structural integrity of the labeled keyslot area (ROI-TOP-50 item 16): the "verify"
++ * command's engine. WITHOUT the passphrase we cannot authenticate a slot's ciphertext (that needs
++ * the KDF key, or the area MAC of item 42), but we CAN detect gross corruption/truncation by
++ * validating each occupied slot's framing against this build's parameters: known version, the
++ * shipping KDF id, the stored cost and payload length matching the config, and the record fitting
++ * the stride. A slot whose "VCKS" magic survived but whose framing is inconsistent is flagged
++ * malformed. Returns 0 if every occupied slot is well-formed (or the table is empty), -1 if any is
++ * malformed or a read failed. *wellFormed / *malformed (optional) receive the counts. */
++static unsigned ks_get_u16 (const unsigned char *p) { return (unsigned) p[0] | ((unsigned) p[1] << 8); }
++static unsigned ks_get_u32 (const unsigned char *p)
++{ return (unsigned) p[0] | ((unsigned) p[1] << 8) | ((unsigned) p[2] << 16) | ((unsigned) p[3] << 24); }
++
++int KeyslotStructuralCheck (const KeyslotStoreCfg *cfg, KeyslotArea *area,
++                            int *wellFormed, int *malformed)
++{
++	uint64 total, i;
++	int good = 0, bad = 0;
++	unsigned char hdr[L_SALT];   /* magic..plen (offsets 0..13); read through L_SALT for safety */
++	if (!cfg || !area || !is_labeled (cfg->backend)) return -1;
++	total = n_slots (cfg, area);
++	for (i = 0; i < total; i++)
++	{
++		if (area->read (area->ctx, i * KEYSLOT_TABLE_STRIDE, hdr, sizeof (hdr)) != 0)
++			return -1;
++		if (memcmp (hdr + L_MAGIC, "VCKS", 4) != 0)
++			continue;                                   /* free slot */
++		{
++			int okVer  = (hdr[L_VER] == ((af_of (cfg) >= 2) ? 2 : 1));
++			int okKdf  = (hdr[L_KDF] == 1);
++			int okCost = (ks_get_u32 (hdr + L_COST) == cfg->cost);
++			int okPlen = ((int) ks_get_u16 (hdr + L_PLEN) == plen_of (cfg));
++			int okFit  = rec_fits (cfg);
++			if (okVer && okKdf && okCost && okPlen && okFit) good++;
++			else bad++;
++		}
++	}
++	if (wellFormed) *wellFormed = good;
++	if (malformed)  *malformed  = bad;
++	return bad ? -1 : 0;
++}
++#endif /* VC_ENABLE_VERIFY */
++
+ #endif /* VC_ENABLE_KEYSLOTS */
+diff --git a/src/Common/KeyslotStore.h b/src/Common/KeyslotStore.h
+index 3a18426..233b21b 100644
+--- a/src/Common/KeyslotStore.h
++++ b/src/Common/KeyslotStore.h
+@@ -148,6 +148,16 @@ int KeyslotOpenAtPolicy (const KeyslotStoreCfg *cfg, KeyslotArea *area, int inde
+                          int *attemptsOut, int *maxAttemptsOut);
+ #endif /* VC_ENABLE_KEYSLOT_POLICY */
+ 
++#if defined(VC_ENABLE_VERIFY)
++/* Offline "verify" (ROI item 16): structurally validate every occupied labeled slot WITHOUT the
++   passphrase — known version, shipping KDF id, stored cost/plen matching this build, record fits the
++   stride. Detects corruption/truncation; cannot authenticate ciphertext (needs the passphrase or the
++   item-42 area MAC). Returns 0 if all occupied slots are well-formed (or the table is empty), -1 if
++   any is malformed or a read failed; *wellFormed / *malformed (optional) get the counts. */
++int KeyslotStructuralCheck (const KeyslotStoreCfg *cfg, KeyslotArea *area,
++                            int *wellFormed, int *malformed);
++#endif
++
+ #if defined(__cplusplus)
+ }
+ #endif

@@ -1739,3 +1739,191 @@ if [ -n "$HB_CC" ] \
 else
 	skip_step " no compiler accepted the sources for the header-backup test (see /tmp/hb_log)"
 fi
+
+echo ""
+echo "[67] systemd unit hardening lint (ROI item 49)"
+# The network-share unlock server is a secret-bearing network daemon; its shipped unit
+# (dist/systemd/vc-netshared.service) must actually drop privilege. systemd_hardening_lint.sh
+# checks it two ways: a required-directive check AND `systemd-analyze security --offline`
+# exposure score (when present). Negative control: a unit with the hardening stripped must FAIL
+# the directive check and score a worse exposure. The lint is self-contained (no build needed).
+if "$HERE/systemd_hardening_lint.sh" | sed 's/^/    /'; then
+	echo "    MATCH: shipped systemd unit is hardened (directives + systemd-analyze); stripped unit fails"
+else
+	echo "    SYSTEMD HARDENING LINT FAILED"; exit 1
+fi
+
+echo ""
+echo "[68] Multi-token OR-set: any one of N enrolled tokens unlocks (ROI item 45)"
+# HkfOrSet over real Keyslot + HardwareKeyFactor objects: enroll N RAW_SECRET (salt-bound) tokens
+# each wrapping ONE VMK; any single enrolled token recovers the exact VMK. Negative controls: a
+# never-enrolled token opens nothing; after revoking one token's slot, that token stops working
+# while every other token still opens (per-token, not all-or-nothing).
+OS_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then OS_CC="$c"; break; fi; done
+OS_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+OS_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+OS_DEF="-DVC_ENABLE_KEYSLOTS -DVC_ENABLE_HKF -DVC_ENABLE_HKF_SALT_BIND -DVC_ENABLE_HKF_ORSET"
+OS_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$OS_CC" ] \
+   && "$OS_CC" -O2 $OS_WNO $OS_NOASM $OS_DEF $OS_INC "$HERE/hkf_orset_test.c" \
+        "$SRCROOT/Common/HkfOrSet.c" "$SRCROOT/Common/HardwareKeyFactor.c" "$SRCROOT/Common/Keyslot.c" \
+        "$SRCROOT/Common/KeyslotStore.c" "$SRCROOT/Common/AfSplit.c" "$SRCROOT/Common/Shamir.c" \
+        "$SRCROOT/Crypto/Sha2.c" "$SRCROOT/Crypto/chacha256.c" -o /tmp/hkf_orset_test 2>/tmp/os_log; then
+	if /tmp/hkf_orset_test > /tmp/os_c.txt; then cat /tmp/os_c.txt
+		echo "    MATCH: any one enrolled token unlocks; non-enrolled fails; revoke is per-token"
+	else cat /tmp/os_c.txt; echo "    OR-SET FAILED"; exit 1; fi
+else
+	skip_step " no compiler accepted the sources for the OR-set test (see /tmp/os_log)"
+fi
+
+echo ""
+echo "[69] Wycheproof-style HMAC-SHA256 edge-case vectors (ROI item 36)"
+# HMAC-SHA256 underpins salt-binding / duress / keyslot-MAC / Shamir-share-MAC. wycheproof_vectors.py
+# emits adversarial edge vectors (key/msg at the SHA-256 block boundaries 0/1/32/64/65/128 & 55/56/
+# 63/64/65/127, all-zero/all-0xff keys, plus flipped-bit and truncated INVALID tags); their expected
+# tags come from python's own hmac (oracle). wycheproof_test.c recomputes each with the real in-tree
+# Sha2.c and enforces valid==match / invalid==reject. Negative control (-DWP_NEGCTL): a broken HMAC
+# that truncates over-long keys instead of hashing them MUST fail the key=65/128 boundary vectors.
+WP_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then WP_CC="$c"; break; fi; done
+WP_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+WP_INC="$INC -I$SRCROOT/Crypto -I/tmp"
+if [ -n "$WP_CC" ] && python3 "$HERE/wycheproof_vectors.py" --emit-header > /tmp/wycheproof_vectors.h 2>/tmp/wp_gen.log \
+   && "$WP_CC" -O2 -Wno-implicit-function-declaration $WP_NOASM $WP_INC "$HERE/wycheproof_test.c" "$SRCROOT/Crypto/Sha2.c" -o /tmp/wp_test 2>/tmp/wp_log \
+   && "$WP_CC" -O2 -Wno-implicit-function-declaration -DWP_NEGCTL $WP_NOASM $WP_INC "$HERE/wycheproof_test.c" "$SRCROOT/Crypto/Sha2.c" -o /tmp/wp_nc 2>>/tmp/wp_log; then
+	if /tmp/wp_test > /tmp/wp_c.txt && /tmp/wp_nc > /tmp/wp_nc.txt; then
+		sed 's/^/    /' /tmp/wp_c.txt; sed 's/^/    /' /tmp/wp_nc.txt
+		echo "    MATCH: real Sha2.c HMAC-SHA256 passes the edge vectors; broken HMAC fails the boundary cases"
+	else
+		sed 's/^/    /' /tmp/wp_c.txt; sed 's/^/    /' /tmp/wp_nc.txt; echo "    WYCHEPROOF VECTORS FAILED"; exit 1
+	fi
+else
+	skip_step " no compiler/python for the wycheproof edge-vector test (see /tmp/wp_log, /tmp/wp_gen.log)"
+fi
+
+echo ""
+echo "[70] Argon2id auto-calibration to a time budget (ROI item 10)"
+# Argon2IterationsForBudget (pure policy) is diffed byte-for-byte vs argon2_calibrate_reference.py;
+# Argon2CalibrateToTime runs a REAL Argon2id probe over the compiled Argon2, measures a positive
+# per-iteration cost, and yields iteration counts that are monotone in the budget and floor/cap-clamped,
+# with a back-to-back derive at the larger budget taking longer. Negative control: a budget-ignoring
+# policy must FAIL the property battery. Reuses step [11]'s Argon2 link recipe.
+CB_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then CB_CC="$c"; break; fi; done
+CB_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+CB_GC="-ffunction-sections -fdata-sections"
+CB_INC="$INC -I$SRCROOT/Crypto -I$SRCROOT/Crypto/Argon2/include -I$SRCROOT/Crypto/Argon2/src"
+CB_ARG="$SRCROOT/Crypto/Argon2/src"
+printf 'volatile int g_hasSSE2=1,g_hasAVX2=0,g_hasSSE42=0,g_hasAVX=0,g_hasSSSE3=0,g_hasAESNI=0,g_hasSHA256=0,g_isIntel=0,g_isAMD=0,g_hasSSE41=0,g_hasRDRAND=0,g_hasRDSEED=0;\n' > /tmp/cb_stub.c
+if [ -n "$CB_CC" ] \
+   && "$CB_CC" -O2 $CB_WNO $CB_GC -DARGON2_NO_THREADS $CB_INC -c "$CB_ARG/argon2.c" -o /tmp/cb_argon2.o 2>/tmp/cb.log \
+   && "$CB_CC" -O2 $CB_WNO $CB_GC -DARGON2_NO_THREADS $CB_INC -c "$CB_ARG/core.c"   -o /tmp/cb_core.o   2>>/tmp/cb.log \
+   && "$CB_CC" -O2 $CB_WNO $CB_GC -DARGON2_NO_THREADS $CB_INC -c "$CB_ARG/ref.c"    -o /tmp/cb_ref.o    2>>/tmp/cb.log \
+   && "$CB_CC" -O2 $CB_WNO $CB_GC -DARGON2_NO_THREADS $CB_INC -c "$CB_ARG/blake2/blake2b.c" -o /tmp/cb_b2.o 2>>/tmp/cb.log \
+   && "$CB_CC" -O2 $CB_WNO $CB_GC -DARGON2_NO_THREADS -msse2 $CB_INC -c "$CB_ARG/opt_sse2.c" -o /tmp/cb_sse2.o 2>>/tmp/cb.log \
+   && "$CB_CC" -O2 $CB_WNO $CB_GC -DARGON2_NO_THREADS -mavx2 -msse2 $CB_INC -c "$CB_ARG/opt_avx2.c" -o /tmp/cb_avx2.o 2>>/tmp/cb.log \
+   && "$CB_CC" -O2 $CB_WNO $CB_GC -DARGON2_NO_THREADS -DVC_ENABLE_ARGON2_PARAMS $CB_INC -c "$SRCROOT/Common/Pkcs5.c" -o /tmp/cb_pkcs5.o 2>>/tmp/cb.log \
+   && "$CB_CC" -O2 $CB_WNO -DARGON2_NO_THREADS -DVC_ENABLE_ARGON2_PARAMS $CB_INC "$HERE/argon2_calibrate_test.c" /tmp/cb_stub.c \
+        /tmp/cb_pkcs5.o /tmp/cb_argon2.o /tmp/cb_core.o /tmp/cb_ref.o /tmp/cb_b2.o /tmp/cb_sse2.o /tmp/cb_avx2.o \
+        -Wl,--gc-sections -o /tmp/cb_test 2>>/tmp/cb.log; then
+	/tmp/cb_test > /tmp/cb_c.txt; grep -v '^REF' /tmp/cb_c.txt | sed 's/^/    /'
+	grep '^REF' /tmp/cb_c.txt > /tmp/cb_c_ref.txt
+	python3 "$HERE/argon2_calibrate_reference.py" > /tmp/cb_py.txt
+	if diff -q /tmp/cb_c_ref.txt /tmp/cb_py.txt >/dev/null && grep -q '^PASS' /tmp/cb_c.txt; then
+		echo "    MATCH: calibration policy == python; real Argon2 probe monotone/timed; negctl fires"
+	else
+		echo "    MISMATCH / calibration failed"; diff /tmp/cb_c_ref.txt /tmp/cb_py.txt | head; exit 1
+	fi
+else
+	skip_step " no compiler for the argon2 calibration test (see /tmp/cb.log)"
+fi
+
+echo ""
+echo "[71] Security-posture report reflects compiled features (ROI item 18)"
+# VcPosture emits a JSON report whose booleans come from the real VC_ENABLE_* compile guards.
+# Built three ways: (A) keyslots+duress ON -> those true, rest false, features_on=2; (B) stock ->
+# all false, features_on=0, hardened=false, and the JSON validates in python's parser; (C) negative
+# control -DVP_NEGCTL built with NO features LIES (keyslots:true) -> proving (B)'s false values
+# genuinely track the guards, not a hardcoded list.
+PO_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then PO_CC="$c"; break; fi; done
+PO_SRC="$SRCROOT/Common/VcPosture.c $SRCROOT/Common/VcJson.c"
+PO_BASE="-DVC_ENABLE_JSON -DVC_ENABLE_POSTURE"
+if [ -n "$PO_CC" ] \
+   && "$PO_CC" -O2 -w $PO_BASE -DVC_ENABLE_KEYSLOTS -DVC_ENABLE_DURESS $INC "$HERE/vcposture_test.c" $PO_SRC -o /tmp/po_A 2>/tmp/po.log \
+   && "$PO_CC" -O2 -w $PO_BASE $INC "$HERE/vcposture_test.c" $PO_SRC -o /tmp/po_B 2>>/tmp/po.log \
+   && "$PO_CC" -O2 -w $PO_BASE -DVP_NEGCTL $INC "$HERE/vcposture_test.c" $PO_SRC -o /tmp/po_C 2>>/tmp/po.log; then
+	/tmp/po_A > /tmp/po_a.txt; /tmp/po_B > /tmp/po_b.txt; /tmp/po_C > /tmp/po_c.txt
+	sed 's/^/    A: /' /tmp/po_a.txt; sed 's/^/    B: /' /tmp/po_b.txt
+	ok=1
+	grep -q '"keyslots":true' /tmp/po_a.txt && grep -q '"duress":true' /tmp/po_a.txt && grep -q '"hardware_factor":false' /tmp/po_a.txt && grep -q 'COUNT=2' /tmp/po_a.txt || ok=0
+	grep -q '"keyslots":false' /tmp/po_b.txt && grep -q '"features_on":0' /tmp/po_b.txt && grep -q '"hardened":false' /tmp/po_b.txt || ok=0
+	head -1 /tmp/po_b.txt | python3 -c 'import sys,json; json.loads(sys.stdin.readline())' 2>/dev/null || ok=0
+	# negative control: the liar build (no features) must wrongly report keyslots:true
+	if ! grep -q '"keyslots":true' /tmp/po_c.txt; then echo "    NEGCTL did not fire"; ok=0; fi
+	if [ "$ok" = 1 ]; then
+		echo "    MATCH: posture report tracks the compile guards (A on, B off, valid JSON); negctl liar detected"
+	else
+		echo "    POSTURE REPORT FAILED"; exit 1
+	fi
+else
+	skip_step " no compiler for the posture report test (see /tmp/po.log)"
+fi
+
+echo ""
+echo "[72] Offline verify without mounting: keyslot-area structural integrity (ROI item 16)"
+# KeyslotStructuralCheck validates every occupied labeled slot's framing (version/kdf/cost/plen,
+# record fits stride) WITHOUT the passphrase, over the real KeyslotStore. Clean area -> OK; corrupt a
+# framing field -> flagged malformed (negative controls). Honest boundary: a flipped ciphertext byte
+# is invisible to the structural check but the mount path (KeyslotOpen) still rejects it via the AEAD.
+KV_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then KV_CC="$c"; break; fi; done
+KV_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+KV_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+KV_DEF="-DVC_ENABLE_KEYSLOTS -DVC_ENABLE_VERIFY"
+KV_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$KV_CC" ] \
+   && "$KV_CC" -O2 $KV_WNO $KV_NOASM $KV_DEF $KV_INC "$HERE/keyslot_verify_test.c" \
+        "$SRCROOT/Common/KeyslotStore.c" "$SRCROOT/Common/Keyslot.c" "$SRCROOT/Common/AfSplit.c" \
+        "$SRCROOT/Crypto/Sha2.c" "$SRCROOT/Crypto/chacha256.c" -o /tmp/keyslot_verify_test 2>/tmp/kv_log; then
+	if /tmp/keyslot_verify_test > /tmp/kv_c.txt; then cat /tmp/kv_c.txt
+		echo "    MATCH: offline verify accepts clean area, flags framing corruption; ct-tamper boundary documented"
+	else cat /tmp/kv_c.txt; echo "    OFFLINE VERIFY FAILED"; exit 1; fi
+else
+	skip_step " no compiler for the offline verify test (see /tmp/kv_log)"
+fi
+
+echo ""
+echo "[73] Reproducible build check (ROI item 39)"
+# reproducible_build.sh compiles every fork Common module TWICE with normalized flags
+# (SOURCE_DATE_EPOCH, -ffile-prefix-map, -g0) and requires byte-identical objects, scans the fork's
+# own sources for __DATE__/__TIME__ constructs, and (negative control) shows an unnormalized build
+# from a different path differs while -ffile-prefix-map makes it identical.
+if "$HERE/reproducible_build.sh" | sed 's/^/    /'; then
+	echo "    MATCH: fork objects build byte-identically; timestamp scan clean; normalization proven"
+else
+	echo "    REPRODUCIBLE BUILD CHECK FAILED"; exit 1
+fi
+
+echo ""
+echo "[74] SBOM generation + coverage validation (ROI item 40)"
+# sbom.py emits a CycloneDX 1.5 SBOM covering the fork's gated modules + external deps, then validates
+# well-formedness and that EVERY fork module present in the tree is covered (so the SBOM can't drift).
+# Negative control: an SBOM with a component removed must FAIL validation.
+if python3 "$HERE/sbom.py" generate > /tmp/vc_sbom.json 2>/tmp/sbom_gen.log \
+   && python3 -c 'import json,sys; d=json.load(open("/tmp/vc_sbom.json")); assert d["bomFormat"]=="CycloneDX"' 2>/dev/null \
+   && python3 "$HERE/sbom.py" validate /tmp/vc_sbom.json > /tmp/sbom_val.txt 2>&1; then
+	sed 's/^/    /' /tmp/sbom_val.txt
+	python3 -c 'import json; d=json.load(open("/tmp/vc_sbom.json"));
+comps=[c for c in d["components"] if c["name"]!="HeaderBackup"];
+d["components"]=comps; json.dump(d, open("/tmp/vc_sbom_bad.json","w"))'
+	if python3 "$HERE/sbom.py" validate --negctl /tmp/vc_sbom_bad.json > /tmp/sbom_nc.txt 2>&1; then
+		sed 's/^/    /' /tmp/sbom_nc.txt
+		echo "    MATCH: SBOM is well-formed + covers every fork module; a component-dropped SBOM is rejected"
+	else
+		sed 's/^/    /' /tmp/sbom_nc.txt; echo "    SBOM NEGATIVE CONTROL FAILED"; exit 1
+	fi
+else
+	sed 's/^/    /' /tmp/sbom_val.txt 2>/dev/null; echo "    SBOM VALIDATION FAILED"; exit 1
+fi

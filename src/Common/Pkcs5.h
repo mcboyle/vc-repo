@@ -81,6 +81,15 @@ uint32 Argon2GetParallelism (void);
    Argon2 implementation against its canonical (stock-PIM) parameters rather than the user's runtime
    override. Any out-pointer may be NULL. */
 void   Argon2GetParamsOverride (int *active, uint32 *memCostKiB, uint32 *iterations, uint32 *parallelism);
+/* Auto-calibration to a wall-clock budget (docs/ARGON2-PARAMS-SPEC.md, ROI item 10).
+   Argon2IterationsForBudget is the pure, deterministic policy: iterations = targetMs / per-iteration
+   cost, clamped to [floorIters, capIters]. Argon2CalibrateToTime measures the per-iteration cost with
+   a real derive_key_argon2 probe at memCostKiB, then applies the policy; returns 0 on probe failure and
+   sets *perIterMicrosOut (optional) to the measured cost. A calibrated cost is NOT stored (re-supplied
+   like PIM). */
+uint32 Argon2IterationsForBudget (uint32 targetMs, uint32 perIterMicros, uint32 floorIters, uint32 capIters);
+uint32 Argon2CalibrateToTime (uint32 targetMs, uint32 memCostKiB, uint32 probeIters,
+                              uint32 floorIters, uint32 capIters, uint32 *perIterMicrosOut);
 #endif
 
 /* HMAC-BLAKE2b-512 PRF. Output written to d/input_digest which must be at least 64 bytes long.
