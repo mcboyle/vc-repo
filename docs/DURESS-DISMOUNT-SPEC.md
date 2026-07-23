@@ -86,6 +86,20 @@ Properties:
   release the dm-crypt keys, but a kernel/DMA attacker who strikes *before* the dismount completes is
   out of scope (`docs/MEMORY-SCRUB.md`).
 
+## Legal considerations (NOT legal advice — see `docs/KEY-DISCLOSURE-LEGAL.md`)
+
+Duress-dismount is a **technical mechanism, not a legal defence.** It changes what is *mounted*, not
+what you are *legally obliged to disclose*. In a **disclosure-mandate jurisdiction** (e.g. UK RIPA Part
+III s.49/s.53, France Code pénal Art. 434-15-2, Australia Crimes Act s.3LA) invoking it in response to a
+lawful notice — or presenting a locked-down / decoy state as if it were the whole story — **may itself be
+a chargeable offence** (failure to disclose, obstruction, perverting the course of justice). In a more
+protective jurisdiction (e.g. US Fifth Amendment act-of-production, subject to the unsettled
+"foregone conclusion" exception) the calculus differs. **The legal state is jurisdiction-specific and, in
+the US, split at the state level — see the matrix in `docs/KEY-DISCLOSURE-LEGAL.md` and consult local
+counsel before relying on this feature under legal process.** The safe-lockdown (non-destructive) design
+is deliberate for the same reason: a destructive wipe would add a "destruction of evidence" tell without
+helping against an adversary who imaged the disk first.
+
 ## Verification (proven two ways, per the project convention)
 
 Self-contained (`verification/duress_selftest.c` + `duress_reference.py`, wired into
