@@ -517,30 +517,32 @@ else
 	skip_step " no compiler accepted the stock Crypto sources (see /tmp/km_log)"
 fi
 
-echo "[21] Per-sector authentication (dm-integrity style) — tamper/relocation detection vs independent python"
-# One Poly1305 tag per sector over the ciphertext, bound to the sector index (nonce = index): per-sector
-# independence + relocation resistance a whole-area MAC cannot give. Links the REAL in-tree chacha256.c +
-# the step-18 Poly1305; persector_reference.py is independent. TAG STORAGE is [FORMAT]. See docs/PERSECTOR-AUTH-SPEC.md.
+echo "[21] Per-sector authentication (dm-integrity style) — keyed-BLAKE3 PRF tag vs independent python"
+# One keyed-BLAKE3 tag per sector over le64(index)||ciphertext (encrypt-then-MAC), bound to the sector
+# index: per-sector independence + relocation resistance. A PRF, NOT the old one-time Poly1305 (batch-2
+# C2) — Poly1305 reused its one-time key on every sector REWRITE, which a two-snapshot / stale-FTL-page
+# adversary breaks; a PRF degrades gracefully under key reuse. Reuses the proven step-27 BLAKE3
+# (persector_poc.c includes blake3_poc.c); persector_reference.py is independent. TAG STORAGE is
+# [FORMAT]. See docs/PERSECTOR-AUTH-SPEC.md.
 PS_CC=""
 for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then PS_CC="$c"; break; fi; done
 PS_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
 PS_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
-PS_GC="-ffunction-sections -fdata-sections"
 PS_INC="$INC -I$SRCROOT/Crypto"
-if "$PS_CC" -O2 $PS_WNO $PS_NOASM $PS_GC $PS_INC -c "$SRCROOT/Crypto/chacha256.c" -o /tmp/ps_cc.o 2>/tmp/ps_log \
-   && "$PS_CC" -O2 $PS_WNO $PS_NOASM $PS_INC "$HERE/persector_poc.c" /tmp/ps_cc.o -Wl,--gc-sections -o /tmp/ps_poc 2>>/tmp/ps_log; then
-	/tmp/ps_poc > /tmp/ps_c.txt; grep -E '^REF (accept|tamper|relocation|wrongkey)' /tmp/ps_c.txt
+if "$PS_CC" -O2 $PS_WNO $PS_NOASM $PS_INC "$HERE/persector_poc.c" -o /tmp/ps_poc 2>/tmp/ps_log; then
+	/tmp/ps_poc > /tmp/ps_c.txt; grep -E '^REF (accept|tamper|relocation|wrongkey|rewrite)' /tmp/ps_c.txt
 	python3 "$HERE/persector_reference.py" > /tmp/ps_py.txt
 	grep '^REF' /tmp/ps_c.txt > /tmp/ps_c_ref.txt; grep '^REF' /tmp/ps_py.txt > /tmp/ps_py_ref.txt
 	if diff -q /tmp/ps_c_ref.txt /tmp/ps_py_ref.txt >/dev/null; then
-		echo "    MATCH: per-sector auth (real chacha256 + Poly1305) == independent python over $(wc -l < /tmp/ps_c_ref.txt) vectors"
+		echo "    MATCH: per-sector auth (real keyed BLAKE3) == independent python over $(wc -l < /tmp/ps_c_ref.txt) vectors"
 	else
 		echo "    MISMATCH"; diff /tmp/ps_c_ref.txt /tmp/ps_py_ref.txt; exit 1
 	fi
-	for k in accept_all tamper_only_5_fails relocation_detected wrongkey_detected; do
+	# five properties incl. the NEW rewrite_reuse_safe that the old one-time-MAC construction fails
+	for k in accept_all tamper_only_5_fails relocation_detected wrongkey_detected rewrite_reuse_safe; do
 		grep -q "^REF $k YES$" /tmp/ps_c.txt || { echo "    PROPERTY $k FAILED"; exit 1; }
 	done
-	echo "    per-sector independence, relocation resistance, and wrong-key all hold"
+	echo "    per-sector independence, relocation resistance, wrong-key, and rewrite/key-reuse safety all hold"
 else
 	skip_step " no compiler accepted the stock Crypto sources (see /tmp/ps_log)"
 fi
