@@ -67,6 +67,10 @@ areaMac = HMAC-SHA256(K_area, "VCKSAREA1" || slotCount || slot[0] || slot[1] || 
 
 ## Item 43 — Encrypted volume labels `[S][FORMAT]`
 
+> **BUILT (reviewed & approved 2026-07-23):** fixed-48-in-64 padded record. Implemented in
+> `Common/VolumeLabel.{c,h}` (gated `VC_ENABLE_VOLUME_LABEL`); verified at suite step `[76]`
+> (`volume_label_test.c` + `volume_label_reference.py`). Only item 50 below remains design-only.
+
 ### Goal
 A human-readable label ("work-laptop-backup") the owner can list, without leaking it to an examiner who
 images the disk. VeraCrypt has no volume-name field on purpose (deniability). We want the *name* private.

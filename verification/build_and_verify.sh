@@ -1959,3 +1959,34 @@ if [ -n "$AM_CC" ] \
 else
 	skip_step " no compiler for the keyslot area-MAC test (see /tmp/am_log)"
 fi
+
+echo ""
+echo "[76] Encrypted volume labels (ROI item 43 [FORMAT])"
+# VolumeLabel stores a human name as an AEAD keyslot record ("LBL1"||len||label padded to 64) — no new
+# crypto, only payload framing over the already-anchored KeyslotWrap. Two ways: the framing emitted as
+# FRAME lines diffed byte-for-byte vs volume_label_reference.py, plus a Set->Get round-trip over the real
+# keyslot AEAD. Negative controls: wrong passphrase / tampered record -> no label; the label cleartext
+# never appears in the 128-byte record; a 49-byte label is rejected; the fixed plaintext hides length.
+VL_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then VL_CC="$c"; break; fi; done
+VL_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+VL_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+VL_DEF="-DVC_ENABLE_KEYSLOTS -DVC_ENABLE_VOLUME_LABEL"
+VL_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$VL_CC" ] \
+   && "$VL_CC" -O2 $VL_WNO $VL_NOASM $VL_DEF $VL_INC "$HERE/volume_label_test.c" \
+        "$SRCROOT/Common/VolumeLabel.c" "$SRCROOT/Common/Keyslot.c" "$SRCROOT/Crypto/Sha2.c" \
+        "$SRCROOT/Crypto/chacha256.c" -o /tmp/volume_label_test 2>/tmp/vl_log; then
+	if /tmp/volume_label_test > /tmp/vl_c.txt; then
+		grep -v '^FRAME' /tmp/vl_c.txt
+		grep '^FRAME' /tmp/vl_c.txt > /tmp/vl_c_frame.txt
+		python3 "$HERE/volume_label_reference.py" > /tmp/vl_py.txt
+		if diff -q /tmp/vl_c_frame.txt /tmp/vl_py.txt >/dev/null && grep -q '^PASS' /tmp/vl_c.txt; then
+			echo "    MATCH: label framing == independent python; round-trip + no-leak + tamper-reject all hold"
+		else
+			echo "    MISMATCH / label test failed"; diff /tmp/vl_c_frame.txt /tmp/vl_py.txt | head; exit 1
+		fi
+	else grep -v '^FRAME' /tmp/vl_c.txt; echo "    VOLUME LABEL FAILED"; exit 1; fi
+else
+	skip_step " no compiler for the volume label test (see /tmp/vl_log)"
+fi
