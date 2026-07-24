@@ -345,6 +345,15 @@ brief:
   `Hacl_EC_Ed25519` primitives without an independent audit (that glue would be new unverified C). Watch:
   reopen if HACL\*/libcrux ships verified ristretto255. Supersedes the "constant-time group for shipping"
   remaining-work in both proven-group entries above.
+  **Evidence + a finding (step `[94]`, `verification/ristretto255_libsodium_xcheck.c`).** libsodium is now
+  stood up as a VERIFICATION-only third oracle, pinned to RFC 9496 **A.1 + A.2**. It confirms the
+  from-scratch group **encoding** + base-scalar-mult (from-scratch == libsodium == RFC A.1), and it
+  **surfaced a real defect**: the bespoke **hash-to-group** (Elligator map) **diverges from RFC 9496 A.2 /
+  libsodium** — the from-scratch OPRF is self-consistent but would not interoperate with an RFC 9497
+  server (`docs/OPRF-SPEC.md`). This strengthens the case for D-8: adopting libsodium's ristretto255 both
+  removes the bespoke code **and** fixes the non-conformant map. libsodium is a verification oracle here
+  (any RFC-A.1/A.2-conformant version, e.g. distro 1.0.18, suffices; the >= 1.0.21 pin is a *shipping*
+  requirement). The Elligator bug is not root-caused because D-8 deletes that code.
 - **Constant-time AES [D-4 / A-2] — CORE PROVEN (step `[87]`); src promotion is the follow-up.** Required
   by the Adiantum branch's single-block-per-sector AES-256 call on non-AES-NI hardware; it only has to
   **exist** and be constant-time, not be fast. **Built the cheapest correct way** (`verification/ctaes_poc.c`,

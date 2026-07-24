@@ -66,6 +66,21 @@ the real in-tree `Sha2.c`. Validated three ways:
 3. **Properties** — the OPRF identity (`r⁻¹·(k·(r·P)) == k·HashToGroup(input)`), blind-independence
    (a fresh blind gives the same output), wrong-server-key-differs, and server-sees-only-blinded-element.
 
+**Third oracle + a hash-to-group finding (D-8, step `[94]`).** A libsodium cross-check
+(`verification/ristretto255_libsodium_xcheck.c`) was added as an independent third oracle for the group,
+pinned to RFC 9496 **A.1 and A.2**. It confirmed the group-**encoding** + base-scalar-mult layer three
+ways — **from-scratch == libsodium == RFC 9496 A.1** — but it also **surfaced a defect**: the bespoke
+**hash-to-group** (the ristretto255 Elligator map + point-add) **diverges from RFC 9496 / libsodium**.
+libsodium reproduces the official RFC 9496 **A.2** hash-to-group vector exactly; the from-scratch map does
+not. The two existing oracles missed this because the C PoC and its Python twin share the same convention
+and the KAT above only exercises A.1 (base multiples), which do not touch hash-to-group. Consequences:
+the from-scratch OPRF is **internally self-consistent** (the properties above all hold, because Blind /
+Evaluate / Finalize use the same map), but its `HashToGroup` — and therefore its OPRF outputs — would
+**not interoperate with an RFC 9497 server**. This is not chased to root-cause here because **D-8**
+replaces the bespoke group with libsodium (which this oracle pins to the RFC), deleting the divergent map;
+the finding is recorded so the "reproduces RFC 9497" framing is not over-read. The same map is shared by
+`toprf_ristretto_poc.c` and `voprf_ristretto_poc.c`, so the finding applies to all three.
+
 **Verifiable mode (VOPRF) — proven (step `[47]`).** In verifiable mode the server commits a public
 key `pk = k·G` and, with each `EE = k·BE`, proves in zero knowledge (Chaum–Pedersen / **DLEQ**) that
 the *same* `k` relates `(G, pk)` and `(BE, EE)`. The client verifies before finalizing, so a server
@@ -76,7 +91,8 @@ Python (fixed nonce), a valid proof verifies, and both a tampered `EE` and a wro
 rejected. (The exact RFC 9497 verifiable-mode transcript with batched composites stays real-build;
 this is a faithful single-element DLEQ.)
 
-**Still real-build / not shipping:** the from-scratch group is correct-against-RFC but **not
+**Still real-build / not shipping:** the from-scratch group is RFC-anchored **on the encoding + scalar
+layer (A.1)** — but its hash-to-group diverges from the RFC (finding above), and it is **not
 constant-time** (validation, not deployment); a shipping build uses a side-channel-hardened
 ristretto255/P-256 (or delegates), plus the rate-limited server, the transport, full RFC 9497
 end-to-end test vectors, and the threshold split below.
