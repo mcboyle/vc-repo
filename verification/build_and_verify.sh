@@ -2637,3 +2637,44 @@ if [ -n "$OV_CC" ] && [ -n "$OV_SLIBS" ] \
 else
 	skip_step " libsodium not available (apt install libsodium-dev, or set LIBSODIUM_PREFIX) — D-8 RFC 9497 VOPRF/POPRF conformance"
 fi
+
+echo "[97] SHIPPING PBKDF2-HMAC-SHA512 (real derive_key_sha512) vs published KATs + OpenSSL (anchor audit)"
+# ANCHOR AUDIT. derive_key_sha512 is the shipping KeyslotKdfSha512 that wraps every keyslot VMK, and a
+# mountable volume PRF -- yet nothing anchored it to anything external: steps [8]/[9] exercise it only
+# inside fork-specific compositions checked against our OWN python. That is the pattern that hid the
+# ristretto255 hash-to-group defect at step [94] (a self-written twin agrees with the C for the same wrong
+# reason). Here the oracle is OpenSSL via hashlib.pbkdf2_hmac -- an implementation this project did not
+# write -- plus published KATs hard-asserted inside the C. Covers partial-final-block, multi-block, and
+# zero-length password/salt shapes where PBKDF2 composition bugs actually live.
+PB_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then PB_CC="$c"; break; fi; done
+PB_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+PB_GC="-ffunction-sections -fdata-sections"
+PB_INC="$INC -I$SRCROOT/Crypto -I$SRCROOT/Crypto/Argon2/include -I$SRCROOT/Crypto/Argon2/src"
+PB_ARG="$SRCROOT/Crypto/Argon2/src"
+PB_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+printf 'volatile int g_hasSSE2=1,g_hasAVX2=0,g_hasSSE42=0,g_hasAVX=0,g_hasSSSE3=0,g_hasAESNI=0,g_hasSHA256=0,g_isIntel=0,g_isAMD=0,g_hasSSE41=0,g_hasRDRAND=0,g_hasRDSEED=0;\n' > /tmp/pb_stub.c
+if [ -n "$PB_CC" ] \
+   && "$PB_CC" -O2 $PB_WNO $PB_GC -DARGON2_NO_THREADS $PB_INC -c "$PB_ARG/argon2.c" -o /tmp/pb_argon2.o 2>/tmp/pb_cc.log \
+   && "$PB_CC" -O2 $PB_WNO $PB_GC -DARGON2_NO_THREADS $PB_INC -c "$PB_ARG/core.c" -o /tmp/pb_core.o 2>>/tmp/pb_cc.log \
+   && "$PB_CC" -O2 $PB_WNO $PB_GC -DARGON2_NO_THREADS $PB_INC -c "$PB_ARG/ref.c" -o /tmp/pb_ref.o 2>>/tmp/pb_cc.log \
+   && "$PB_CC" -O2 $PB_WNO $PB_GC -DARGON2_NO_THREADS $PB_INC -c "$PB_ARG/blake2/blake2b.c" -o /tmp/pb_b2.o 2>>/tmp/pb_cc.log \
+   && "$PB_CC" -O2 $PB_WNO $PB_GC -DARGON2_NO_THREADS -msse2 $PB_INC -c "$PB_ARG/opt_sse2.c" -o /tmp/pb_sse2.o 2>>/tmp/pb_cc.log \
+   && "$PB_CC" -O2 $PB_WNO $PB_GC -DARGON2_NO_THREADS -mavx2 -msse2 $PB_INC -c "$PB_ARG/opt_avx2.c" -o /tmp/pb_avx2.o 2>>/tmp/pb_cc.log \
+   && "$PB_CC" -O2 $PB_WNO $PB_GC $PB_NOASM $PB_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/pb_sha2.o 2>>/tmp/pb_cc.log \
+   && "$PB_CC" -O2 $PB_WNO $PB_GC -DARGON2_NO_THREADS $PB_INC -c "$SRCROOT/Common/Pkcs5.c" -o /tmp/pb_pkcs5.o 2>>/tmp/pb_cc.log \
+   && "$PB_CC" -O2 $PB_WNO -DARGON2_NO_THREADS $PB_INC "$HERE/pbkdf2_sha512_vectors.c" /tmp/pb_stub.c \
+        /tmp/pb_pkcs5.o /tmp/pb_sha2.o /tmp/pb_argon2.o /tmp/pb_core.o /tmp/pb_ref.o /tmp/pb_b2.o /tmp/pb_sse2.o /tmp/pb_avx2.o \
+        -Wl,--gc-sections -o /tmp/pbkdf2_vectors 2>>/tmp/pb_cc.log; then
+	/tmp/pbkdf2_vectors > /tmp/pb_c.txt || { echo "    PBKDF2 KAT FAILED"; grep -v '^REF' /tmp/pb_c.txt; exit 1; }
+	grep -v '^REF' /tmp/pb_c.txt | sed 's/^/    /'
+	python3 "$HERE/pbkdf2_sha512_reference.py" > /tmp/pb_py.txt
+	grep '^REF' /tmp/pb_c.txt > /tmp/pb_c_ref.txt
+	if diff -q /tmp/pb_c_ref.txt /tmp/pb_py.txt >/dev/null; then
+		echo "    MATCH: real derive_key_sha512 == OpenSSL (hashlib) on all $(wc -l < /tmp/pb_py.txt) cases incl. partial/multi-block + empty pwd/salt"
+	else
+		echo "    MISMATCH vs OpenSSL:"; diff /tmp/pb_c_ref.txt /tmp/pb_py.txt | head; exit 1
+	fi
+else
+	skip_step " no compiler accepted the PBKDF2-SHA512 vector build (see /tmp/pb_cc.log)"
+fi

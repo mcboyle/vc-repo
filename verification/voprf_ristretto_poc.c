@@ -1,4 +1,12 @@
 /*
+ *
+ * !! NON-CONFORMANT HASH-TO-GROUP — DO NOT REUSE THIS GROUP CODE !!
+ * The bespoke ristretto255 map in this file (Elligator hash-to-group) DIVERGES from RFC 9496 / RFC 9497.
+ * Proven at suite step [94]: the group ENCODING matches RFC 9496 A.1, but hash-to-group does NOT match
+ * A.2 / libsodium. Consequence: this PoC is internally self-consistent (its properties hold, since Blind /
+ * Evaluate / Finalize share the map) but its outputs would NOT interoperate with an RFC 9497 peer.
+ * The conformant implementation is libsodium — proven against the official RFC 9497 vectors at steps [95]
+ * (OPRF) and [96] (VOPRF/POPRF). ROADMAP D-8 replaces this code. See docs/VERIFICATION-ANCHORS.md.
  * voprf_ristretto_poc.c — VERIFIABLE OPRF (VOPRF) with a DLEQ proof over ristretto255
  * (build_and_verify.sh step [47]; docs/OPRF-SPEC.md). Extends the step-[43] OPRF: in verifiable mode
  * the server commits to a public key pk = k*G and, with each evaluation EE = k*BE, proves in zero
