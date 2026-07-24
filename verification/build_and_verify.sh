@@ -2274,3 +2274,32 @@ if [ -n "$VM_CC" ] \
 else
 	skip_step " no compiler accepted the stock Crypto sources for the V2Format module (see /tmp/v2m.log)"
 fi
+
+echo "[86] v2 on-disk format — C++ binding link-proof (src/Volume/V2FormatBinding.h) over the real C module"
+# The mount/create paths call the format core through a C++ glue header (V2FormatBinding.h, same pattern
+# as HardwareKeyFactorMix.h). This link-proves that seam: a g++ TU includes the binding and drives the
+# REAL Common/V2Format.o + Sha2.o (like hkf_cli_test.cpp link-proves the HKF C module), reproducing the
+# step-[85] tag0 anchor (fecde672..) through the C++ layer. The product mount/create CALL SITES that use
+# this seam are owner-gated real-build (blocked on the wide-block cipher mode classes) — see the header.
+VC_CC=""; VC_CXX=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then VC_CC="$c"; break; fi; done
+for c in g++ clang++ c++; do if command -v "$c" >/dev/null 2>&1; then VC_CXX="$c"; break; fi; done
+VC_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+VC_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+VC_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$VC_CC" ] && [ -n "$VC_CXX" ] \
+   && "$VC_CC" -O2 $VC_WNO $VC_NOASM -ffunction-sections -fdata-sections -DVC_ENABLE_V2FORMAT $VC_INC -c "$SRCROOT/Common/V2Format.c" -o /tmp/v2b.o 2>/tmp/v2b.log \
+   && "$VC_CC" -O2 $VC_WNO $VC_NOASM -ffunction-sections -fdata-sections $VC_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/v2b_sha2.o 2>>/tmp/v2b.log \
+   && "$VC_CXX" -O2 -std=c++14 $VC_NOASM -DVC_ENABLE_V2FORMAT $VC_INC "$HERE/v2format_cpp.cpp" /tmp/v2b.o /tmp/v2b_sha2.o -Wl,--gc-sections -o /tmp/v2b_cpp 2>>/tmp/v2b.log; then
+	if /tmp/v2b_cpp > /tmp/v2b_out.txt; then
+		grep -E 'PASS$|FAIL$' /tmp/v2b_out.txt | sed 's/^/    /'
+		grep -q '^V2 FORMAT C\+\+ BINDING LINK-PROOF PASSED' /tmp/v2b_out.txt || { echo "    V2 FORMAT C++ BINDING LINK-PROOF FAILED"; exit 1; }
+		grep -q '^REF cpp_tag0 fecde672c46895b69b783821435a7afa$' /tmp/v2b_out.txt \
+			|| { echo "    C++ binding tag0 != step-[85] anchor"; exit 1; }
+		echo "    MATCH: C++ binding drives the real V2Format.o (tag0 == step-[85] anchor fecde672..)"
+	else
+		grep -E 'FAIL$' /tmp/v2b_out.txt | sed 's/^/    /'; echo "    V2 FORMAT C++ BINDING LINK-PROOF FAILED"; exit 1
+	fi
+else
+	skip_step " no C/C++ compiler pair for the V2Format C++ binding (see /tmp/v2b.log)"
+fi

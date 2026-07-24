@@ -80,10 +80,16 @@ Resolved sub-decisions: **16-byte slot**, **tail-of-data table placement** (fron
 sector-size-parameterised sizing. Shipping PRF is **HMAC-SHA256** (no vetted in-tree BLAKE3; step-[84]
 BLAKE3 PoC proved the same logic PRF-agnostically; BLAKE3 stays the target under the same trial machinery).
 
-Still owner-gated for the real-build **C++ mount/create wiring** that calls the module (trial loop +
-create-time `V2FormatSplitDataArea`), backup-header mirroring, and real-media validation of the tail
-placement clamped below a hidden-volume start. Remaining open sub-decisions: migration UX (v1→v2 re-encrypt,
-scope with R22).
+**C++ binding seam built & link-proven** (`src/Volume/V2FormatBinding.h`, suite step `[86]`): namespace
+`VeraCrypt::V2Format` helpers (`DiscoverMode`/`SplitDataArea`/`ModeIsV2`) over byte buffers, same pattern as
+`HardwareKeyFactorMix.h`; a g++ TU drives the real `V2Format.o`+`Sha2.o` and reproduces the `tag0` anchor
+through the C++ layer. Degrades to safe no-ops when the flag is off.
+
+Still owner-gated: the real-build **mount/create call sites** that use the binding (`DiscoverMode` in the
+mount trial after unlock; `SplitDataArea` at create) — **blocked on the wide-block cipher mode classes**
+(HCTR2/Adiantum as an `EncryptionMode` + per-sector MAC I/O = T2-3/T2-4): there is no mode to select nor a
+sector-0 ciphertext to read until those exist. Plus backup-header mirroring, real-media validation, and the
+migration UX (v1→v2 re-encrypt, scope with R22).
 
 ---
 

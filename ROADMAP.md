@@ -243,8 +243,12 @@ the on-disk format design review is **not** waived.
   ef82a0ba…` / `tag0 = fecde672…`): per-mode MAC keys, per-sector tag, const-time verify, the
   store-nothing mount `V2FormatDiscoverMode`, and the MAC-table layout math (16-byte slot, tail-of-data
   split). Shipping PRF is HMAC-SHA256 (no vetted in-tree BLAKE3 exists; the format is PRF-agnostic, BLAKE3
-  stays the target). Remaining T1-1 work is the real-build **C++ mount/create wiring** that calls the
-  module (trial loop + create-time data split), backup-header mirroring, and real-media validation.
+  stays the target). The **C++ binding seam is built & link-proven** (`src/Volume/V2FormatBinding.h`, step
+  `[86]`: a g++ TU drives the real `V2Format.o`+`Sha2.o`, reproducing the `tag0` anchor through the C++
+  layer, same pattern as `hkf_cli_test.cpp`). Remaining T1-1 work is the real-build **mount/create call
+  sites** that use the binding — blocked on the wide-block cipher mode classes (HCTR2/Adiantum as an
+  `EncryptionMode`, T2-3/T2-4): there's no mode to select nor a sector-0 read until those exist. Plus
+  backup-header mirroring and real-media validation.
 - **Anti-forensic (AF) key splitting** (LUKS/TKS1) — **core proven AND keyslot-format integration
   built & proven (`[FORMAT]` done); real-flash validation remains.** The concrete answer to the
   SSD-remnant caveat: diffuse a keyslot's wrapped key across s stripes so recovery needs all of them

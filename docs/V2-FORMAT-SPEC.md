@@ -175,9 +175,21 @@ keyed-BLAKE3 remains the target if a vetted in-tree BLAKE3 is ever added (the tw
 PRF-id under the same trial machinery, exactly as HKF mix v2↔v1 already are). Anchors (HMAC-SHA256):
 `K_mac[hctr2] = ef82a0ba…`, `tag0 = fecde672…`.
 
-**Remaining (real-build, owner-gated):** the C++ mount/create wiring that calls `V2FormatDiscoverMode`
-in the trial loop and `V2FormatSplitDataArea` at create time, backup-header mirroring, and validation on
-real media. The module is pure logic with no volume I/O, so that wiring is the only untested-here layer.
+**C++ binding (`src/Volume/V2FormatBinding.h`, step `[86]`).** The mount/create paths reach the module
+through a header-only C++ glue (same pattern as `HardwareKeyFactorMix.h`): `V2Format::DiscoverMode`,
+`V2Format::SplitDataArea`, `V2Format::ModeIsV2`, in namespace `VeraCrypt`, over plain byte buffers. It is
+**link-proven** standalone — a g++ TU drives the real `V2Format.o` + `Sha2.o` and reproduces the step-`[85]`
+`tag0` anchor through the C++ layer (exactly as `hkf_cli_test.cpp` link-proves the HKF C module). When
+`VC_ENABLE_V2FORMAT` is off the helpers degrade to safe no-ops (`DiscoverMode` → v1), so a stock build is
+unaffected. This header is the seam the mount/create call sites plug into.
+
+**Remaining (real-build, owner-gated):** the mount/create **call sites** that use the binding —
+`DiscoverMode` in the mount trial (Core/Volume open, after unlock, reading data sector 0 + its tag) and
+`SplitDataArea` at create time (Core/VolumeCreator, when the data-area size is known) — plus backup-header
+mirroring and real-media validation. Those call sites are **blocked on the wide-block cipher mode classes**
+(HCTR2/Adiantum as an `EncryptionMode` + a per-sector MAC I/O layer, i.e. T2-3/T2-4): there is no mode to
+select among nor a sector-0 ciphertext to read until those exist. The binding + module are the seam they
+plug into; nothing else in the format is untested here.
 
 ## HKF-v2 salt binding (D-1) fits here, not separately
 
