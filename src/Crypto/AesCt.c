@@ -134,4 +134,64 @@ void AesCtEncrypt256 (const unsigned char key[32], const unsigned char in[16], u
 	{ volatile unsigned char *p = (volatile unsigned char *) &ctx; size_t n = sizeof ctx; while (n--) *p++ = 0; }
 }
 
+/* ---- inverse cipher (decrypt) ---- */
+
+/* inverse S-box: S^{-1}(y) = gf_inv( invAffine(y) ), invAffine(y) = rotl(y,1) ^ rotl(y,3) ^ rotl(y,6) ^ 0x05 */
+static unsigned char inv_sbox (unsigned char y)
+{
+	unsigned char b = (unsigned char) (rotl8 (y, 1) ^ rotl8 (y, 3) ^ rotl8 (y, 6) ^ 0x05);
+	return gf_inv (b);
+}
+
+/* InvShiftRows: row r cyclically RIGHT-shifted by r (inverse of ShiftRows). */
+static void inv_shift_rows (unsigned char s[16])
+{
+	unsigned char t[16];
+	int r, c;
+	for (r = 0; r < 4; r++) for (c = 0; c < 4; c++) t[4*c + r] = s[4*((c - r) & 3) + r];
+	memcpy (s, t, 16);
+}
+
+/* InvMixColumns: multiply each column by [0e 0b 0d 09] (rotated), via the branchless gf_mul. */
+static void inv_mix_columns (unsigned char s[16])
+{
+	int c;
+	for (c = 0; c < 4; c++)
+	{
+		unsigned char *p = s + 4*c;
+		unsigned char a0 = p[0], a1 = p[1], a2 = p[2], a3 = p[3];
+		p[0] = (unsigned char) (gf_mul (a0, 0x0e) ^ gf_mul (a1, 0x0b) ^ gf_mul (a2, 0x0d) ^ gf_mul (a3, 0x09));
+		p[1] = (unsigned char) (gf_mul (a0, 0x09) ^ gf_mul (a1, 0x0e) ^ gf_mul (a2, 0x0b) ^ gf_mul (a3, 0x0d));
+		p[2] = (unsigned char) (gf_mul (a0, 0x0d) ^ gf_mul (a1, 0x09) ^ gf_mul (a2, 0x0e) ^ gf_mul (a3, 0x0b));
+		p[3] = (unsigned char) (gf_mul (a0, 0x0b) ^ gf_mul (a1, 0x0d) ^ gf_mul (a2, 0x09) ^ gf_mul (a3, 0x0e));
+	}
+}
+
+void AesCtDecryptBlock (const AesCtKey256 *ctx, const unsigned char in[16], unsigned char out[16])
+{
+	unsigned char s[16];
+	int round, i;
+	memcpy (s, in, 16);
+	for (i = 0; i < 16; i++) s[i] ^= ctx->rk[16*AESCT_ROUNDS_256 + i];   /* AddRoundKey (last) */
+	for (round = AESCT_ROUNDS_256 - 1; round >= 1; round--)
+	{
+		inv_shift_rows (s);
+		for (i = 0; i < 16; i++) s[i] = inv_sbox (s[i]);
+		for (i = 0; i < 16; i++) s[i] ^= ctx->rk[16*round + i];
+		inv_mix_columns (s);
+	}
+	inv_shift_rows (s);
+	for (i = 0; i < 16; i++) s[i] = inv_sbox (s[i]);
+	for (i = 0; i < 16; i++) s[i] ^= ctx->rk[i];
+	memcpy (out, s, 16);
+}
+
+void AesCtDecrypt256 (const unsigned char key[32], const unsigned char in[16], unsigned char out[16])
+{
+	AesCtKey256 ctx;
+	AesCtInit256 (&ctx, key);
+	AesCtDecryptBlock (&ctx, in, out);
+	{ volatile unsigned char *p = (volatile unsigned char *) &ctx; size_t n = sizeof ctx; while (n--) *p++ = 0; }
+}
+
 #endif /* VC_ENABLE_CTAES */

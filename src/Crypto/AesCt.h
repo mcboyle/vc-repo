@@ -41,6 +41,13 @@ void AesCtEncryptBlock (const AesCtKey256 *ctx, const unsigned char in[16], unsi
 /* One-shot convenience: expand `key` and encrypt a single block. */
 void AesCtEncrypt256 (const unsigned char key[32], const unsigned char in[16], unsigned char out[16]);
 
+/* Decrypt one 16-byte block under the expanded key (constant-time, standard inverse cipher reusing the
+   same round keys). Adiantum/HCTR2 need the inverse direction for their length-preserving block op. */
+void AesCtDecryptBlock (const AesCtKey256 *ctx, const unsigned char in[16], unsigned char out[16]);
+
+/* One-shot convenience: expand `key` and decrypt a single block. */
+void AesCtDecrypt256 (const unsigned char key[32], const unsigned char in[16], unsigned char out[16]);
+
 #ifdef __cplusplus
 }
 #endif

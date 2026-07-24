@@ -69,17 +69,49 @@ int main (void)
 		check ("expand-once AesCtInit256+Block == real Gladman (4096 blocks)", mism2 == 0);
 	}
 
+	/* (2c) DECRYPT: FIPS-197 vector inverts, agrees with the real Gladman aes_decrypt, and round-trips */
+	{
+		unsigned char key[32], in[16], out[16];
+		static const unsigned char kat_ct[16] = { 0x8e,0xa2,0xb7,0xca,0x51,0x67,0x45,0xbf,0xea,0xfc,0x49,0x90,0x4b,0x49,0x60,0x89 };
+		aes_decrypt_ctx dc[1];
+		AesCtKey256 k[1];
+		int t, mism = 0, rt = 0, i;
+		for (i = 0; i < 32; i++) key[i] = (unsigned char) i;
+		AesCtDecrypt256 (key, kat_ct, out);
+		printf ("REF fips197_decrypt "); hex (out, 16); printf ("\n");
+		{ int ok = 1; for (i = 0; i < 16; i++) if (out[i] != (unsigned char) (i * 0x11)) ok = 0;
+		  check ("shippable AesCt decrypt: FIPS-197 ct -> plaintext (00112233..)", ok); }
+		xs = 0x9e3779b9u;   /* fresh stream for the decrypt sweep */
+		for (t = 0; t < 4096; t++)
+		{
+			unsigned char rk[32], ct[16], mine[16], real[16], back[16];
+			for (i = 0; i < 32; i++) rk[i] = rnd ();
+			for (i = 0; i < 16; i++) ct[i] = rnd ();
+			AesCtDecrypt256 (rk, ct, mine);
+			aes_decrypt_key256 (rk, dc); aes_decrypt (ct, real, dc);
+			if (memcmp (mine, real, 16) != 0) mism++;
+			AesCtInit256 (k, rk); AesCtEncryptBlock (k, ct, back); AesCtDecryptBlock (k, back, back);
+			if (memcmp (back, ct, 16) != 0) rt++;   /* Dec(Enc(x)) == x */
+		}
+		printf ("REF agree_decrypt 4096 %d\n", mism);
+		printf ("REF roundtrip 4096 %d\n", rt);
+		check ("AesCt decrypt == real Gladman aes_decrypt (4096 blocks)", mism == 0);
+		check ("Dec(Enc(x)) == x round-trip (4096 blocks)", rt == 0);
+	}
+
 	/* (3) constant-time demonstration: poison key + plaintext; CLEAN under memcheck */
 	{
 		unsigned char key[32], in[16], out[16]; int i;
 		for (i = 0; i < 32; i++) key[i] = (unsigned char) (0x40 + i);
 		for (i = 0; i < 16; i++) in[i]  = (unsigned char) (0x11 * i);
+		unsigned char dout[16];
 		SECRET (key, 32); SECRET (in, 16);
 		AesCtEncrypt256 (key, in, out);
-		PUBLIC (out, 16);
-		g_sink ^= out[0];
+		AesCtDecrypt256 (key, in, dout);        /* decrypt path also poisoned */
+		PUBLIC (out, 16); PUBLIC (dout, 16);
+		g_sink ^= out[0] ^ dout[0];
 		printf ("REF ct_poisoned_run done\n");
-		check ("secret-poisoned encrypt completes (CLEAN under memcheck)", 1);
+		check ("secret-poisoned encrypt+decrypt complete (CLEAN under memcheck)", 1);
 	}
 
 	printf ("\n%s\n", all_pass ? "AESCT MODULE TESTS PASSED (real src/Crypto/AesCt.o)" : "AESCT MODULE TESTS FAILED");

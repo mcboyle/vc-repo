@@ -54,11 +54,15 @@ with the constant-time property demonstrated directly:
   variant (Boyar–Peralta S-box / BearSSL-style) can replace the S-box later behind the same interface
   without changing the format.
 - **Promotion — DONE (step `[88]`).** The cipher now ships as `src/Crypto/AesCt.{c,h}` (gated
-  `-DVC_ENABLE_CTAES` / `make CTAES=1`, `Crypto/AesCt.o` in `Core.make`): `AesCtInit256` (expand the key
-  once) + `AesCtEncryptBlock` (one block per sector) + `AesCtEncrypt256` (one-shot). Self-contained (no
-  Common dependency; its local `gf_mul`/`gf_inv` are the same proven construction, on the ct-primitive-guard
-  allowlist). Proven by linking the **real `AesCt.o`** against the real Gladman AES: FIPS-197 C.3 +
-  byte-for-byte agreement over 4096 random blocks (both APIs) + ctgrind CLEAN. Remaining T2-4: the
+  `-DVC_ENABLE_CTAES` / `make CTAES=1`, `Crypto/AesCt.o` in `Core.make`), **encrypt AND decrypt** (both
+  wide-block modes use the inverse direction): `AesCtInit256` (expand once) + `AesCtEncryptBlock` /
+  `AesCtDecryptBlock` (one block per sector) + `AesCtEncrypt256` / `AesCtDecrypt256` (one-shot). Decrypt is
+  the standard inverse cipher (inverse S-box `gf_inv(invAffine(y))`, InvShiftRows, InvMixColumns via the
+  branchless `gf_mul`), reusing the same round keys. Self-contained (no Common dependency; its local
+  `gf_mul`/`gf_inv` are the same proven construction, on the ct-primitive-guard allowlist). Proven by
+  linking the **real `AesCt.o`** against the real Gladman AES: FIPS-197 C.3 (encrypt + inverse) +
+  byte-for-byte agreement over 4096 random blocks in **both directions** + `Dec(Enc(x))==x` round-trip +
+  ctgrind CLEAN (encrypt and decrypt poisoned). Remaining T2-4: the
   **HCTR2/Adiantum `EncryptionMode` classes** that call this on the non-AES-NI path (real-build C++),
   which in turn unblocks the T1-1 v2 mount/create call sites (`docs/V2-FORMAT-SPEC.md`). A faster
   bitsliced S-box can drop into `AesCt.c` later behind the same interface.

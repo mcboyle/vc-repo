@@ -344,8 +344,9 @@ brief:
   **real in-tree Gladman AES** over 4096 random blocks — and demonstrated **ctgrind-CLEAN** under valgrind
   (key+plaintext poisoned, 0 secret-dependent branches/indexes; contrast: table AES is LEAKY,
   `docs/CT-HARDENING-R17.md` / ct step A1). **Promoted to a shippable module** `src/Crypto/AesCt.{c,h}`
-  (gated `-DVC_ENABLE_CTAES` / `make CTAES=1`; step `[88]`: real `AesCt.o` vs FIPS-197 C.3 + real Gladman
-  agreement over 4096 blocks, both APIs, + ctgrind CLEAN). Remaining **T2-4**: the HCTR2/Adiantum
+  (gated `-DVC_ENABLE_CTAES` / `make CTAES=1`; step `[88]`: real `AesCt.o` **encrypt+decrypt** vs FIPS-197
+  C.3 + real Gladman agreement over 4096 blocks in both directions + `Dec(Enc(x))==x` + ctgrind CLEAN).
+  Remaining **T2-4**: the HCTR2/Adiantum
   `EncryptionMode` classes that call `AesCt` on the non-AES-NI path (real-build C++), which unblocks the
   T1-1 v2 mount/create call sites. A faster bitsliced S-box can drop into `AesCt.c` later behind the same
   interface.

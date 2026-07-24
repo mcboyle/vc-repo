@@ -2346,7 +2346,7 @@ else
 	skip_step " no compiler accepted the stock Crypto sources for constant-time AES (see /tmp/ax.log)"
 fi
 
-echo "[88] Constant-time AES — SHIPPABLE module (src/Crypto/AesCt.c, gated VC_ENABLE_CTAES) vs FIPS-197 + real Gladman"
+echo "[88] Constant-time AES — SHIPPABLE module (src/Crypto/AesCt.c, VC_ENABLE_CTAES) encrypt+decrypt vs FIPS-197 + real Gladman"
 # Step [87] proved the inline PoC; this proves the src/ module Adiantum will call (T2-4a), by LINKING the
 # real AesCt.o (built -DVC_ENABLE_CTAES) with the real Gladman objects — same technique as the V2Format /
 # DuressToken module tests. Both APIs (one-shot + expand-once) agree with the real AES over 4096 random
@@ -2367,8 +2367,10 @@ if [ -n "$AM_CC" ] \
 		grep -E 'PASS$|FAIL$' /tmp/am_out.txt | sed 's/^/    /'
 		grep -q '^AESCT MODULE TESTS PASSED' /tmp/am_out.txt || { echo "    AESCT MODULE TESTS FAILED"; exit 1; }
 		grep -q '^REF fips197_aes256 8ea2b7ca516745bfeafc49904b496089$' /tmp/am_out.txt || { echo "    FIPS-197 anchor mismatch"; exit 1; }
-		grep -q '^REF agree_oneshot 4096 0$' /tmp/am_out.txt && grep -q '^REF agree_expandonce 4096 0$' /tmp/am_out.txt || { echo "    real-AES agreement mismatch"; exit 1; }
-		echo "    MATCH: shippable AesCt.o == FIPS-197 C.3 + real Gladman AES (4096 blocks, both APIs)"
+		grep -q '^REF agree_oneshot 4096 0$' /tmp/am_out.txt && grep -q '^REF agree_expandonce 4096 0$' /tmp/am_out.txt || { echo "    real-AES encrypt agreement mismatch"; exit 1; }
+		grep -q '^REF fips197_decrypt 00112233445566778899aabbccddeeff$' /tmp/am_out.txt || { echo "    FIPS-197 decrypt mismatch"; exit 1; }
+		grep -q '^REF agree_decrypt 4096 0$' /tmp/am_out.txt && grep -q '^REF roundtrip 4096 0$' /tmp/am_out.txt || { echo "    real-AES decrypt / round-trip mismatch"; exit 1; }
+		echo "    MATCH: shippable AesCt.o encrypt+decrypt == FIPS-197 C.3 + real Gladman AES (4096 blocks, both dirs)"
 		if command -v valgrind >/dev/null 2>&1 \
 		   && "$AM_CC" -O2 $AM_WNO $AM_NOASM -DVC_ENABLE_CTAES -DCT_USE_VALGRIND $AM_INC "$HERE/aesct_module_test.c" /tmp/am_actaes.o /tmp/am_aescrypt.o /tmp/am_aeskey.o /tmp/am_aestab.o -lm -o /tmp/am_vg 2>>/tmp/am.log; then
 			if valgrind -q --error-exitcode=99 /tmp/am_vg >/dev/null 2>/tmp/am_vg.txt; then
