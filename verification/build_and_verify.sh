@@ -2387,3 +2387,35 @@ if [ -n "$AM_CC" ] \
 else
 	skip_step " no compiler accepted the stock Crypto sources for the AesCt module (see /tmp/am.log)"
 fi
+
+echo "[89] Adiantum over CONSTANT-TIME AES (T2-4b) — src/Crypto/AesCt as Adiantum's block cipher vs official KATs"
+# Adiantum is the non-AES-NI wide-block mode (D-4); its only table-based leak was the single-block AES.
+# Build the proven adiantum_poc.c (step [24]) with -DADIANTUM_USE_CTAES so its block cipher routes through
+# the constant-time src/Crypto/AesCt (built -DVC_ENABLE_CTAES) instead of the table Gladman AES, and assert
+# it still reproduces EVERY official google/adiantum KAT line — i.e. constant-time AES is a byte-exact
+# drop-in for Adiantum. The default (Gladman) build is unchanged, so step [24] is unaffected.
+AJ_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then AJ_CC="$c"; break; fi; done
+AJ_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+AJ_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+AJ_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$AJ_CC" ] \
+   && "$AJ_CC" -O2 $AJ_WNO $AJ_NOASM $AJ_INC -c "$SRCROOT/Crypto/chacha256.c" -o /tmp/aj_chacha.o 2>/tmp/aj.log \
+   && "$AJ_CC" -O2 $AJ_WNO $AJ_NOASM -DVC_ENABLE_CTAES $AJ_INC -c "$SRCROOT/Crypto/AesCt.c" -o /tmp/aj_act.o 2>>/tmp/aj.log \
+   && "$AJ_CC" -O2 $AJ_WNO $AJ_NOASM $AJ_INC -c "$SRCROOT/Crypto/Aescrypt.c" -o /tmp/aj_aescrypt.o 2>>/tmp/aj.log \
+   && "$AJ_CC" -O2 $AJ_WNO $AJ_NOASM $AJ_INC -c "$SRCROOT/Crypto/Aeskey.c" -o /tmp/aj_aeskey.o 2>>/tmp/aj.log \
+   && "$AJ_CC" -O2 $AJ_WNO $AJ_NOASM $AJ_INC -c "$SRCROOT/Crypto/Aestab.c" -o /tmp/aj_aestab.o 2>>/tmp/aj.log \
+   && "$AJ_CC" -O2 $AJ_WNO $AJ_NOASM -DADIANTUM_USE_CTAES -DVC_ENABLE_CTAES $AJ_INC "$HERE/adiantum_poc.c" /tmp/aj_chacha.o /tmp/aj_act.o /tmp/aj_aescrypt.o /tmp/aj_aeskey.o /tmp/aj_aestab.o -o /tmp/aj_ctaes 2>>/tmp/aj.log \
+   && "$AJ_CC" -O2 $AJ_WNO $AJ_NOASM $AJ_INC "$HERE/adiantum_poc.c" /tmp/aj_chacha.o /tmp/aj_aescrypt.o /tmp/aj_aeskey.o /tmp/aj_aestab.o -o /tmp/aj_gladman 2>>/tmp/aj.log; then
+	/tmp/aj_ctaes  > /tmp/aj_c.txt || { echo "    ADIANTUM(ct-AES) POC FAILED"; exit 1; }
+	/tmp/aj_gladman > /tmp/aj_g.txt || { echo "    ADIANTUM(Gladman) POC FAILED"; exit 1; }
+	grep '^REF kat_' /tmp/aj_c.txt > /tmp/aj_ck.txt; grep '^REF kat_' /tmp/aj_g.txt > /tmp/aj_gk.txt
+	n="$(wc -l < /tmp/aj_ck.txt)"
+	if [ "$n" -ge 18 ] && diff -q /tmp/aj_ck.txt /tmp/aj_gk.txt >/dev/null; then
+		echo "    MATCH: constant-time AesCt reproduces all $n official Adiantum KAT lines (== table Gladman AES)"
+	else
+		echo "    MISMATCH: Adiantum over constant-time AES diverges from the official KATs"; diff /tmp/aj_gk.txt /tmp/aj_ck.txt | head; exit 1
+	fi
+else
+	skip_step " no compiler for the Adiantum-over-constant-time-AES build (see /tmp/aj.log)"
+fi

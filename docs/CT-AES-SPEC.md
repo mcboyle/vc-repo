@@ -1,4 +1,4 @@
-# Constant-time AES-256 (T2-3 / T2-4a)
+# Constant-time AES-256 (T2-3 / T2-4a / T2-4b)
 
 **Status: PROVEN (step `[87]`) AND promoted to a shippable module `src/Crypto/AesCt.{c,h}` (step `[88]`,
 gated `-DVC_ENABLE_CTAES` / `make CTAES=1`).** Required by the wide-block roadmap: on non-AES-NI hardware
@@ -62,7 +62,15 @@ with the constant-time property demonstrated directly:
   `gf_mul`/`gf_inv` are the same proven construction, on the ct-primitive-guard allowlist). Proven by
   linking the **real `AesCt.o`** against the real Gladman AES: FIPS-197 C.3 (encrypt + inverse) +
   byte-for-byte agreement over 4096 random blocks in **both directions** + `Dec(Enc(x))==x` round-trip +
-  ctgrind CLEAN (encrypt and decrypt poisoned). Remaining T2-4: the
+  ctgrind CLEAN (encrypt and decrypt poisoned).
+- **Adiantum drop-in — PROVEN (step `[89]`, T2-4b).** The real `src/Crypto/AesCt` was substituted as
+  Adiantum's once-per-sector block cipher (`verification/adiantum_poc.c` built `-DADIANTUM_USE_CTAES
+  -DVC_ENABLE_CTAES` — a compile-time switch routing setkey/encrypt/decrypt through `AesCtInit256` /
+  `AesCtEncryptBlock` / `AesCtDecryptBlock` instead of the table Gladman AES) and still reproduces
+  **all 19 official google/adiantum KAT lines byte-for-byte** (asserted `diff`-identical to the Gladman
+  build in the same run). This closes the argument that the constant-time cipher is a behaviour-exact
+  replacement for the leaky one in the actual wide-block construction, not just in isolation. The
+  default (no-flag) Adiantum build is unchanged, so step `[24]` is unaffected. Remaining T2-4: the
   **HCTR2/Adiantum `EncryptionMode` classes** that call this on the non-AES-NI path (real-build C++),
   which in turn unblocks the T1-1 v2 mount/create call sites (`docs/V2-FORMAT-SPEC.md`). A faster
   bitsliced S-box can drop into `AesCt.c` later behind the same interface.
