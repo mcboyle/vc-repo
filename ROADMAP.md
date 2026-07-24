@@ -335,11 +335,18 @@ brief:
   `Hacl_EC_Ed25519` primitives without an independent audit (that glue would be new unverified C). Watch:
   reopen if HACL\*/libcrux ships verified ristretto255. Supersedes the "constant-time group for shipping"
   remaining-work in both proven-group entries above.
-- **Constant-time AES — now on the critical path [D-4 / A-2].** Required by the Adiantum branch's
-  single-block-per-sector AES-256 call on non-AES-NI hardware. Because it runs once per sector, not over
-  the whole sector, it only has to **exist**, not be fast — a bitsliced / constant-time implementation is
-  acceptable even if slow. Blocks the HCTR2/Adiantum promotion [D-4] on the non-AES-NI path. (The table-AES
-  cache-timing leak this replaces is measured under ctgrind, `docs/CT-HARDENING-R17.md`.)
+- **Constant-time AES [D-4 / A-2] — CORE PROVEN (step `[87]`); src promotion is the follow-up.** Required
+  by the Adiantum branch's single-block-per-sector AES-256 call on non-AES-NI hardware; it only has to
+  **exist** and be constant-time, not be fast. **Built the cheapest correct way** (`verification/ctaes_poc.c`,
+  `docs/CT-AES-SPEC.md`): the S-box is `affine(gf_inv(x))` using the project's proven branchless GF(2⁸)
+  arithmetic (Shamir.c, ctgrind-clean step `[41]`), so the cipher is table-free/branch-free. Proven two
+  ways — the **official FIPS-197 C.3 AES-256 vector** (`8ea2b7ca…`) + byte-for-byte agreement with the
+  **real in-tree Gladman AES** over 4096 random blocks — and demonstrated **ctgrind-CLEAN** under valgrind
+  (key+plaintext poisoned, 0 secret-dependent branches/indexes; contrast: table AES is LEAKY,
+  `docs/CT-HARDENING-R17.md` / ct step A1). Remaining: promote into `src/` as a selectable AES so the
+  Adiantum `EncryptionMode` picks it on non-AES-NI hardware — this **unblocks HCTR2/Adiantum promotion
+  [D-4]** and thence the T1-1 v2 mount/create call sites. A faster bitsliced S-box can drop in later
+  behind the same interface.
 - **SSD deniability warning at decoy creation [A-1] — blocking for the decoy feature (D-13 audience).**
   TRIM reveals which sectors are free (breaking free-space-indistinguishable-from-random); wear-levelling
   cannot be disabled and leaves hidden-volume-creation residue in retired pages. **Now partly built:** the

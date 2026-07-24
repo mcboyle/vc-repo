@@ -2303,3 +2303,45 @@ if [ -n "$VC_CC" ] && [ -n "$VC_CXX" ] \
 else
 	skip_step " no C/C++ compiler pair for the V2Format C++ binding (see /tmp/v2b.log)"
 fi
+
+echo "[87] Constant-time AES-256 (research T2-3) — FIPS-197 KAT + real Gladman agreement + ctgrind CLEAN"
+# The Adiantum non-AES-NI branch calls AES-256 once per sector; it must EXIST and be constant-time, not
+# fast (D-4/A-2). ctaes_poc.c builds it table-free/branch-free by computing the S-box as affine(gf_inv(x))
+# with the project's PROVEN constant-time GF(2^8) arithmetic (Shamir.c, dudect+ctgrind clean step [41]).
+# Correctness proven the usual two ways: the OFFICIAL FIPS-197 C.3 AES-256 vector + byte-for-byte
+# agreement with the REAL in-tree Gladman AES (Aescrypt/Aeskey/Aestab) over 4096 random blocks. The
+# constant-time property is demonstrated directly under valgrind/memcheck when available (poison key +
+# plaintext -> CLEAN). See docs/CT-AES-SPEC.md.
+AX_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then AX_CC="$c"; break; fi; done
+AX_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+AX_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+AX_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$AX_CC" ] \
+   && "$AX_CC" -O2 $AX_WNO $AX_NOASM $AX_INC -c "$SRCROOT/Crypto/Aescrypt.c" -o /tmp/ax_aescrypt.o 2>/tmp/ax.log \
+   && "$AX_CC" -O2 $AX_WNO $AX_NOASM $AX_INC -c "$SRCROOT/Crypto/Aeskey.c"   -o /tmp/ax_aeskey.o   2>>/tmp/ax.log \
+   && "$AX_CC" -O2 $AX_WNO $AX_NOASM $AX_INC -c "$SRCROOT/Crypto/Aestab.c"   -o /tmp/ax_aestab.o   2>>/tmp/ax.log \
+   && "$AX_CC" -O2 $AX_WNO $AX_NOASM $AX_INC "$HERE/ctaes_poc.c" /tmp/ax_aescrypt.o /tmp/ax_aeskey.o /tmp/ax_aestab.o -lm -o /tmp/ctaes 2>>/tmp/ax.log; then
+	if /tmp/ctaes > /tmp/ax_out.txt; then
+		grep -E 'PASS$|FAIL$' /tmp/ax_out.txt | sed 's/^/    /'
+		grep -q '^CT-AES POC PASSED' /tmp/ax_out.txt || { echo "    CT-AES POC FAILED"; exit 1; }
+		grep -q '^REF fips197_aes256 8ea2b7ca516745bfeafc49904b496089$' /tmp/ax_out.txt || { echo "    FIPS-197 anchor mismatch"; exit 1; }
+		grep -q '^REF agree_random 4096 0$' /tmp/ax_out.txt || { echo "    real-AES agreement mismatch"; exit 1; }
+		echo "    MATCH: constant-time AES-256 == FIPS-197 C.3 + real Gladman AES (4096 random blocks)"
+		# constant-time DEMONSTRATION under valgrind if present (else it is a documented real-build/CI leg)
+		if command -v valgrind >/dev/null 2>&1 \
+		   && "$AX_CC" -O2 $AX_WNO $AX_NOASM -DCT_USE_VALGRIND $AX_INC "$HERE/ctaes_poc.c" /tmp/ax_aescrypt.o /tmp/ax_aeskey.o /tmp/ax_aestab.o -lm -o /tmp/ctaes_vg 2>>/tmp/ax.log; then
+			if valgrind -q --error-exitcode=99 /tmp/ctaes_vg >/dev/null 2>/tmp/ax_vg.txt; then
+				echo "    ctgrind: CLEAN under memcheck (key+plaintext poisoned; 0 secret-dependent branches/indexes)"
+			else
+				echo "    ctgrind: LEAK detected in constant-time AES (unexpected)"; sed 's/^/      /' /tmp/ax_vg.txt | head; exit 1
+			fi
+		else
+			echo "    (valgrind absent — ctgrind CLEAN demonstration is a real-build/CI leg)"
+		fi
+	else
+		grep -E 'FAIL$' /tmp/ax_out.txt | sed 's/^/    /'; echo "    CT-AES POC FAILED"; exit 1
+	fi
+else
+	skip_step " no compiler accepted the stock Crypto sources for constant-time AES (see /tmp/ax.log)"
+fi
