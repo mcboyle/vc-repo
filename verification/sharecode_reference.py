@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-sharecode_reference.py — independent reference for the bech32 share encoding (step [42]).
+sharecode_reference.py — independent reference for the bech32m share encoding (step [42]).
 
 Layer 1 of the two-way convention, diffed against sharecode_test.c (which drives the REAL compiled
-ShareCode.c + Shamir.c). bech32 (BIP-173) is reimplemented here from the spec; the GF(2^8) Shamir
+ShareCode.c + Shamir.c). bech32m (BIP-350) is reimplemented here from the spec; the GF(2^8) Shamir
 split is reimplemented (independent of Shamir.c), so the encoded strings are recomputed end to end.
 Payload = ver(1) || x || len || y[0..len)  (no MAC in the deterministic REF set; the MAC case is a
 behavioural round-trip check on the C side).
@@ -76,10 +76,13 @@ def to5(data):
     return out
 
 
+BECH32M_CONST = 0x2BC830A3   # BIP-350 (supersedes bech32's constant 1, decision D-2)
+
+
 def encode(payload):
     data = to5(payload)
     values = hrp_expand(HRP) + data + [0] * 6
-    pm = polymod(values) ^ 1
+    pm = polymod(values) ^ BECH32M_CONST
     checksum = [(pm >> (5 * (5 - i))) & 31 for i in range(6)]
     return HRP + "1" + "".join(CHARSET[d] for d in data + checksum)
 
