@@ -129,6 +129,17 @@ not interpretation. Twins catch implementation slips, never interpretation error
 exists (fork-specific formats, the decoy layout, ORAM), a twin + properties is correct and sufficient —
 but then don't call the result "conformant". Classify every step's anchor in
 `docs/VERIFICATION-ANCHORS.md` and state the class in the step comment.
+
+**Fetching official vectors: use `curl`, not `WebFetch`.** The sandbox *can* reach the open web — this was
+mis-diagnosed once and cost a round-trip asking the user to paste specs by hand. `WebFetch` returns 403
+for `rfc-editor.org` and `datatracker.ietf.org`, but plain `curl` to the same URLs succeeds. Two gotchas:
+piping `curl` straight into `sed`/`grep` can truncate at 4096 bytes, so **fetch to a file first, then
+slice it**; and CFRG/IETF machine-readable vectors (e.g. `cfrg/draft-irtf-cfrg-voprf`
+`poc/vectors/allVectors.json`) are usually easier to parse than the RFC text.
+
+```sh
+curl -sS -o /tmp/rfc8439.txt https://www.rfc-editor.org/rfc/rfc8439.txt   # then sed the file
+```
 Real hardware backends are additionally **compiled and linked against the real libraries**
 (`-lykpers-1 -lfido2`) and shown to fail safe with no device.
 
