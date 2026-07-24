@@ -140,6 +140,15 @@ slice it**; and CFRG/IETF machine-readable vectors (e.g. `cfrg/draft-irtf-cfrg-v
 ```sh
 curl -sS -o /tmp/rfc8439.txt https://www.rfc-editor.org/rfc/rfc8439.txt   # then sed the file
 ```
+
+**Same lesson for `apt`: it works — install the dep instead of declaring the build impossible.** The
+session-start hook used to report *"product build NOT fully provisionable (apt offline/locked)"*, which was
+a **false negative from a shell bug**: `ls a b` exits non-zero if *either* path is missing, so the pcsclite
+probe failed whenever `/usr/include/PCSC/pcsclite.h` existed but `/usr/include/pcsclite.h` (which never
+exists) did not. Fixed in `.claude/hooks/session-start.sh`. `libpcsclite-dev`, `libsodium-dev`,
+`libfido2-dev` and `libwxgtk3.2-dev` all install fine here. **Before concluding the environment cannot do
+something, try it** — two capability mis-diagnoses in one session (WebFetch→"no web", one bad `ls`→"no
+product build") each cost real work that was available all along.
 Real hardware backends are additionally **compiled and linked against the real libraries**
 (`-lykpers-1 -lfido2`) and shown to fail safe with no device.
 

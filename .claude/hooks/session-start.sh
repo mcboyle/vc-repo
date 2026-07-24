@@ -69,7 +69,12 @@ if [ "${CLAUDE_CODE_REMOTE:-}" = "true" ]; then
     done
     # Report exactly what a product build can/can't do, so a session knows before it tries.
     havewx=no; ls /usr/include/wx-* >/dev/null 2>&1 && havewx=yes
-    havepcsc=no; ls /usr/include/PCSC/pcsclite.h /usr/include/pcsclite.h >/dev/null 2>&1 && havepcsc=yes
+    # NB: `ls a b` exits non-zero if EITHER path is missing, so the old single-`ls` form reported
+    # havepcsc=no even when /usr/include/PCSC/pcsclite.h was present (/usr/include/pcsclite.h never is).
+    # That false negative told every session "product build NOT provisionable" and blocked real-build
+    # work that was actually available. Test the paths independently.
+    havepcsc=no
+    { ls /usr/include/PCSC/pcsclite.h >/dev/null 2>&1 || ls /usr/include/pcsclite.h >/dev/null 2>&1; } && havepcsc=yes
     haveyasm=no; command -v yasm >/dev/null 2>&1 && haveyasm=yes
     log "build deps: wxWidgets=$havewx  libpcsclite-dev=$havepcsc  yasm=$haveyasm"
     if [ "$havewx" = yes ] && [ "$havepcsc" = yes ]; then
@@ -77,8 +82,12 @@ if [ "${CLAUDE_CODE_REMOTE:-}" = "true" ]; then
       # silently mixes flag sets); it builds + smoke-tests the console binary. CI gates this on every PR.
       log "product build ready:  ./scripts/build-product.sh NOGUI=1 HKF=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 SHAMIRMAC=1 SHARECODE=1$([ $haveyasm = yes ] || echo ' NOASM=1')"
     else
-      log "product build NOT fully provisionable here (apt offline/locked). The verification suite still works: cd verification && ./build_and_verify.sh"
-      [ "$havepcsc" = no ] && log "  missing libpcsclite-dev — the one stock dep that blocked the build in this image"
+      log "product build deps incomplete. The verification suite still works: cd verification && ./build_and_verify.sh"
+      # Do NOT conclude "apt is offline/locked" from a missing package — apt has been observed working
+      # in this image (libpcsclite-dev, libsodium-dev, libfido2-dev all install fine). If a dep is
+      # missing, TRY INSTALLING IT before deciding the product build is unavailable:
+      [ "$havewx"   = no ] && log "  missing wxWidgets — try: sudo apt-get install -y libwxgtk3.2-dev"
+      [ "$havepcsc" = no ] && log "  missing libpcsclite-dev — try: sudo apt-get install -y libpcsclite-dev"
     fi
   fi
 else
