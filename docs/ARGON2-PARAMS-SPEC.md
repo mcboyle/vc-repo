@@ -47,6 +47,18 @@ created with `--argon2-parallelism 4` and mounted without it derives a different
 This is deliberate (no header-format change) and must be communicated to users: **record your Argon2
 parameters alongside how you record your PIM.**
 
+## Certification posture — a friction note, not a reason to change the KDF
+
+The fork's HKDF/KMAC adoption and its fixed FIPS 203 ML-KEM parameters improve certification posture, but
+**Argon2id sits outside the current SP 800-132 storage-KDF baseline** until NIST completes its revision —
+which is a *decided but not yet drafted* revision. This is recorded so a future reader does not confuse
+"best engineering choice" with "easiest certification story."
+
+**This is not an argument to move off Argon2id.** Argon2id stays; both independent audits confirm it. The
+note exists only to flag the certification friction honestly, not to reopen the KDF choice — the memory-
+hardness Argon2id buys against password guessing is the security property that matters here, and no
+SP 800-132-baseline KDF provides it.
+
 ## Verification (proven two ways, per the project convention)
 
 Self-contained (`verification/argon2_params_test.c` + `argon2_params_reference.py`, wired into
