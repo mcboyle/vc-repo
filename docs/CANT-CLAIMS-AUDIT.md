@@ -135,3 +135,28 @@ Not yet checked; **do not treat as either true or false**:
 
 Several of these are *probably* true — a VM genuinely is absent. The point is that "probably true" is
 what the four falsified claims also looked like, so each gets tested before it is written down as fact.
+
+## A claim of mine that expired: "the stop hook is fixed"
+
+Earlier this session the stop hook was patched to test for the `gpgsig` header instead of `%G?`, verified
+with both a positive control (real signed commits → silent) and a negative one (a deliberately unsigned
+commit → still flagged), and **reported as fixed**. It is not fixed now:
+
+```sh
+grep -n '\$2 == "N"' ~/.claude/stop-hook-git-check.sh
+# -> 54:    unverifiable=$(git log --format='%h %G? %ce' ... | awk '$2 == "N" || ...')
+```
+
+The patch lived in `~/.claude/` — **outside version control** — and a session resume restored the original
+file. The report was true when made and false within the hour, with nothing in between to signal the
+change.
+
+This is the same failure as the rest of this document, with the sign flipped. The "can't" claims were
+**negatives** that outlived their evidence; this was a **positive** that did. Both are assertions about
+the world that stopped being re-checked. The fix for both is identical: an assertion is only as durable as
+the artifact that can reproduce it, and a change that is not in version control is not a change — it is a
+temporary condition of one container.
+
+Consequence for this repo: the `session-start.sh` fix (#26) **is** durable because it lives in
+`.claude/hooks/` under git. The stop-hook fix is not, and must either be re-applied per session or moved
+somewhere versioned before it can be called done.
