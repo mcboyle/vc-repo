@@ -112,6 +112,29 @@ are in direct tension**: naive per-sector integrity over the *whole* volume woul
 (decoy) volume's integrity check **fail on exactly the free-space sectors a hidden volume secretly
 uses** — which *reveals the hidden volume*. That failure mode is the single thing v2 must not introduce.
 
+### Three separately-evidenced layers — do not collapse
+
+"Authenticated wide-block encryption" is not one claim; it is **three layers with very different
+evidentiary standing**, and this spec must not let them be read as a single settled result:
+
+1. **Wide-block confidentiality** — *well supported.* This is exactly what the shipped Adiantum (step
+   `[24]`) and HCTR2 (step `[26]`) work covers: a tweakable SPRP over the whole sector, proven against
+   official vectors. NIST's cryptographic-accordion effort builds on HCTR2-derived constructions, which
+   is itself a reason to **keep HCTR2**. Nothing below weakens this layer.
+2. **Authenticated wrapping** — *not built; design pending.* The per-sector MAC table specified here is a
+   *design*, gated and unbuilt (see the DESIGN-ONLY status above). HCTR2/Adiantum themselves are **not**
+   authenticated (`docs/HCTR2-SPEC.md` "Still not authenticated"); detection is a separate tier that this
+   format composes on top. Treat the authenticated-FDE construction as pending review, not as a property
+   the mode already provides.
+3. **Key-committing security** — *least settled; assume nothing.* Whether the composed construction
+   commits to its key (resists a ciphertext that decrypts under two keys) is **not** established here, and
+   2026 literature revisits both the birthday-bound ceiling and key-committing security for
+   EtE-HCTR2-style robust-AE constructions. No key-commitment property may be claimed or relied on until
+   it is separately designed and proven.
+
+The verdict "keep HCTR2" is unchanged — only the **breadth of the robustness claim narrows**: HCTR2 is a
+confidentiality mode, the authenticated wrapping is pending design, and key-commitment is an open question.
+
 ### Layout
 
 A contiguous **MAC table** sized for **every** data sector of the volume, placed at a deterministic

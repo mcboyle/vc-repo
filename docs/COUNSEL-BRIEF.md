@@ -110,8 +110,17 @@ construction to choose if so.
 CFRG process) and its underlying OPRF, and is it clear for an open-source implementation?
 
 **Facts.** OPAQUE appears in `docs/IDEAS-BACKLOG.md` as a candidate for password-hardened key retrieval.
-The authors have not reviewed the CFRG IPR disclosures for OPAQUE or its dependencies. This feature is
-**not built**. `[COUNSEL-REVIEW]`
+This feature is **not built**. The retrieved IPR position, phrased as an open question for counsel:
+
+- **RFC 9807 (OPAQUE) is IRTF Informational and explicitly *not* IETF-endorsed** — it carries no standing
+  in the IETF standards process. Its IETF Datatracker page carries **exactly one IPR disclosure**.
+- **An external audit reports that disclosure as application `US18/654229`, RAND licensing with a possible
+  royalty or fee.** This is **audit-reported, pending counsel verification** — it was *not* independently
+  confirmed by the authors and should not be treated as established.
+- **Framing that matters (per IETF rules):** the mere *existence* of an IPR disclosure does **not** mean
+  the IPR is valid, is enforceable, or actually reads on the contribution. This entry converts an unknown
+  into a documented, counsel-reviewable object — it does **not** establish that "OPAQUE is encumbered."
+  `[COUNSEL-REVIEW]`
 
 **Decision it informs.** Whether to adopt OPAQUE versus the already-proven bespoke OPRF/PPSS path, on IP
 grounds.
