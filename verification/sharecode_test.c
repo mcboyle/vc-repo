@@ -15,20 +15,21 @@
 #include "Common/Shamir.h"
 #include "Common/ShareCode.h"
 
-/* the BIP-173 bech32 internals are static in ShareCode.c; re-expose a minimal encoder here ONLY to
-   check the "a12uel5l" anchor, using the same charset/generator constants. */
+/* the BIP-350 bech32m internals are static in ShareCode.c; re-expose a minimal encoder here ONLY to
+   check the "a1lqfn3a" anchor, using the same charset/generator constants (final XOR = bech32m's). */
 static const char *CS = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 static const unsigned int GEN[5] = { 0x3b6a57b2u, 0x26508e6du, 0x1ea119fau, 0x3d4233ddu, 0x2a1462b3u };
+#define BECH32M_CONST 0x2bc830a3u   /* BIP-350 */
 static unsigned int polymod (const unsigned char *v, int n)
 { unsigned int chk = 1; int i, j; for (i=0;i<n;i++){ unsigned int b=chk>>25; chk=((chk&0x1ffffffu)<<5)^v[i]; for(j=0;j<5;j++) if((b>>j)&1u) chk^=GEN[j]; } return chk; }
-static void bech32_empty (const char *hrp, char out[16])
+static void bech32m_empty (const char *hrp, char out[16])
 {
 	unsigned char in[3 + 6]; int n = 0, i; unsigned int pm;
 	for (i = 0; hrp[i]; i++) in[n++] = (unsigned char) (hrp[i] >> 5);
 	in[n++] = 0;
 	for (i = 0; hrp[i]; i++) in[n++] = (unsigned char) (hrp[i] & 31);
 	for (i = 0; i < 6; i++) in[n++] = 0;
-	pm = polymod (in, n) ^ 1u;
+	pm = polymod (in, n) ^ BECH32M_CONST;
 	{ int p = 0; for (i = 0; hrp[i]; i++) out[p++] = hrp[i]; out[p++] = '1';
 	  for (i = 0; i < 6; i++) out[p++] = CS[(pm >> (5 * (5 - i))) & 31]; out[p] = 0; }
 }
@@ -59,11 +60,11 @@ int main (void)
 	if (ShareCodeEncode (&shares[0], mac, code, sizeof (code)) != SHARECODE_OK) { printf ("encode+mac failed\n"); return 1; }
 	printf ("REF share1 code+mac = %s\n", code);
 
-	/* ---- BIP-173 anchor ---- */
+	/* ---- BIP-350 anchor ---- */
 	printf ("[checks]\n");
 	{
-		char anchor[16]; bech32_empty ("a", anchor);
-		check ("BIP-173 anchor: bech32(\"a\",empty) == a12uel5l", strcmp (anchor, "a12uel5l") == 0);
+		char anchor[16]; bech32m_empty ("a", anchor);
+		check ("BIP-350 anchor: bech32m(\"a\",empty) == a1lqfn3a", strcmp (anchor, "a1lqfn3a") == 0);
 	}
 
 	/* ---- round-trip (no MAC) ---- */
@@ -109,10 +110,11 @@ int main (void)
 		check ("all single-char typos detected", missed == 0);
 	}
 
-	/* the guarantee window: this share's code stays within bech32's 90-char BCH bound */
+	/* the guarantee window: this MAC-less share's code stays within bech32m's written 89-char BCH bound */
 	{
 		ShareCodeEncode (&shares[0], NULL, code, sizeof (code));
-		check ("256-bit-secret code within 90-char guarantee", (int) strlen (code) <= 90);
+		check ("256-bit-secret code within 89-char guarantee (SHARECODE_BECH32M_MAX_CHARS)",
+		       (int) strlen (code) <= SHARECODE_BECH32M_MAX_CHARS);
 	}
 
 	printf ("%s\n", all_pass ? "ALL SHARECODE CHECKS PASSED" : "SHARECODE CHECKS FAILED");

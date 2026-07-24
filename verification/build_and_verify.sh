@@ -1122,12 +1122,14 @@ else
 	skip_step " no compiler built the dudect harness (see /tmp/du_log)"
 fi
 
-echo "[42] Transcribable share encoding (bech32/BIP-173): real ShareCode.c + Shamir.c vs independent python"
+echo "[42] Transcribable share encoding (bech32m/BIP-350): real ShareCode.c + Shamir.c vs independent python"
 # docs/VSS-SPEC.md / IDEAS-BACKLOG D "SLIP-39-style encoding": a typo-detecting text form for a
-# recovery share. Uses a bech32 (BIP-173) BCH checksum (<=4 substitution errors detected while the
-# string is <=90 chars) over ver||x||len||y[||mac]. Links the REAL ShareCode.c + Shamir.c;
-# sharecode_reference.py is independent (spec bech32 + reimplemented GF(2^8) split). Anchored to the
-# official BIP-173 vector (bech32("a",empty)==a12uel5l); every single-char typo in a sample rejected.
+# recovery share. Uses a bech32m (BIP-350, const 0x2bc830a3) BCH checksum (<=4 substitution errors
+# detected while the string is <=89 chars, SHARECODE_BECH32M_MAX_CHARS) over ver||x||len||y[||mac] —
+# bech32m supersedes plain bech32 per D-2 (removes bech32's residual insertion/deletion weakness).
+# Links the REAL ShareCode.c + Shamir.c; sharecode_reference.py is independent (spec bech32m +
+# reimplemented GF(2^8) split). Anchored to the official BIP-350 vector (bech32m("a",empty)==a1lqfn3a);
+# every single-char typo in a sample rejected.
 SR_CC=""
 for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then SR_CC="$c"; break; fi; done
 SR_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
@@ -1140,7 +1142,7 @@ if "$SR_CC" -O2 $SR_WNO -DVC_ENABLE_SHARECODE $SR_INC -c "$SRCROOT/Common/ShareC
 	( cd "$HERE" && python3 sharecode_reference.py ) > /tmp/sr_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
 	grep '^REF' /tmp/sr_c.txt > /tmp/sr_c_ref.txt
 	if diff -q /tmp/sr_c_ref.txt /tmp/sr_py.txt >/dev/null; then
-		echo "    MATCH: bech32 share codes (real ShareCode/Shamir objects) == independent python over $(wc -l < /tmp/sr_c_ref.txt) REF lines"
+		echo "    MATCH: bech32m share codes (real ShareCode/Shamir objects) == independent python over $(wc -l < /tmp/sr_c_ref.txt) REF lines"
 	else
 		echo "    MISMATCH"; diff /tmp/sr_c_ref.txt /tmp/sr_py.txt | head -4; exit 1
 	fi
@@ -2479,4 +2481,35 @@ if [ -n "$A2_CC" ] \
 	fi
 else
 	skip_step " no compiler accepted the Adiantum module build (see /tmp/a2.log)"
+fi
+
+echo "[92] codex32 (BIP-93) recovery-share encoding — real ShareCode.c vs official vectors + independent python"
+# Decision D-2: the default export encoding becomes codex32, an error-*correcting* ms32-checksummed
+# envelope (13-symbol regular / 15-symbol long BCH code). Links the REAL ShareCode.c codex32
+# encoder/decoder; codex32_reference.py is independent (from-spec ms32 + 5<->8 packing). Anchored to the
+# OFFICIAL BIP-93 published vectors: decode of the 128-bit "test" secret (regular checksum) and the
+# 512-bit "0C8V" secret (long checksum) recovers their exact published master seeds; every single-char
+# typo in a sample rejected.
+CX_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then CX_CC="$c"; break; fi; done
+CX_WNO="-Wno-implicit-function-declaration -Wno-unused-command-line-argument"
+CX_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$CX_CC" ] \
+   && "$CX_CC" -O2 $CX_WNO -DVC_ENABLE_SHARECODE $CX_INC -c "$SRCROOT/Common/ShareCode.c" -o /tmp/cx_sharecode.o 2>/tmp/cx_log \
+   && "$CX_CC" -O2 $CX_WNO -DVC_ENABLE_SHARECODE $CX_INC "$HERE/codex32_test.c" /tmp/cx_sharecode.o -o /tmp/codex32_test 2>>/tmp/cx_log; then
+	if /tmp/codex32_test > /tmp/cx_c.txt; then cat /tmp/cx_c.txt
+	else cat /tmp/cx_c.txt; echo "    CODEX32 TEST FAILED"; exit 1; fi
+	( cd "$HERE" && python3 codex32_reference.py ) > /tmp/cx_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+	grep '^REF codex32' /tmp/cx_c.txt > /tmp/cx_c_ref.txt
+	grep '^REF codex32' /tmp/cx_py.txt > /tmp/cx_py_ref.txt
+	if diff -q /tmp/cx_c_ref.txt /tmp/cx_py_ref.txt >/dev/null; then
+		echo "    MATCH: codex32 encoder (real ShareCode.c) == independent python over $(wc -l < /tmp/cx_c_ref.txt) REF lines"
+	else
+		echo "    MISMATCH"; diff /tmp/cx_c_ref.txt /tmp/cx_py_ref.txt | head -4; exit 1
+	fi
+	grep -q '^REF official_tv1_seed = 318c6318c6318c6318c6318c6318c631$' /tmp/cx_py.txt || { echo "    python BIP-93 TV1 seed anchor mismatch"; exit 1; }
+	if grep -Eq 'FAIL$' /tmp/cx_c.txt; then echo "    CODEX32 PROPERTY FAILED"; exit 1; fi
+	rm -rf "$HERE/__pycache__"
+else
+	skip_step " no compiler accepted the codex32 build (see /tmp/cx_log)"
 fi

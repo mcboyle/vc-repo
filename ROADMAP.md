@@ -210,11 +210,15 @@ the on-disk format design review is **not** waived.
   per-volume independence and closing factor reuse (correction R-2). Because existing v2 volumes derive
   differently once the salt is bound, this is a **derivation-level migration** and must land under the v2
   format work [D-10] and be examined by the R22 migration brief. `docs/HKF-MIX-V2-SPEC.md`.
-- **Recovery-share encoding → codex32 + bech32m [D-2]** — default export encoding becomes BIP-93 codex32
-  (error-*correcting*), with short codes (**≤ 89 characters**) using BIP-350 bech32m. The 89-character
-  boundary — where bech32's 4-error guarantee holds — becomes a **written constant**, not a per-call
-  judgement. Also add the BIP-173 insertion-deletion note (independent of length; affects short shares) to
-  `docs/VSS-SPEC.md`. Supersedes the plain bech32 share code (DONE step `[42]`) and steers correction R-3.
+- **Recovery-share encoding → codex32 + bech32m [D-2] — DONE (T2-2, steps `[42]`/`[92]`).** The default
+  export encoding is now BIP-93 **codex32** (error-*correcting* ms32 checksum, 13-symbol regular / 15-symbol
+  long): `src/Common/ShareCode.c` `ShareCodeCodex32Encode/Decode`, proven against the official BIP-93 test
+  vectors (decode of the 128-bit `test` and 512-bit `0C8V` secrets recovers their exact published seeds) +
+  an independent python ms32 (step `[92]`). The short `vcs1` code was upgraded from plain bech32 to **BIP-350
+  bech32m** (constant `0x2bc830a3`), anchored to the official `bech32m("a",empty)==a1lqfn3a` vector (step
+  `[42]`). The 89-character 4-error-guarantee boundary is now the **written constant**
+  `SHARECODE_BECH32M_MAX_CHARS`, and the **BIP-173 insertion/deletion note** (independent of length) is in
+  `docs/VSS-SPEC.md §3`. Supersedes the plain bech32 share code and closes correction R-3.
 - **Wide-block sector mode: HCTR2 + Adiantum, hardware-selected [D-4]** — supersedes the plain
   HCTR2-vs-XTS question. Promote **HCTR2 for AES-NI hardware, Adiantum for non-AES-NI hardware**, both
   implemented on every platform (PoCs done, steps `[24]`/`[26]`), with the mode chosen at

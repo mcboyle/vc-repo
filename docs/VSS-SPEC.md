@@ -1,8 +1,9 @@
 # Verifiable secret sharing — authenticated shares + catch a cheating dealer
 
 **Status: keyed per-share MAC built & proven (`[40]`); transcribable checksummed encoding built &
-proven (`[42]`); Feldman/Pedersen dealer-consistency proven two ways (`[31]`/`[32]`); enrollment/CLI
-wiring is real-build.** Addresses `IDEAS-BACKLOG.md` "Sharing" row (keyed per-share MAC,
+proven — bech32m short code (`[42]`) + codex32 error-correcting default export (`[92]`, D-2);
+Feldman/Pedersen dealer-consistency proven two ways (`[31]`/`[32]`); enrollment/CLI wiring is
+real-build.** Addresses `IDEAS-BACKLOG.md` "Sharing" row (keyed per-share MAC,
 Feldman/Pedersen VSS, SLIP-39 encoding), extending the plain Shamir split proven at step `[5]` and its
 CRC-32 checksum. See "Two complementary guarantees" below for why the share-MAC lives in GF(2⁸) with
 the shipping shares while dealer-consistency VSS is a prime-field scheme; the transcribable encoding
@@ -75,21 +76,47 @@ the threshold (a below-threshold set of MAC-valid shares still reconstructs the 
   blinding term for information-theoretic hiding of the secret. Feldman is the simpler, most common
   choice; Pedersen is the drop-in extension if the stronger hiding is wanted.
 
-### 3. Transcribable share encoding — built & proven (step `[42]`)
+### 3. Transcribable share encoding — built & proven (steps `[42]`, `[92]`)
 
 The other half of the "SLIP-39-style" item is **usability**: a hand-copied recovery share should catch
 transcription errors, not silently reconstruct garbage. `src/Common/ShareCode.{c,h}` (gated
-`-DVC_ENABLE_SHARECODE`) encodes a share as `"vcs1" ‖ base32(ver‖x‖len‖y[‖mac]) ‖ 6-char bech32
-checksum` — a **bech32 (BIP-173) BCH checksum**, chosen over the full SLIP-39 standard because SLIP-39
-is a *separate* sharing scheme with its own 1024-word list that would duplicate this project's GF(2⁸)
-Shamir; the bech32 checksum gives the same guarantee (any ≤ 4 substitution errors detected while the
-string stays ≤ 90 chars) with a self-contained, standard-anchored construction. Proven in step `[42]`:
-the real `ShareCode.c + Shamir.c` vs an independent Python bech32, encodings diffed byte-for-byte;
-plus an **official BIP-173 anchor** (`bech32("a", empty) == "a12uel5l"`), `encode→decode` round-trips
-(with and without the per-share MAC), and **every single-character substitution** in a sample (1922
-mutations) rejected by the checksum. A 256-bit-secret share encodes to ~65 chars, inside the 90-char
-guarantee window; larger shares still detect the overwhelming majority of errors but drop the formal
-bound (segment SLIP-39-style to restore it — documented in `ShareCode.h`).
+`-DVC_ENABLE_SHARECODE`) provides two standard-anchored encodings, per decision **D-2**:
+
+**Short code — bech32m (BIP-350), step `[42]`.** A share encodes as `"vcs1" ‖ base32(ver‖x‖len‖y[‖mac])
+‖ 6-char bech32m checksum`. bech32m (final constant `0x2bc830a3`) **supersedes plain bech32** (BIP-173,
+constant 1): BIP-350 was published precisely to remove bech32's residual insertion/deletion weakness
+(see the note below). The BCH guarantee — any ≤ 4 substitution errors detected — holds while the string
+stays **≤ 89 characters**, now a *written constant* `SHARECODE_BECH32M_MAX_CHARS` rather than a per-call
+judgement. Proven in step `[42]`: the real `ShareCode.c + Shamir.c` vs an independent Python bech32m,
+encodings diffed byte-for-byte; an **official BIP-350 anchor** (`bech32m("a", empty) == "a1lqfn3a"`);
+`encode→decode` round-trips (with and without the per-share MAC); and **every single-character
+substitution** in a sample rejected. A MAC-less 256-bit-secret share encodes to ~65 chars, inside the
+89-char window; a share carrying its 32-byte MAC exceeds it (the formal bound lapses there) — which is
+the codex32 default's job.
+
+**Default export — codex32 (BIP-93), step `[92]`.** For the richer case the default export encoding is
+**codex32**: `"ms1" ‖ k ‖ id[4] ‖ shareIndex ‖ base32(payload) ‖ ms32-checksum`, where **ms32** is an
+error-*correcting* BCH code (13 symbols regular, 15 long) — stronger than bech32m's detect-only 6. This
+carries the bytes of a GF(2⁸) `ShamirShare` in an interoperable envelope (encoding a raw seed at index
+`'s'`, k=0 is a BIP-93-valid unshared secret); the underlying split stays this project's GF(2⁸) Shamir,
+**not** codex32's own GF(32) sharing — the ms32 envelope is adopted for its error-correction, not for
+BIP-93 secret-sharing interop. Proven in step `[92]`: the real `ShareCode.c` codex32 encoder vs an
+independent Python ms32 (encodings diffed byte-for-byte, short + long checksum); **official BIP-93
+anchors** — decode of the 128-bit `test` secret (regular checksum) and the 512-bit `0C8V` secret (long
+checksum) recovers their exact published master seeds; round-trip; and every single-character typo
+rejected. Codex32 payloads are not canonical on the trailing ≤ 4 pad bits (discarded on decode per
+BIP-93), so the encoder zero-pads — a valid encoding that recovers the same seed as the official
+non-zero-pad vectors.
+
+> **BIP-173 insertion/deletion note.** Plain bech32 (BIP-173, checksum constant 1) has a known weakness
+> *independent of length*: for certain characters an insertion paired with a deletion (or a length change)
+> can leave the checksum satisfied, so it is **not** guaranteed to detect all such edits — the flaw that
+> motivated BIP-350. It bites *short* shares as much as long ones, so length alone does not avoid it. This
+> project therefore uses **bech32m** (BIP-350) for the short code and **codex32/ms32** (BIP-93) for the
+> default export, and neither carries the BIP-173 constant. The ≤ 4-substitution BCH guarantee is about
+> *substitutions*; insertion/deletion of characters (which changes the string length) is a distinct error
+> class — codex32's error-*correction* and the fixed field layout (`ver`/`k`/`len` bytes) provide the
+> stronger cross-check there.
 
 ### Integration (real-build)
 
