@@ -55,6 +55,27 @@ self-consistent and their properties hold, but their outputs would not interoper
 ROADMAP **D-8** deletes that code in favour of libsodium, which `[95]`/`[96]` prove conformant. Do not
 reuse the bespoke map.
 
+**Closed by this audit (2): the edwards25519 group beneath step `[39]`.** Step `[39]` carries an OFFICIAL
+anchor — the RFC 8032 §7.1 public-key KAT — and it passes. But §7.1 exercises exactly one operation:
+scalar multiplication of the **fixed basepoint**. The McCallum–Relyea exchange that `[39]` exists to
+support also multiplies **arbitrary** points and **adds** points, and neither is covered by that vector.
+That is structurally the same hole as the step-`[94]` defect: an official KAT anchoring one layer while
+the layer that matters goes unchecked.
+
+`verification/ed25519_hacl_xcheck.c` closes it against **HACL\*** (formally verified in F\*, code this
+project did not write): basepoint, basepoint mult, **arbitrary-point mult**, **point addition**,
+negation, `P + (-P) == identity` (HACL\* independently confirms the point at infinity), and the MR
+commutativity `k1*(k2*B) == k2*(k1*B)` — **all MATCH**. So the coverage hole was real and the code in it
+is correct. Anchor class: THIRD-PARTY.
+
+> **Reference harness, deliberately not a suite step.** HACL\* is not installable in CI (no distro
+> package; vendoring is ~13 MB), so a gated step would SKIP and `--strict` would fail the run. Following
+> the project convention for harnesses whose inputs aren't available in CI, it ships with its expected
+> result recorded here. To re-run: extract a HACL\* release, then compile `ed25519_hacl_xcheck.c` with
+> `Hacl_EC_Ed25519.c`, `Hacl_Ed25519.c`, `Hacl_Curve25519_51.c`, `Hacl_Hash_SHA2.c`,
+> `Hacl_Streaming_SHA2.c` plus the real `Crypto/Sha2.o`; expect
+> `ED25519 HACL XCHECK: from-scratch group == HACL* on all operations`.
+
 **Open candidates (TWIN-only, standard exists).** Not yet anchored; each is a candidate for the same bug
 class and worth a `[97]`-style check:
 
