@@ -2345,3 +2345,43 @@ if [ -n "$AX_CC" ] \
 else
 	skip_step " no compiler accepted the stock Crypto sources for constant-time AES (see /tmp/ax.log)"
 fi
+
+echo "[88] Constant-time AES — SHIPPABLE module (src/Crypto/AesCt.c, gated VC_ENABLE_CTAES) vs FIPS-197 + real Gladman"
+# Step [87] proved the inline PoC; this proves the src/ module Adiantum will call (T2-4a), by LINKING the
+# real AesCt.o (built -DVC_ENABLE_CTAES) with the real Gladman objects — same technique as the V2Format /
+# DuressToken module tests. Both APIs (one-shot + expand-once) agree with the real AES over 4096 random
+# blocks and reproduce the official FIPS-197 C.3 vector; ctgrind CLEAN under valgrind when present.
+AM_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then AM_CC="$c"; break; fi; done
+AM_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+AM_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+AM_GC="-ffunction-sections -fdata-sections"
+AM_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$AM_CC" ] \
+   && "$AM_CC" -O2 $AM_WNO $AM_NOASM $AM_GC -DVC_ENABLE_CTAES $AM_INC -c "$SRCROOT/Crypto/AesCt.c" -o /tmp/am_actaes.o 2>/tmp/am.log \
+   && "$AM_CC" -O2 $AM_WNO $AM_NOASM $AM_INC -c "$SRCROOT/Crypto/Aescrypt.c" -o /tmp/am_aescrypt.o 2>>/tmp/am.log \
+   && "$AM_CC" -O2 $AM_WNO $AM_NOASM $AM_INC -c "$SRCROOT/Crypto/Aeskey.c"   -o /tmp/am_aeskey.o   2>>/tmp/am.log \
+   && "$AM_CC" -O2 $AM_WNO $AM_NOASM $AM_INC -c "$SRCROOT/Crypto/Aestab.c"   -o /tmp/am_aestab.o   2>>/tmp/am.log \
+   && "$AM_CC" -O2 $AM_WNO $AM_NOASM -DVC_ENABLE_CTAES $AM_INC "$HERE/aesct_module_test.c" /tmp/am_actaes.o /tmp/am_aescrypt.o /tmp/am_aeskey.o /tmp/am_aestab.o -lm -Wl,--gc-sections -o /tmp/am_test 2>>/tmp/am.log; then
+	if /tmp/am_test > /tmp/am_out.txt; then
+		grep -E 'PASS$|FAIL$' /tmp/am_out.txt | sed 's/^/    /'
+		grep -q '^AESCT MODULE TESTS PASSED' /tmp/am_out.txt || { echo "    AESCT MODULE TESTS FAILED"; exit 1; }
+		grep -q '^REF fips197_aes256 8ea2b7ca516745bfeafc49904b496089$' /tmp/am_out.txt || { echo "    FIPS-197 anchor mismatch"; exit 1; }
+		grep -q '^REF agree_oneshot 4096 0$' /tmp/am_out.txt && grep -q '^REF agree_expandonce 4096 0$' /tmp/am_out.txt || { echo "    real-AES agreement mismatch"; exit 1; }
+		echo "    MATCH: shippable AesCt.o == FIPS-197 C.3 + real Gladman AES (4096 blocks, both APIs)"
+		if command -v valgrind >/dev/null 2>&1 \
+		   && "$AM_CC" -O2 $AM_WNO $AM_NOASM -DVC_ENABLE_CTAES -DCT_USE_VALGRIND $AM_INC "$HERE/aesct_module_test.c" /tmp/am_actaes.o /tmp/am_aescrypt.o /tmp/am_aeskey.o /tmp/am_aestab.o -lm -o /tmp/am_vg 2>>/tmp/am.log; then
+			if valgrind -q --error-exitcode=99 /tmp/am_vg >/dev/null 2>/tmp/am_vg.txt; then
+				echo "    ctgrind: CLEAN under memcheck (key+plaintext poisoned; 0 secret-dependent branches/indexes)"
+			else
+				echo "    ctgrind: LEAK in shippable AesCt (unexpected)"; sed 's/^/      /' /tmp/am_vg.txt | head; exit 1
+			fi
+		else
+			echo "    (valgrind absent — ctgrind CLEAN demonstration is a real-build/CI leg)"
+		fi
+	else
+		grep -E 'FAIL$' /tmp/am_out.txt | sed 's/^/    /'; echo "    AESCT MODULE TESTS FAILED"; exit 1
+	fi
+else
+	skip_step " no compiler accepted the stock Crypto sources for the AesCt module (see /tmp/am.log)"
+fi

@@ -155,6 +155,7 @@ export VC_ENABLE_SHAMIR_MAC ?= 0
 export VC_ENABLE_SHARECODE ?= 0
 export VC_ENABLE_FLASH_WARN ?= 0
 export VC_ENABLE_V2FORMAT ?= 0
+export VC_ENABLE_CTAES ?= 0
 export VC_ENABLE_HKF ?= 0
 
 export GCC_GTEQ_440 := 0
@@ -307,6 +308,14 @@ endif
 ifeq "$(origin V2FORMAT)" "command line"
 	VC_ENABLE_V2FORMAT := 1
 	C_CXX_FLAGS += -DVC_ENABLE_V2FORMAT
+endif
+
+# Constant-time AES-256 (opt-in; T2-3/T2-4). `make CTAES=1` links Crypto/AesCt.o (table-free/branch-free
+# AES-256, S-box = affine(gf_inv)), for the Adiantum non-AES-NI once-per-sector call. A plain `make` stays
+# byte-for-byte stock. docs/CT-AES-SPEC.md.
+ifeq "$(origin CTAES)" "command line"
+	VC_ENABLE_CTAES := 1
+	C_CXX_FLAGS += -DVC_ENABLE_CTAES
 endif
 
 #------ Linux configuration ------

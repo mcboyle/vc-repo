@@ -105,7 +105,7 @@ scope with R22). The create-side reservation is the furthest the format wires wi
 | **T2-1** | Bind volume salt in **HKF-v2** HKDF-Extract per Rank-1 | D-1 | TODO | Code change; migration handled by T1-3. |
 | **T2-2** | Recovery-share encoding: **codex32 default + bech32m ≤ 89 chars**; add BIP-173 insertion-deletion note to `docs/VSS-SPEC.md` | D-2 | TODO | 89 = written constant. Closes R-3. |
 | **T2-3 [gate]** | **Constant-time AES** (bitsliced OK; needn't be fast — one block/sector) | D-4, A-2 | **CORE PROVEN (step [87]); src promotion follow-up** | `verification/ctaes_poc.c` + `docs/CT-AES-SPEC.md`: S-box = affine(gf_inv(x)) via proven branchless GF(2⁸) (Shamir.c). FIPS-197 C.3 (`8ea2b7ca…`) + real Gladman agreement (4096 blocks) + **ctgrind-CLEAN** (key+plaintext poisoned, 0 leaks). Remaining: promote into `src/` behind the Adiantum EncryptionMode → unblocks T2-4. |
-| **T2-4** | Promote **HCTR2 + Adiantum** into `src/`, both on every platform | D-4 | BLOCKED (T1-2, T2-3) | Adiantum still calls AES-256 once/sector → needs T2-3. |
+| **T2-4** | Promote **HCTR2 + Adiantum** into `src/`, both on every platform | D-4 | **IN PROGRESS** | **T2-4a done:** constant-time AES promoted to shippable `src/Crypto/AesCt.{c,h}` (gated `-DVC_ENABLE_CTAES` / `make CTAES=1`; step `[88]`, real AesCt.o vs FIPS-197 + Gladman 4096 blocks + ctgrind CLEAN). Remaining: HCTR2/Adiantum `EncryptionMode` classes calling AesCt on the non-AES-NI path (real-build C++). |
 | **T2-5** | Replace bespoke ristretto255/Ed25519: **libsodium ≥ 1.0.21** (ristretto255) + **HACL\*** (Ed25519) | D-8 | TODO | Pin ≥ 1.0.21 (CVE-2025-69277). Do NOT hand-roll ristretto on HACL\* without audit. |
 
 ---

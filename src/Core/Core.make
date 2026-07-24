@@ -104,4 +104,10 @@ ifeq "$(VC_ENABLE_V2FORMAT)" "1"
 OBJS += ../Common/V2Format.o
 endif
 
+# Constant-time AES-256 (opt-in via `make CTAES=1`). Self-contained (no Common dependency); a default
+# build stays byte-for-byte stock.
+ifeq "$(VC_ENABLE_CTAES)" "1"
+OBJS += ../Crypto/AesCt.o
+endif
+
 include $(BUILD_INC)/Makefile.inc
