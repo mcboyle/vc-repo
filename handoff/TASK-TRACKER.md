@@ -54,6 +54,14 @@ inputs** for T1-1; the format design and any code remain owner-gated and **were 
 Combined mount trial set becomes `{ v2-HCTR2, v2-Adiantum, v1 }` header-verify attempts after a single
 KDF pass. Deniability-impact line for each (required by D-10) to be written during the T1-1 design proper.
 
+**Design spec written (design only, no code):** `docs/V2-FORMAT-SPEC.md` turns these three decisions into
+a concrete layout + mount algorithm and states the D-10 deniability-impact line for every v2 feature. Key
+resolved design point: the full-volume MAC table gives **integrity for allocated data, not free space**
+(a MAC mismatch reads as "free," not "tamper"), which is what lets a hidden volume stay indistinguishable
+— so v2 adds integrity without regressing v1's free-space ambiguity. Still owner-gated; T1-1 build not
+started. Open sub-decisions (MAC slot width, table offset formula, sector-size interaction, migration UX,
+verification plan) listed in the spec.
+
 ---
 
 ## Tier 2 — crypto core

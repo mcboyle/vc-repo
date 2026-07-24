@@ -229,7 +229,10 @@ the on-disk format design review is **not** waived.
   previously blocked by the no-format-change rule). Provides the home for the D-4 mode selector and the
   D-1 salt-binding migration. Every v2 feature carries a deniability-impact line reviewed against the
   constraint before build. **This is the Tier-1 gate** — the wide-block selector and salt-binding
-  migration are blocked on it.
+  migration are blocked on it. **Design spec written (owner-gated, not built): `docs/V2-FORMAT-SPEC.md`**
+  — fixes the three owner decisions (store-nothing/trial mode selector, trial-derivation v1/v2 detection,
+  full-volume MAC table) into a concrete layout + mount algorithm with a per-feature deniability-impact
+  line.
 - **Anti-forensic (AF) key splitting** (LUKS/TKS1) — **core proven AND keyslot-format integration
   built & proven (`[FORMAT]` done); real-flash validation remains.** The concrete answer to the
   SSD-remnant caveat: diffuse a keyslot's wrapped key across s stripes so recovery needs all of them
