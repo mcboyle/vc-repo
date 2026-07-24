@@ -354,6 +354,12 @@ brief:
   removes the bespoke code **and** fixes the non-conformant map. libsodium is a verification oracle here
   (any RFC-A.1/A.2-conformant version, e.g. distro 1.0.18, suffices; the >= 1.0.21 pin is a *shipping*
   requirement). The Elligator bug is not root-caused because D-8 deletes that code.
+  **Conformance proven (step `[95]`, `verification/oprf_ristretto255_rfc9497.c`).** The full
+  OPRF(ristretto255, SHA-512) chain (HashToGroup = `expand_message_xmd(SHA-512)` → `from_hash`, then
+  Blind/Evaluate/Finalize) rebuilt on libsodium reproduces the **official RFC 9497 Appendix A.1.1
+  vectors** end-to-end (BlindedElement, EvaluationElement, Output). The step-`[94]` finding is thus
+  resolved in the verification layer; adopting libsodium fixes the non-conformant map. The product
+  OPRF / network-share swap to libsodium remains real-build.
 - **Constant-time AES [D-4 / A-2] — CORE PROVEN (step `[87]`); src promotion is the follow-up.** Required
   by the Adiantum branch's single-block-per-sector AES-256 call on non-AES-NI hardware; it only has to
   **exist** and be constant-time, not be fast. **Built the cheapest correct way** (`verification/ctaes_poc.c`,

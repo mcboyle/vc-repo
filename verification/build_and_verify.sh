@@ -2581,3 +2581,31 @@ if [ -n "$RX_CC" ] && [ -n "$RX_SLIBS" ] \
 else
 	skip_step " libsodium not available (apt install libsodium-dev, or set LIBSODIUM_PREFIX) — D-8 ristretto255 third oracle"
 fi
+
+echo "[95] OPRF(ristretto255,SHA-512) on libsodium vs OFFICIAL RFC 9497 vectors (D-8 conformance / [94] finding resolved)"
+# D-8 adopts libsodium's ristretto255 for the shipped OPRF. This step is the conformance PROOF: the full
+# Blind/Evaluate/Finalize chain rebuilt on libsodium reproduces the CFRG official RFC 9497 Appendix A.1.1
+# (ristretto255-SHA512, mode 0) BlindedElement/EvaluationElement/Output byte-for-byte. Anchoring to the
+# standard's OWN vectors (not a self-consistent Python twin) is exactly what the from-scratch group at
+# step [94] lacked. libsodium is verification-only; skip cleanly if absent (CI installs libsodium-dev).
+OF_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then OF_CC="$c"; break; fi; done
+OF_SCFLAGS=""; OF_SLIBS=""; OF_SRUN=""
+if pkg-config --exists libsodium 2>/dev/null; then
+	OF_SCFLAGS="$(pkg-config --cflags libsodium)"; OF_SLIBS="$(pkg-config --libs libsodium)"
+elif [ -n "${LIBSODIUM_PREFIX:-}" ] && [ -f "${LIBSODIUM_PREFIX}/include/sodium.h" ]; then
+	OF_SCFLAGS="-I${LIBSODIUM_PREFIX}/include"; OF_SLIBS="-L${LIBSODIUM_PREFIX}/lib -lsodium"; OF_SRUN="${LIBSODIUM_PREFIX}/lib"
+elif [ -f /tmp/libsodium-build/prefix/include/sodium.h ]; then
+	OF_SCFLAGS="-I/tmp/libsodium-build/prefix/include"; OF_SLIBS="-L/tmp/libsodium-build/prefix/lib -lsodium"; OF_SRUN="/tmp/libsodium-build/prefix/lib"
+fi
+if [ -n "$OF_CC" ] && [ -n "$OF_SLIBS" ] \
+   && $OF_CC -O2 $OF_SCFLAGS "$HERE/oprf_ristretto255_rfc9497.c" $OF_SLIBS -o /tmp/of_oprf 2>/tmp/of_log; then
+	if LD_LIBRARY_PATH="$OF_SRUN" /tmp/of_oprf > /tmp/of_out.txt 2>/tmp/of_diag.txt; then
+		grep -E 'RFC9497 A.1.1 vector|ALL MATCH' /tmp/of_out.txt | sed 's/^/    /'
+		grep -q '^OPRF RISTRETTO255 RFC9497: ALL MATCH' /tmp/of_out.txt || { echo "    OPRF RFC9497 CONFORMANCE FAILED"; cat /tmp/of_out.txt; exit 1; }
+	else
+		echo "    OPRF RFC9497 harness run FAILED"; cat /tmp/of_out.txt /tmp/of_diag.txt; exit 1
+	fi
+else
+	skip_step " libsodium not available (apt install libsodium-dev, or set LIBSODIUM_PREFIX) — D-8 RFC 9497 OPRF conformance"
+fi

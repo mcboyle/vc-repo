@@ -81,6 +81,16 @@ replaces the bespoke group with libsodium (which this oracle pins to the RFC), d
 the finding is recorded so the "reproduces RFC 9497" framing is not over-read. The same map is shared by
 `toprf_ristretto_poc.c` and `voprf_ristretto_poc.c`, so the finding applies to all three.
 
+**Finding resolved — RFC 9497 conformance on libsodium (step `[95]`).** The OPRF(ristretto255, SHA-512)
+chain rebuilt on libsodium (`verification/oprf_ristretto255_rfc9497.c`) reproduces the **official CFRG
+RFC 9497 Appendix A.1.1 vectors** — `BlindedElement`, `EvaluationElement`, and `Output` — byte-for-byte
+for both vectors, including the `expand_message_xmd(SHA-512) → crypto_core_ristretto255_from_hash`
+`HashToGroup` that the from-scratch map got wrong. Crucially this anchors to the **standard's own
+vectors**, not a self-consistent Python twin, so a hash-to-group that is merely internally consistent
+cannot pass — it is exactly the check that would have caught the original bug. The bespoke-map divergence
+stands as documented above; D-8's libsodium adoption is now **proven conformant in the verification
+layer** (the product OPRF / network-share swap to libsodium remains real-build).
+
 **Verifiable mode (VOPRF) — proven (step `[47]`).** In verifiable mode the server commits a public
 key `pk = k·G` and, with each `EE = k·BE`, proves in zero knowledge (Chaum–Pedersen / **DLEQ**) that
 the *same* `k` relates `(G, pk)` and `(BE, EE)`. The client verifies before finalizing, so a server
