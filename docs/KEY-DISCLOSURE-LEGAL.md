@@ -6,6 +6,10 @@
 > necessarily incomplete and time-sensitive. **Consult local counsel** before relying on any of it.
 > Items whose answer is fact-specific or unsettled are tagged `[COUNSEL-REVIEW]`.
 
+**Review date: 2026-07-24.** `[COUNSEL-REVIEW]` This is a legal-landscape document and is time-sensitive:
+statutes are amended and case law moves. Treat every entry as provisional as of the date above, and have
+counsel re-review the whole document at each release rather than trusting a stale copy.
+
 ## Why a technical tool ships this document
 
 This fork ships features — duress-dismount (`docs/DURESS-DISMOUNT-SPEC.md`), decoy/hidden volumes
@@ -21,6 +25,21 @@ constructs.
 
 The three columns are **how compelled disclosure is treated**, not a ranking of countries. Laws change;
 every entry is `[COUNSEL-REVIEW]` for current text and application.
+
+**Four doctrinal buckets — read them separately, do not infer across them.** These are *different legal
+mechanisms*; a jurisdiction can be protective in one and hostile in another, so a reader must not carry a
+conclusion from one bucket into another:
+
+1. **Refusal-to-disclose statutes** — laws that make *declining* to hand over a key/plaintext its own
+   offence (the "Disclosure-mandate (hostile)" table below).
+2. **Compelled-passcode doctrine** — whether compelling a *password from the mind* is testimonial
+   ("More protective" + the state-level split under "Genuinely unsettled").
+3. **Compelled-biometric doctrine** — whether compelling a *fingerprint/face* to unlock is testimonial.
+   This is treated **separately** from the passcode doctrine and is a live circuit split (below); a
+   jurisdiction may treat a fingerprint more like a key and a passcode more like testimony, or vice
+   versa — do not assume they track together.
+4. **Cloud-account & cooperation powers** — compulsion aimed at *providers/third parties* or at
+   account-level access, distinct from compelling the device owner (below).
 
 ### Disclosure-mandate (hostile) — refusing, or handing over only a decoy, can be a distinct offence
 
@@ -60,6 +79,21 @@ excusing it.
   (`docs/COUNSEL-BRIEF.md`).
 - Any jurisdiction not listed above: **treated as unknown here.** A missing row is not "no law" — it is
   "the authors did not verify it." Leave the gap rather than guessing.
+
+### Cloud-account & cooperation powers — a distinct axis `[COUNSEL-REVIEW]`
+
+Separate from compelling the *device owner* to disclose a passcode or biometric, many jurisdictions have
+powers aimed at *providers, third parties, and account-level access*. These can reach data without the
+owner's key at all, so they belong in their own bucket:
+
+- **Provider/assistance compulsion** already noted above: Australia's *Assistance and Access Act 2018*
+  compels **providers** (not end users), and a Crimes Act **s.3LA** assistance order can direct a person
+  to give assistance — different instruments from the s.3LA/RIPA offences of the owner refusing.
+- **Account-level / cloud compulsion** (subpoenas or production orders to a cloud host, cross-border
+  data-access regimes) is a **real and separate** axis that this document does **not** attempt to survey.
+  A local, offline VeraCrypt volume is outside most of it, but any synced backup, escrow, or
+  cloud-stored keyfile is not. **Treat the specifics as unverified here and raise them with counsel** —
+  a missing entry means "not checked," not "no power exists."
 
 ## Guidance the tool can honestly give
 
