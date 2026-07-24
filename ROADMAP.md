@@ -232,7 +232,14 @@ the on-disk format design review is **not** waived.
   migration are blocked on it. **Design spec written (owner-gated, not built): `docs/V2-FORMAT-SPEC.md`**
   — fixes the three owner decisions (store-nothing/trial mode selector, trial-derivation v1/v2 detection,
   full-volume MAC table) into a concrete layout + mount algorithm with a per-feature deniability-impact
-  line.
+  line. **The two NOVEL format-level properties are now proven** two ways (step `[84]`,
+  `verification/v2format_poc.c` + `v2format_reference.py`, real keyed-BLAKE3 vs independent python,
+  anchors `tag0 = 8a0dcab3…` / `table_hash = 26618168…`): (A) mode discrimination with **nothing stored**
+  via a per-mode domain-separated MAC key over ciphertext (+ anti-downgrade binding, + v1 fallthrough);
+  (B) full-volume MAC-table indistinguishability — byte-uniform, free slots read as free not tamper, and a
+  hidden-volume overwrite of the outer's free region still reads as free. The remaining T1-1 work is
+  product-code integration (real-build): the actual on-disk table sizing/placement and the mount trial
+  loop in the C++ path.
 - **Anti-forensic (AF) key splitting** (LUKS/TKS1) — **core proven AND keyslot-format integration
   built & proven (`[FORMAT]` done); real-flash validation remains.** The concrete answer to the
   SSD-remnant caveat: diffuse a keyslot's wrapped key across s stripes so recovery needs all of them

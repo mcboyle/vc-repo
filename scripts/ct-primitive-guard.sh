@@ -33,7 +33,9 @@ GF_BLESSED="src/Common/Shamir.c verification/hctr2_poc.c"
 #   src/Common/Keyslot.c         — KeyslotConstTimeEqual: the SHIPPING compare (dudect step [46] + ctgrind).
 #   verification/keyslot_poc.c   — ct_equal: reviewed OR-accumulate in the standalone keyslot PoC.
 #   verification/downgrade_poc.c — ct_eq: reviewed OR-accumulate in the standalone anti-downgrade PoC.
-CMP_BLESSED="src/Common/Keyslot.c verification/keyslot_poc.c verification/downgrade_poc.c"
+#   verification/v2format_poc.c  — ct_eq: reviewed OR-accumulate (d |= a^b, no early-out) for the v2
+#                                  per-sector-MAC / mode-discrimination tag compare (suite step [84]).
+CMP_BLESSED="src/Common/Keyslot.c verification/keyslot_poc.c verification/downgrade_poc.c verification/v2format_poc.c"
 # Conditional-select / cmov helpers. Blessed: none exist yet — any definition is new and must be reviewed.
 SEL_BLESSED=""
 

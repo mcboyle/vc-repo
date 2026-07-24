@@ -68,13 +68,30 @@ if MAGIC != "VERA": try next mix-variant / fail
 # the data-area interpretation is discovered by trial, cheaply (no further KDF):
 for interp in [ v2/HCTR2 , v2/Adiantum , v1/XTS(legacy) ]:
     read sector 0 and its MAC-table slot (v2) — location is a deterministic function of volume size
-    if interp is v2:  accept iff keyed-BLAKE3 MAC of sector 0 verifies under interp's mode
+    if interp is v2:  accept iff keyed-BLAKE3 MAC of sector 0 verifies under K_mac[interp.mode]
     if interp is v1:  accept (legacy, no MAC) — only reached if both v2 interpretations failed
     on accept: this is the volume's mode for the whole session
 ```
 
-The **per-sector MAC is the mode oracle**: verifying one sector's tag under each candidate wide-block
-mode is a cheap symmetric operation, so decisions (1) and (3) compose — the thing that authenticates
+**Why the MAC can discriminate the mode — the key, not the ciphertext.** The per-sector tag is over the
+sector **ciphertext** (encrypt-then-MAC, per `docs/PERSECTOR-AUTH-SPEC.md`), and the ciphertext bytes on
+disk are identical regardless of which wide-block cipher one would *decrypt* them with — so the tag alone
+cannot tell HCTR2 from Adiantum. The discrimination therefore comes from a **per-mode
+domain-separated MAC key**:
+
+```
+K_mac[mode] = keyed-BLAKE3( master_key, "VeraCrypt/v2/mac/" || mode )      # mode ∈ {hctr2, adiantum}
+tag_i       = keyed-BLAKE3( K_mac[mode], le64(i) || ciphertext_i )[0..16]
+```
+
+At mount, sector 0's stored tag is recomputed under `K_mac[hctr2]` and `K_mac[adiantum]`; **exactly one
+reproduces it**, and that identifies the mode — with the tag still over ciphertext (AE order preserved)
+and nothing stored on disk. This also gives **anti-downgrade for free**: because the tag binds the mode
+through the key, a v2 sector cannot be silently reinterpreted under the other mode or stripped to v1
+without failing verification.
+
+The **per-sector MAC is thus the mode oracle**: recomputing one sector's tag under each candidate mode's
+MAC key is a cheap symmetric operation, so decisions (1) and (3) compose — the thing that authenticates
 data also tells mount which mode wrote it, with no stored selector and no extra Argon2. Cost in the
 common case (no HKF factor): **1 KDF + 3 cheap data trials.** With an HKF factor the mix-variant loop
 (v2-mix → v1-mix, and the D-1 salt-bound variant) multiplies the KDF count by 2–3; that is inherent to
@@ -130,8 +147,10 @@ free space — it is **not** flagged as tampering. Consequences, each a deniabil
 
 ### Keys and backup
 
-- `K_mac` is a distinct sub-key derived from the volume master key by domain-separated KDF (never the
-  raw master key; see `docs/PERSECTOR-AUTH-SPEC.md`).
+- `K_mac[mode]` is a distinct sub-key derived from the volume master key by **mode-domain-separated** KDF
+  (`keyed-BLAKE3(master_key, "VeraCrypt/v2/mac/" || mode)`), never the raw master key; see
+  `docs/PERSECTOR-AUTH-SPEC.md`. The mode separation is what makes the ciphertext tag double as the
+  mount-time mode oracle (above) and provides anti-downgrade binding.
 - The MAC table and any v2 data-area state **must be mirrored into the backup header group** (the 3rd/4th
   64 KiB slots) or header recovery silently drops integrity — a real-build acceptance item.
 
@@ -146,14 +165,17 @@ migration brief (T3-1) before build. See `docs/HKF-MIX-V2-SPEC.md`.
 ## Anti-downgrade
 
 Because v2 stores no version marker, an adversary might try to present a v2 volume as v1 to strip
-integrity. Forging a valid v1 volume from v2 data requires **re-encrypting under the master key**, which
-the adversary does not have — so a keyless downgrade yields mount failure, not silent
-integrity-stripping. A downgrade by someone who *does* hold the password is not a threat (they already
-have the plaintext). If stronger binding is wanted, the wide-block mode can instead be
-**domain-separated into the header-key derivation** (an "…/mode/hctr2" vs "…/mode/adiantum" info string),
-binding the mode cryptographically at the cost of trialing key-derivations (one extra Argon2 pass) rather
-than cheap data trials — a documented alternative to decision (1), not the default. See the
-parameter-binding pattern in `docs/ROLLBACK-COUNTER-SPEC.md` / the anti-downgrade PoC (step `[23]`).
+integrity. Two things prevent a silent downgrade:
+
+1. The per-sector tag **binds the mode through `K_mac[mode]`** (above), so a v2 sector cannot be
+   reinterpreted under the other mode or as unauthenticated v1 without failing verification — the mode
+   separation *is* the anti-downgrade binding, at no extra cost.
+2. Forging a valid v1 volume from v2 data would require **re-encrypting under the master key**, which the
+   adversary does not have — so a keyless downgrade yields mount failure, not silent integrity-stripping.
+   A downgrade by someone who *does* hold the password is not a threat (they already have the plaintext).
+
+This is the same parameter-binding principle proven for the header parameters in the anti-downgrade PoC
+(step `[23]`, `docs/ROLLBACK-COUNTER-SPEC.md`), applied here at the per-sector-MAC-key level.
 
 ## Deniability-impact summary (the D-10 checklist)
 
