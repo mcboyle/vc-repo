@@ -193,13 +193,43 @@ the on-disk format design review is **not** waived.
   server-sees-only-blinded-X). Remaining (real-build): the client transport, the `C`-blob wire
   format, the enroll/unlock CLI, and a constant-time group for shipping (the validation group is not
   side-channel-hardened). `docs/NETWORK-SHARE-SPEC.md`.
-- **Write-only ORAM access-pattern hiding** *(the real mitigation for the multi-snapshot attack — the
-  #1 documented limitation).* Every logical write touches K PRNG-chosen physical blocks with fresh
-  ciphertext, independent of the logical target, so repeat-imaging cannot detect hidden-volume activity.
-  **The access-pattern-hiding property is proven** two ways (public-only vs public+hidden workloads
-  yield a byte-identical observable access trace; correctness reads==writes; real in-tree ChaCha20/Sha2
-  vs. independent Python; anchor `203b068d…`, `verification/oram_poc.c` step `[13]`). The block-layer +
-  position-map integration into the volume layout is a large real-build effort. `docs/ORAM-SPEC.md`.
+- **Write-only ORAM access-pattern hiding** — **OPT-IN EXPERIMENTAL [D-3]**, *a* mitigation for the
+  multi-snapshot attack (the #1 documented limitation), **not a default/flagship feature.** Every logical
+  write touches K PRNG-chosen physical blocks with fresh ciphertext, independent of the logical target, so
+  repeat-imaging cannot detect hidden-volume activity. **The access-pattern-hiding property is proven**
+  two ways (public-only vs public+hidden workloads yield a byte-identical observable access trace;
+  correctness reads==writes; real in-tree ChaCha20/Sha2 vs. independent Python; anchor `203b068d…`,
+  `verification/oram_poc.c` step `[13]`). **Held to opt-in** by three honest limits now recorded in the
+  spec: severe throughput cost (DataLair hidden write ~2.92 MB/s vs dm-crypt ~210 MB/s; HIVE ~0.60 MB/s),
+  the implementation-break history of both reference systems (HIVE RC4-fill bias, Paterson–Strefler
+  2014/901; DataLair biased free-block selection, Roche CCS 2017 §6), and R13's still-unbuilt mandatory
+  public-write cloak. The block-layer + position-map integration into the volume layout is a large
+  real-build effort. `docs/ORAM-SPEC.md`.
+- **HKF-v2 salt binding [D-1]** — the as-built v2 mix (DONE #15) drops the volume salt from HKDF-Extract;
+  D-1 ruled that an oversight, not a feature. Bind the volume salt as R27 Rank-1 specified, restoring
+  per-volume independence and closing factor reuse (correction R-2). Because existing v2 volumes derive
+  differently once the salt is bound, this is a **derivation-level migration** and must land under the v2
+  format work [D-10] and be examined by the R22 migration brief. `docs/HKF-MIX-V2-SPEC.md`.
+- **Recovery-share encoding → codex32 + bech32m [D-2]** — default export encoding becomes BIP-93 codex32
+  (error-*correcting*), with short codes (**≤ 89 characters**) using BIP-350 bech32m. The 89-character
+  boundary — where bech32's 4-error guarantee holds — becomes a **written constant**, not a per-call
+  judgement. Also add the BIP-173 insertion-deletion note (independent of length; affects short shares) to
+  `docs/VSS-SPEC.md`. Supersedes the plain bech32 share code (DONE step `[42]`) and steers correction R-3.
+- **Wide-block sector mode: HCTR2 + Adiantum, hardware-selected [D-4]** — supersedes the plain
+  HCTR2-vs-XTS question. Promote **HCTR2 for AES-NI hardware, Adiantum for non-AES-NI hardware**, both
+  implemented on every platform (PoCs done, steps `[24]`/`[26]`), with the mode chosen at
+  **volume-creation time** and recorded in a **v2 header field** [D-10] — **per-volume, not per-machine**
+  (a volume made on AES-NI hardware must open on hardware without it, so no runtime mount-time gating).
+  Adiantum still invokes AES-256 on one 16-byte block per sector, so it does **not** remove the AES
+  dependency — it needs the constant-time-AES BACKLOG item on the non-AES-NI path. Test the recorded
+  selector against the D-10 deniability constraint (it mildly fingerprints the creating hardware).
+- **On-disk v2 format, deniability-preserving [D-10]** — format changes are on the table as a **v2
+  alongside the compatible v1**, under a hard constraint: **no v2 feature may reduce deniability below v1,
+  or it is descoped.** Un-prunes authenticated FDE, per-sector MACs, and integrity metadata (all
+  previously blocked by the no-format-change rule). Provides the home for the D-4 mode selector and the
+  D-1 salt-binding migration. Every v2 feature carries a deniability-impact line reviewed against the
+  constraint before build. **This is the Tier-1 gate** — the wide-block selector and salt-binding
+  migration are blocked on it.
 - **Anti-forensic (AF) key splitting** (LUKS/TKS1) — **core proven AND keyslot-format integration
   built & proven (`[FORMAT]` done); real-flash validation remains.** The concrete answer to the
   SSD-remnant caveat: diffuse a keyslot's wrapped key across s stripes so recovery needs all of them
@@ -273,6 +303,35 @@ brief:
   output, `t-1` differ, servers oblivious; diffed byte-for-byte vs Python (3-of-5). Remaining
   (real-build): a constant-time group (the validation group is not side-channel-hardened), the
   rate-limited servers + transport, and RFC 9497 e2e vectors. `docs/OPRF-SPEC.md`.
+- **Replace bespoke ristretto255 / Ed25519 with vetted libraries [D-8]** — adopt **libsodium ≥ 1.0.21**
+  for ristretto255 and **HACL\*** for Ed25519, deleting the hand-rolled group arithmetic that the
+  network-share and OPRF DESIGN entries above still list as "a constant-time group remains." Research
+  (2026-07-23) confirmed no verified ristretto255 exists in C anywhere and HACL\* has none; libsodium must
+  be **≥ 1.0.21** (CVE-2025-69277 fix — ristretto255 was not the affected surface and is the maintainer's
+  recommended mitigation for that bug class). Do **not** hand-build ristretto on HACL\*'s exposed
+  `Hacl_EC_Ed25519` primitives without an independent audit (that glue would be new unverified C). Watch:
+  reopen if HACL\*/libcrux ships verified ristretto255. Supersedes the "constant-time group for shipping"
+  remaining-work in both proven-group entries above.
+- **Constant-time AES — now on the critical path [D-4 / A-2].** Required by the Adiantum branch's
+  single-block-per-sector AES-256 call on non-AES-NI hardware. Because it runs once per sector, not over
+  the whole sector, it only has to **exist**, not be fast — a bitsliced / constant-time implementation is
+  acceptable even if slow. Blocks the HCTR2/Adiantum promotion [D-4] on the non-AES-NI path. (The table-AES
+  cache-timing leak this replaces is measured under ctgrind, `docs/CT-HARDENING-R17.md`.)
+- **SSD deniability warning at decoy creation [A-1] — blocking for the decoy feature (D-13 audience).**
+  TRIM reveals which sectors are free (breaking free-space-indistinguishable-from-random); wear-levelling
+  cannot be disabled and leaves hidden-volume-creation residue in retired pages. **Now partly built:** the
+  fail-closed media probe (`Common/FlashProbe.{c,h}`, step `[83]`) fires as a code path at hidden-volume
+  creation in `TextUserInterface::CreateVolume` (Linux sysfs `rotational`, macOS `diskutil info`), gated
+  `-DVC_ENABLE_FLASH_WARN` / `make FLASH_WARN=1`. Remaining (real-build): the wx call-site compile and the
+  live device probe on real media. Any chaff / uniform-write countermeasure stays on the confidentiality
+  side of the scope line (uniform write/trim patterns are fine; fabricating a false activity record is not,
+  and remains DESCOPED).
+- **Research-brief run order [D-7]** (unrun briefs in `handoff/briefs-unrun/`, run order): **R22**
+  (migration safety — first; the v2 format + salt migration land on this seam) · **R20** (mobile PDE —
+  promoted; it is the deniability-over-flash literature the SSD finding makes a desktop concern too) ·
+  **R03** · **R06** · **R28** · **R05** · **R04** · **R07**. Queued, unranked: **R11**, **R23**, **R26**
+  (demoted — D-8 deletes the bespoke code that made machine-checked proof urgent). **None killed.** A
+  possible **twelfth brief** (constant-time AES) if it should be researched before implementation.
 
 ---
 
@@ -287,6 +346,23 @@ brief:
   Grover only halves an already-256-bit key. PQ KEM/signatures (Kyber/Dilithium) add attack surface,
   not security, for this use case. Heavily requested upstream (issue #1406, third-party PQ-VeraCrypt
   fork) but low real value here.
+- **End state [D-5, D-13].** Public release to a **select few vulnerable / high-risk individuals** — not
+  mass distribution, not a prototype. The code must hold under a serious threat model; the audience is
+  small and reachable. This is why A-1 (SSD) is treated as **blocking** rather than cosmetic.
+- **Counsel brief [D-6].** Commissioned; `docs/COUNSEL-BRIEF.md`. Covers compelled-disclosure statutes,
+  Chia VDF patents, OPAQUE IPR, the Joye–Libert / FROST question, general FTO, the R-1 wide-block-mode
+  patent question, and the R-6 biometric circuit split (*Payne* 9th Cir. 2024 vs *Brown* D.C. Cir. 2025).
+  **No legal conclusion is asserted as settled in the tree pending this brief** — the `[COUNSEL-REVIEW]`
+  tags mark every provisional position.
+- **Platform priority [D-9].** Linux/macOS (the C++ derivation path). Both wide-block modes [D-4] must
+  still exist on every platform a volume might travel to.
+- **Pass-4 citation recheck [D-11].** Skipped; citations accepted as flagged — **but the flags must
+  survive into published docs**, since an unverified-looking-verified citation is worse than an absent
+  one. Known cost: the Pass-1 claim class goes unrechecked, and R-1 is a demonstrated instance of that
+  class failing (an abandoned filing generalized to a patent-encumbrance claim over a whole group).
+- **Correction R-1 [D-12].** Narrowed, not dropped: keep the wide-block don't-build verdict and its
+  security grounds; the patent reasoning is corrected to "EME filing abandoned; no patent basis found for
+  the others," with FTO routed to the counsel brief. Applied in `docs/RESEARCH-NOTES.md`.
 
 ---
 
