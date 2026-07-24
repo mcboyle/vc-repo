@@ -26,11 +26,15 @@ def main():
     v = {}
     for line in sys.stdin:
         p = line.split()
-        if len(p) == 2 and p[0] in ("PASSWORD", "RESPONSE"):
+        if len(p) == 2 and p[0] in ("PASSWORD", "RESPONSE", "SALT"):
             v[p[0]] = bytes.fromhex(p[1])
     if not {"PASSWORD", "RESPONSE"} <= set(v):
         print("MISSING-INPUT"); return 1
+    # unbound v2 (HKDF-Extract salt = 0^32)
     print("MIXV2EXP", hkdf(v["PASSWORD"] + v["RESPONSE"]).hex())
+    # salt-bound v2 (Rank-1 / D-1: HKDF-Extract salt = the volume salt)
+    if "SALT" in v:
+        print("MIXV2SALTEXP", hkdf(v["PASSWORD"] + v["RESPONSE"], salt=v["SALT"]).hex())
     return 0
 
 if __name__ == "__main__":

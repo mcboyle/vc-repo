@@ -275,6 +275,14 @@ ifeq "$(origin HKF_SALT_BIND)" "command line"
 	C_CXX_FLAGS += -DVC_ENABLE_HKF_SALT_BIND
 endif
 
+# Rank-1 v2 HKDF salt binding (opt-in; T2-1 / D-1). `make HKF_MIX_V2_SALTBIND=1` enables the v2 HKDF mix
+# AND folds the volume salt into its HKDF-Extract, binding the derived key to the volume (a factor/share
+# enrolled on one volume cannot open another). Implies VC_ENABLE_HKF_MIX_V2. Only touches the already-gated
+# HKF derivation + mount/create seams; a plain `make` stays byte-for-byte stock. docs/HKF-MIX-V2-SPEC.md.
+ifeq "$(origin HKF_MIX_V2_SALTBIND)" "command line"
+	C_CXX_FLAGS += -DVC_ENABLE_HKF_MIX_V2 -DVC_ENABLE_HKF_MIX_V2_SALTBIND
+endif
+
 # Balloon memory-hard KDF as a selectable PRF (opt-in). `make BALLOON=1` exposes the Balloon hash
 # (--hash Balloon) via derive_key_balloon in Common/Pkcs5.c + the Pkcs5Balloon class in Volume/ (both
 # already in the build); no new objects. A plain `make` stays byte-for-byte stock. docs/BALLOON-SPEC.md.

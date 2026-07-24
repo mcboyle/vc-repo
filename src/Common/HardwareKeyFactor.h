@@ -164,6 +164,22 @@ void HKFMixResponseIntoPasswordV2 (unsigned char *password, int *password_len,
 void HKFMixResponseIntoPasswordVer (int version, unsigned char *password, int *password_len,
                                     const unsigned char *response, int response_len);
 
+#if defined(VC_ENABLE_HKF_MIX_V2_SALTBIND)
+/* Salt-bound Rank-1 v2 mix (D-1): identical to HKFMixResponseIntoPasswordV2 except HKDF-Extract uses the
+   VOLUME SALT instead of 0^32, binding the derived key to this volume. A NULL/empty salt falls back to
+   the unbound 0^32 derivation. See docs/HKF-MIX-V2-SPEC.md §"Salt binding". Gated
+   VC_ENABLE_HKF_MIX_V2_SALTBIND; when it is off the derivation is byte-identical to plain v2. */
+void HKFMixResponseIntoPasswordV2Salt (unsigned char *password, int *password_len,
+                                       const unsigned char *response, int response_len,
+                                       const unsigned char *salt, int salt_len);
+
+/* Salt-aware dispatch: v2 binds the volume salt into HKDF-Extract; v1 (CRC) ignores it. Mirrors
+   HKFMixResponseIntoPasswordVer for the salt-bound build (used by the mount version-try loop). */
+void HKFMixResponseIntoPasswordVerSalt (int version, unsigned char *password, int *password_len,
+                                        const unsigned char *response, int response_len,
+                                        const unsigned char *salt, int salt_len);
+#endif
+
 /* Compute the ACTIVE factor's response exactly once, so the mount version-try loop hits a hardware
    token only once and then mixes the same response under both versions (design constraint: no double
    token round-trip). Returns HKF_OK with *rlenOut=0 when no factor is configured (caller does a single

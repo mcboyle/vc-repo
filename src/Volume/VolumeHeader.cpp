@@ -126,7 +126,7 @@ namespace VeraCrypt
 			const int versions[2] = { HKF_MIX_V2, HKF_MIX_V1 };
 			for (int vi = 0; vi < 2; ++vi)
 			{
-				shared_ptr <VolumePassword> mixed = HKFMixPasswordWithResponse (password, resp.Ptr(), rlen, versions[vi]);
+				shared_ptr <VolumePassword> mixed = HKFMixPasswordWithResponse (password, resp.Ptr(), rlen, versions[vi], salt.Get(), (int) salt.Size());
 				if (DecryptWithEffectivePassword (encryptedData, *mixed, pim, kdf, keyDerivationFunctions, encryptionAlgorithms, encryptionModes))
 					return true;
 			}
