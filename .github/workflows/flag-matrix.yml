@@ -135,3 +135,11 @@ jobs:
         run: ./scripts/build-product.sh NOGUI=1
       - name: Build full-featured console product (all fork knobs)
         run: ./scripts/build-product.sh NOGUI=1 HKF=1 HKF_SIMULATOR=1 HKF_MIX_V2_SALTBIND=1 KEYSCRUB=1 DURESS=1 KEYSLOTS=1 SHARECODE=1 SHAMIRMAC=1 FLASH_WARN=1
+      # In-process Volume::Open round-trip against the just-built full-featured archives (Core/Volume/
+      # Platform.a). Exercises the real C++ create->open path directly — correct password opens + recovers
+      # a non-trivial master key; wrong password rejects; and with the simulator factor: correct factor
+      # opens, wrong factor / password-alone reject (the 2FA property, through the salt-bound T2-1
+      # derivation). VC_OR_SKIP_BUILD=1 reuses the archives from the step above (no rebuild). Still no
+      # kernel dm-crypt — this is the library-level round-trip, not a mount.
+      - name: In-process Volume::Open round-trip (real product objects)
+        run: VC_OR_SKIP_BUILD=1 ./verification/realbuild/open_roundtrip.sh NOGUI=1 HKF=1 HKF_SIMULATOR=1 HKF_MIX_V2_SALTBIND=1 KEYSCRUB=1 DURESS=1 KEYSLOTS=1 SHARECODE=1 SHAMIRMAC=1 FLASH_WARN=1
