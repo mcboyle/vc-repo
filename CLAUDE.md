@@ -118,6 +118,17 @@ flags** — make does not rebuild objects on `-D` changes, and a mixed binary si
 1. byte-for-byte against an **independent Python reimplementation** of the same math, and
 2. against **real compiled VeraCrypt objects** (e.g. the actual `derive_key_sha3_512` /
    `Pkcs5HmacSha3_512`), so the integration — not just the algorithm — is exercised.
+
+**3. And if it claims to implement a published standard, it MUST also be anchored to an artifact we did
+not author** — official test vectors (RFC/NIST/BIP/upstream KATs) or a mature third-party implementation
+(libsodium, OpenSSL/hashlib). This is non-negotiable and was learned the hard way: step `[94]` found the
+from-scratch ristretto255 hash-to-group was **non-conformant to RFC 9496/9497**, and rules 1+2 had passed
+it for months. A Python twin *we* write encodes the same reading of the spec as the C, so when our reading
+is wrong both are wrong identically and they agree for the same wrong reason; rule 2 proves integration,
+not interpretation. Twins catch implementation slips, never interpretation errors. Where no standard
+exists (fork-specific formats, the decoy layout, ORAM), a twin + properties is correct and sufficient —
+but then don't call the result "conformant". Classify every step's anchor in
+`docs/VERIFICATION-ANCHORS.md` and state the class in the step comment.
 Real hardware backends are additionally **compiled and linked against the real libraries**
 (`-lykpers-1 -lfido2`) and shown to fail safe with no device.
 

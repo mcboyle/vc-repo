@@ -109,6 +109,15 @@ Python (fixed nonce), a valid proof verifies, and both a tampered `EE` and a wro
 rejected. (The exact RFC 9497 verifiable-mode transcript with batched composites stays real-build;
 this is a faithful single-element DLEQ.)
 
+**Scope of the defect — check this claim, don't take it on trust:** `grep -rliE 'ristretto|oprf' src/`
+returns **nothing**. No shipped product code implements or calls the OPRF, so **no user-reachable code path
+uses the non-conformant map** — it exists only under `verification/`. The step-`[94]` finding is therefore
+a defect in *research code*, not a live exposure, and D-8's "product swap" is a **constraint on future
+work** (when the OPRF / network-share feature is built into the product, build it on libsodium) rather
+than a repair of something users run today. This distinction must not erode as green PRs accumulate: three
+merged conformance PRs prove the *verification layer* is RFC-correct, and prove nothing about a shipped
+feature that does not yet exist.
+
 **Still real-build / not shipping:** the from-scratch group is RFC-anchored **on the encoding + scalar
 layer (A.1)** — but its hash-to-group diverges from the RFC (finding above), and it is **not
 constant-time** (validation, not deployment); a shipping build uses a side-channel-hardened
