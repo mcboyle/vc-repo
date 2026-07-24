@@ -2513,3 +2513,33 @@ if [ -n "$CX_CC" ] \
 else
 	skip_step " no compiler accepted the codex32 build (see /tmp/cx_log)"
 fi
+
+echo "[93] Rank-1 v2 HKDF salt binding (T2-1 / D-1) — real HKFMixResponseIntoPasswordV2{,Salt} vs python"
+# Salt binding folds the VOLUME SALT into the v2 HKDF-Extract (in place of 0^32), binding the mixed key
+# to the volume (a factor/share enrolled on one volume cannot open another). Two ways: the salt-bound
+# mixed password vs an independent python HKDF whose Extract salt IS the volume salt (MIXV2SALTEXP), and
+# the UNBOUND path shown byte-identical to the step-[80] anchor (MIXV2EXP) so the flag doesn't perturb
+# plain v2. Properties: different salts -> different keys; bound != unbound; NULL salt falls back.
+SB_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then SB_CC="$c"; break; fi; done
+SB_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+SB_D="-DVC_ENABLE_HKF -DVC_ENABLE_HKF_MIX_V2 -DVC_ENABLE_HKF_MIX_V2_SALTBIND"
+SB_INC="$INC -I$SRCROOT/Crypto"
+SB_SRC="$SRCROOT/Common/HardwareKeyFactor.c $SRCROOT/Crypto/Sha2.c"
+if [ -n "$SB_CC" ] \
+   && "$SB_CC" -O2 -Wno-implicit-function-declaration $SB_D $SB_NOASM $SB_INC "$HERE/hkf_saltbind_test.c" $SB_SRC -o /tmp/saltbind_test 2>/tmp/sb_log; then
+	if /tmp/saltbind_test > /tmp/sb_c.txt; then
+		grep -vE '^PASSWORD|^RESPONSE|^SALT |^MIXV2 |^MIXV2SALT ' /tmp/sb_c.txt
+		python3 "$HERE/hkf_mixv2_reference.py" < /tmp/sb_c.txt > /tmp/sb_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+		U_C=$(awk '/^MIXV2 /{print $2}' /tmp/sb_c.txt);      U_P=$(awk '/^MIXV2EXP/{print $2}' /tmp/sb_py.txt)
+		S_C=$(awk '/^MIXV2SALT /{print $2}' /tmp/sb_c.txt);  S_P=$(awk '/^MIXV2SALTEXP/{print $2}' /tmp/sb_py.txt)
+		if [ -n "$U_C" ] && [ "$U_C" = "$U_P" ] && [ -n "$S_C" ] && [ "$S_C" = "$S_P" ] && grep -q '^PASS' /tmp/sb_c.txt; then
+			echo "    MATCH: unbound v2 == step-[80] python HKDF; salt-bound v2 == python HKDF(salt=volume salt); properties hold"
+		else
+			echo "    SALTBIND MISMATCH (U=${U_C:0:12}/${U_P:0:12} S=${S_C:0:12}/${S_P:0:12}) or harness failed"; exit 1
+		fi
+	else grep -vE '^PASSWORD|^RESPONSE|^SALT |^MIXV2' /tmp/sb_c.txt; echo "    HKF SALT-BIND FAILED"; exit 1; fi
+	rm -rf "$HERE/__pycache__"
+else
+	skip_step " no compiler for the hkf salt-bind test (see /tmp/sb_log)"
+fi

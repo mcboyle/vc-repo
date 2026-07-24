@@ -205,11 +205,17 @@ the on-disk format design review is **not** waived.
   2014/901; DataLair biased free-block selection, Roche CCS 2017 §6), and R13's still-unbuilt mandatory
   public-write cloak. The block-layer + position-map integration into the volume layout is a large
   real-build effort. `docs/ORAM-SPEC.md`.
-- **HKF-v2 salt binding [D-1]** — the as-built v2 mix (DONE #15) drops the volume salt from HKDF-Extract;
-  D-1 ruled that an oversight, not a feature. Bind the volume salt as R27 Rank-1 specified, restoring
-  per-volume independence and closing factor reuse (correction R-2). Because existing v2 volumes derive
-  differently once the salt is bound, this is a **derivation-level migration** and must land under the v2
-  format work [D-10] and be examined by the R22 migration brief. `docs/HKF-MIX-V2-SPEC.md`.
+- **HKF-v2 salt binding [D-1] — code DONE (T2-1, step `[93]`); migration remains T1-3.** The as-built v2
+  mix dropped the volume salt from HKDF-Extract; D-1 ruled that an oversight, not a feature. Now bound:
+  gated `VC_ENABLE_HKF_MIX_V2_SALTBIND` (`make HKF_MIX_V2_SALTBIND=1`), HKDF-Extract uses the volume salt,
+  restoring per-volume independence and closing factor reuse (correction **R-2**) — a factor/share
+  enrolled on volume A cannot open volume B. `HKFMixResponseIntoPasswordV2Salt` / `…VerSalt` thread the
+  salt through the C create path (`HKFApplyIfConfiguredVer`), the C-path mount (`Volumes.c`), and the C++
+  mount/create overload; proven two ways at step `[93]` (real object == python HKDF whose Extract salt is
+  the volume salt; unbound path byte-identical to the step-`[80]` anchor; per-salt divergence). Because
+  existing v2 volumes derive differently once the salt is bound, the **derivation-level migration** (and
+  the real-build mount/create round-trip) is tracked as **T1-3** under the v2 format work [D-10] / R22
+  brief. `docs/HKF-MIX-V2-SPEC.md §"Salt binding"`.
 - **Recovery-share encoding → codex32 + bech32m [D-2] — DONE (T2-2, steps `[42]`/`[92]`).** The default
   export encoding is now BIP-93 **codex32** (error-*correcting* ms32 checksum, 13-symbol regular / 15-symbol
   long): `src/Common/ShareCode.c` `ShareCodeCodex32Encode/Decode`, proven against the official BIP-93 test

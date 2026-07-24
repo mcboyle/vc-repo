@@ -353,7 +353,12 @@ int ReadVolumeHeaderWithAbort (BOOL bBoot, unsigned char *encryptedHeader, Passw
 	// so here we only mix it under the version this attempt is testing. hkfRespLen == 0 means no factor
 	// is configured (a single unmixed pass). See ReadVolumeHeaderWithAbort() below.
 	if (hkfRespLen > 0)
+#if defined(VC_ENABLE_HKF_MIX_V2_SALTBIND)
+		/* Rank-1 salt binding (D-1): fold this header's salt into the v2 HKDF-Extract. */
+		HKFMixResponseIntoPasswordVerSalt (hkfVersion, keyInfo->userKey, &keyInfo->keyLength, hkfResp, hkfRespLen, keyInfo->salt, PKCS5_SALT_SIZE);
+#else
 		HKFMixResponseIntoPasswordVer (hkfVersion, keyInfo->userKey, &keyInfo->keyLength, hkfResp, hkfRespLen);
+#endif
 #elif defined(VC_ENABLE_HKF)
 	// Optional hardware key factor: mix the token response (computed over THIS header's salt)
 	// into the password before PBKDF2. A configured-but-missing/failed token aborts the mount.

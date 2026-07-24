@@ -110,12 +110,16 @@ static void hkf_v2_hmac (const unsigned char *key, int keyLen,
 	{ volatile unsigned char *p = k0; size_t n = sizeof k0; while (n--) *p++ = 0; }
 }
 
-void HKFMixResponseIntoPasswordV2 (unsigned char *password, int *password_len,
-                                   const unsigned char *response, int response_len)
+/* Core Rank-1 mix with an explicit HKDF-Extract salt. extractSalt/extractSaltLen is the salt fed to
+   HKDF-Extract: 0^32 for the unbound v2 derivation, or the volume salt for the Rank-1 salt-bound
+   derivation (D-1). Both public entry points below funnel through here so the two derivations share one
+   code path (and one proof). */
+static void hkf_v2_mix (unsigned char *password, int *password_len,
+                        const unsigned char *response, int response_len,
+                        const unsigned char *extractSalt, int extractSaltLen)
 {
 	/* Domain-separated HKDF info label (subsumes item 97's cSHAKE labels). */
 	static const unsigned char HKF_V2_INFO[] = "VeraCrypt/HKF/mix/v2";
-	static const unsigned char HKF_V2_ZERO_SALT[HKF_HMAC_DIGEST] = { 0 };
 	unsigned char prk[HKF_HMAC_DIGEST];
 	unsigned char okm[HKF_POOL_SIZE];
 	unsigned char T[HKF_HMAC_DIGEST];
@@ -123,8 +127,8 @@ void HKFMixResponseIntoPasswordV2 (unsigned char *password, int *password_len,
 	int blocks = (HKF_POOL_SIZE + HKF_HMAC_DIGEST - 1) / HKF_HMAC_DIGEST;
 	int blk, pw = *password_len, got = 0, tLen = 0;
 
-	/* Extract: PRK = HMAC(salt=0^32, IKM = password || response). */
-	hkf_v2_hmac (HKF_V2_ZERO_SALT, HKF_HMAC_DIGEST, password, pw, response, response_len, prk);
+	/* Extract: PRK = HMAC(salt = extractSalt, IKM = password || response). */
+	hkf_v2_hmac (extractSalt, extractSaltLen, password, pw, response, response_len, prk);
 
 	/* Expand: T(i) = HMAC(PRK, T(i-1) || info || i); OKM = T(1) || T(2) || ... truncated to L. */
 	for (blk = 1; blk <= blocks; blk++) {
@@ -158,6 +162,43 @@ void HKFMixResponseIntoPasswordV2 (unsigned char *password, int *password_len,
 	{ volatile unsigned char *p = okm; size_t z = sizeof okm; while (z--) *p++ = 0; }
 }
 
+/* Unbound v2 derivation: HKDF-Extract salt = 0^32 (the original Rank-1 mix; step-[80] anchor). */
+void HKFMixResponseIntoPasswordV2 (unsigned char *password, int *password_len,
+                                   const unsigned char *response, int response_len)
+{
+	static const unsigned char HKF_V2_ZERO_SALT[HKF_HMAC_DIGEST] = { 0 };
+	hkf_v2_mix (password, password_len, response, response_len, HKF_V2_ZERO_SALT, HKF_HMAC_DIGEST);
+}
+
+#if defined(VC_ENABLE_HKF_MIX_V2_SALTBIND)
+/* Salt-bound v2 derivation (Rank-1 / D-1): HKDF-Extract salt = the volume salt, so the mixed key — and
+   hence the header key — is bound to THIS volume's salt. A factor response (or reconstructed/threshold
+   secret) enrolled against volume A cannot open volume B even at the same password, and the derivation
+   inherits the volume salt's domain separation. Falls back to the 0^32 salt if none is supplied, so it
+   degrades to the unbound derivation rather than silently weakening. docs/HKF-MIX-V2-SPEC.md §"Salt binding". */
+void HKFMixResponseIntoPasswordV2Salt (unsigned char *password, int *password_len,
+                                       const unsigned char *response, int response_len,
+                                       const unsigned char *salt, int salt_len)
+{
+	static const unsigned char HKF_V2_ZERO_SALT[HKF_HMAC_DIGEST] = { 0 };
+	if (salt && salt_len > 0)
+		hkf_v2_mix (password, password_len, response, response_len, salt, salt_len);
+	else
+		hkf_v2_mix (password, password_len, response, response_len, HKF_V2_ZERO_SALT, HKF_HMAC_DIGEST);
+}
+
+/* Salt-aware dispatch: v2 binds the volume salt into HKDF-Extract; v1 (CRC) ignores it. */
+void HKFMixResponseIntoPasswordVerSalt (int version, unsigned char *password, int *password_len,
+                                        const unsigned char *response, int response_len,
+                                        const unsigned char *salt, int salt_len)
+{
+	if (version == HKF_MIX_V2)
+		HKFMixResponseIntoPasswordV2Salt (password, password_len, response, response_len, salt, salt_len);
+	else
+		HKFMixResponseIntoPassword (password, password_len, response, response_len);
+}
+#endif /* VC_ENABLE_HKF_MIX_V2_SALTBIND */
+
 void HKFMixResponseIntoPasswordVer (int version, unsigned char *password, int *password_len,
                                     const unsigned char *response, int response_len)
 {
@@ -185,7 +226,11 @@ int HKFApplyIfConfiguredVer (int version, unsigned char *userKey, int *keyLength
 	if (rc != HKF_OK)
 		return rc;                           /* token missing/failed: caller aborts */
 	if (rlen > 0)
+#if defined(VC_ENABLE_HKF_MIX_V2_SALTBIND)
+		HKFMixResponseIntoPasswordVerSalt (version, userKey, keyLength, resp, rlen, salt, salt_len);
+#else
 		HKFMixResponseIntoPasswordVer (version, userKey, keyLength, resp, rlen);
+#endif
 	{ volatile unsigned char *p = resp; size_t n = sizeof (resp); while (n--) *p++ = 0; }
 	return HKF_OK;
 }

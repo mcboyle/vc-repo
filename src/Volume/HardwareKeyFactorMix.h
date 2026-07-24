@@ -63,7 +63,7 @@ namespace VeraCrypt
 	 * (via HKFComputeActiveResponse) and the same response is mixed under each version — no second
 	 * hardware round-trip. 'responseLen == 0' returns a plain copy (no factor). See VolumeHeader::Decrypt.
 	 */
-	inline shared_ptr <VolumePassword> HKFMixPasswordWithResponse (const VolumePassword &password, const unsigned char *response, int responseLen, int version)
+	inline shared_ptr <VolumePassword> HKFMixPasswordWithResponse (const VolumePassword &password, const unsigned char *response, int responseLen, int version, const unsigned char *salt = 0, int saltLen = 0)
 	{
 		make_shared_auto (VolumePassword, result);
 
@@ -77,7 +77,14 @@ namespace VeraCrypt
 				Memory::Copy (buf.Ptr(), password.DataPtr(), n);
 
 			int len = (int) n;
+#if defined(VC_ENABLE_HKF_MIX_V2_SALTBIND)
+			// Rank-1 salt binding (D-1): fold the volume salt into the v2 HKDF-Extract so the derived key
+			// is bound to this volume. v1 ignores the salt. See docs/HKF-MIX-V2-SPEC.md §"Salt binding".
+			HKFMixResponseIntoPasswordVerSalt (version, buf.Ptr(), &len, response, responseLen, salt, saltLen);
+#else
+			(void) salt; (void) saltLen;
 			HKFMixResponseIntoPasswordVer (version, buf.Ptr(), &len, response, responseLen);
+#endif
 			result->Set (buf.Ptr(), (size_t) len);
 			return result;
 		}
@@ -100,7 +107,7 @@ namespace VeraCrypt
 			int rlen = 0;
 			if (HKFComputeActiveResponse (salt.Get(), (int) salt.Size(), resp.Ptr(), &rlen) != HKF_OK)
 				throw ExternalException (SRC_POS);   /* configured token missing or failed */
-			return HKFMixPasswordWithResponse (password, resp.Ptr(), rlen, version);
+			return HKFMixPasswordWithResponse (password, resp.Ptr(), rlen, version, salt.Get(), (int) salt.Size());
 		}
 
 		make_shared_auto (VolumePassword, result);
