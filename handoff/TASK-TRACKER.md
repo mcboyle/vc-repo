@@ -71,9 +71,19 @@ over 9 REF lines; anchors `tag0 = 8a0dcab3…`, `table_hash = 26618168…`, tabl
 discrimination with nothing stored + v1 fallthrough + anti-downgrade; (B) full-volume MAC-table
 indistinguishability — byte-uniform, free reads-as-free, hidden-overwrite reads-as-free.
 
-Still owner-gated for **product-code integration** (real-build: on-disk table sizing/placement + the C++
-mount trial loop). Open sub-decisions (MAC slot width, table offset formula, sector-size interaction,
-migration UX) remain per the spec.
+**Shippable module now built & proven** (`src/Common/V2Format.{c,h}`, gated `-DVC_ENABLE_V2FORMAT` /
+`make V2FORMAT=1`; suite step `[85]`, HMAC-SHA256 over the real in-tree `Sha2.c` vs independent python,
+byte-identical over 9 REF lines; anchors `K_mac[hctr2]=ef82a0ba…`, `tag0=fecde672…`): `V2FormatDeriveModeKey`,
+`V2FormatSectorTag`, `V2FormatSectorVerify` (const-time), `V2FormatDiscoverMode` (store-nothing mount
+trial), and the layout math (`V2FormatMacTableBytes`/`V2FormatSplitDataArea`/`V2FormatSlotOffset`).
+Resolved sub-decisions: **16-byte slot**, **tail-of-data table placement** (front stays v1-identical),
+sector-size-parameterised sizing. Shipping PRF is **HMAC-SHA256** (no vetted in-tree BLAKE3; step-[84]
+BLAKE3 PoC proved the same logic PRF-agnostically; BLAKE3 stays the target under the same trial machinery).
+
+Still owner-gated for the real-build **C++ mount/create wiring** that calls the module (trial loop +
+create-time `V2FormatSplitDataArea`), backup-header mirroring, and real-media validation of the tail
+placement clamped below a hidden-volume start. Remaining open sub-decisions: migration UX (v1→v2 re-encrypt,
+scope with R22).
 
 ---
 

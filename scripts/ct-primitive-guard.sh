@@ -35,7 +35,9 @@ GF_BLESSED="src/Common/Shamir.c verification/hctr2_poc.c"
 #   verification/downgrade_poc.c — ct_eq: reviewed OR-accumulate in the standalone anti-downgrade PoC.
 #   verification/v2format_poc.c  — ct_eq: reviewed OR-accumulate (d |= a^b, no early-out) for the v2
 #                                  per-sector-MAC / mode-discrimination tag compare (suite step [84]).
-CMP_BLESSED="src/Common/Keyslot.c verification/keyslot_poc.c verification/downgrade_poc.c verification/v2format_poc.c"
+#   src/Common/V2Format.c        — v2_ct_eq: the SHIPPING v2 per-sector-tag compare, reviewed OR-accumulate
+#                                  (d |= a^b, no early-out); backs V2FormatSectorVerify (suite step [85]).
+CMP_BLESSED="src/Common/Keyslot.c verification/keyslot_poc.c verification/downgrade_poc.c verification/v2format_poc.c src/Common/V2Format.c"
 # Conditional-select / cmov helpers. Blessed: none exist yet — any definition is new and must be reviewed.
 SEL_BLESSED=""
 

@@ -2240,3 +2240,37 @@ if [ -n "$VF_CC" ] && "$VF_CC" -O2 -Wall -I"$HERE" "$HERE/v2format_poc.c" -o /tm
 else
 	skip_step " no compiler for the v2-format PoC (see /tmp/vf_log)"
 fi
+
+echo "[85] v2 on-disk format — SHIPPING module (src/Common/V2Format.c, HMAC-SHA256 over real Sha2.c) vs independent python"
+# The step-[84] PoC proved the format LOGIC PRF-agnostically (keyed-BLAKE3). This proves the SHIPPING
+# module that instantiates the same logic on HMAC-SHA256 over the REAL in-tree Crypto/Sha2.c (no new
+# crypto dependency), gated VC_ENABLE_V2FORMAT: per-mode MAC keys, per-sector tag over ciphertext, the
+# mount-time MODE DISCOVERY that stores nothing (correct mode found; wrong key/legacy -> NONE -> v1),
+# const-time verify, and the MAC-table layout math. Links the real Sha2 object like the DuressToken step
+# [7]; v2format_module_reference.py is an independent hashlib HMAC-SHA256. See docs/V2-FORMAT-SPEC.md.
+VM_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then VM_CC="$c"; break; fi; done
+VM_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+VM_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+VM_GC="-ffunction-sections -fdata-sections"
+VM_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$VM_CC" ] \
+   && "$VM_CC" -O2 $VM_WNO $VM_NOASM $VM_GC -DVC_ENABLE_V2FORMAT $VM_INC -c "$SRCROOT/Common/V2Format.c" -o /tmp/v2m.o 2>/tmp/v2m.log \
+   && "$VM_CC" -O2 $VM_WNO $VM_NOASM $VM_GC $VM_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/v2m_sha2.o 2>>/tmp/v2m.log \
+   && "$VM_CC" -O2 $VM_WNO $VM_NOASM -DVC_ENABLE_V2FORMAT $VM_INC "$HERE/v2format_module_test.c" /tmp/v2m.o /tmp/v2m_sha2.o -Wl,--gc-sections -o /tmp/v2m_test 2>>/tmp/v2m.log; then
+	if /tmp/v2m_test > /tmp/v2m_c.txt; then
+		grep -E 'PASS$|FAIL$' /tmp/v2m_c.txt | sed 's/^/    /'
+		grep -q '^V2 FORMAT MODULE TESTS PASSED' /tmp/v2m_c.txt || { echo "    V2 FORMAT MODULE TESTS FAILED"; exit 1; }
+		python3 "$HERE/v2format_module_reference.py" > /tmp/v2m_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+		grep '^REF' /tmp/v2m_c.txt > /tmp/v2m_c_ref.txt
+		if diff -q /tmp/v2m_c_ref.txt /tmp/v2m_py.txt >/dev/null; then
+			echo "    MATCH: shipping V2Format (real Sha2 HMAC-SHA256) == independent python over $(wc -l < /tmp/v2m_c_ref.txt) REF lines"
+		else
+			echo "    MISMATCH"; diff /tmp/v2m_c_ref.txt /tmp/v2m_py.txt; exit 1
+		fi
+	else
+		grep -E 'FAIL$' /tmp/v2m_c.txt | sed 's/^/    /'; echo "    V2 FORMAT MODULE TESTS FAILED"; exit 1
+	fi
+else
+	skip_step " no compiler accepted the stock Crypto sources for the V2Format module (see /tmp/v2m.log)"
+fi

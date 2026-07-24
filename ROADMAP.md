@@ -237,9 +237,14 @@ the on-disk format design review is **not** waived.
   anchors `tag0 = 8a0dcab3…` / `table_hash = 26618168…`): (A) mode discrimination with **nothing stored**
   via a per-mode domain-separated MAC key over ciphertext (+ anti-downgrade binding, + v1 fallthrough);
   (B) full-volume MAC-table indistinguishability — byte-uniform, free slots read as free not tamper, and a
-  hidden-volume overwrite of the outer's free region still reads as free. The remaining T1-1 work is
-  product-code integration (real-build): the actual on-disk table sizing/placement and the mount trial
-  loop in the C++ path.
+  hidden-volume overwrite of the outer's free region still reads as free. **The shippable module is now
+  built & proven** (`src/Common/V2Format.{c,h}`, gated `-DVC_ENABLE_V2FORMAT` / `make V2FORMAT=1`; step
+  `[85]`, HMAC-SHA256 over the real in-tree `Sha2.c` vs independent python, anchors `K_mac[hctr2] =
+  ef82a0ba…` / `tag0 = fecde672…`): per-mode MAC keys, per-sector tag, const-time verify, the
+  store-nothing mount `V2FormatDiscoverMode`, and the MAC-table layout math (16-byte slot, tail-of-data
+  split). Shipping PRF is HMAC-SHA256 (no vetted in-tree BLAKE3 exists; the format is PRF-agnostic, BLAKE3
+  stays the target). Remaining T1-1 work is the real-build **C++ mount/create wiring** that calls the
+  module (trial loop + create-time data split), backup-header mirroring, and real-media validation.
 - **Anti-forensic (AF) key splitting** (LUKS/TKS1) — **core proven AND keyslot-format integration
   built & proven (`[FORMAT]` done); real-flash validation remains.** The concrete answer to the
   SSD-remnant caveat: diffuse a keyslot's wrapped key across s stripes so recovery needs all of them
