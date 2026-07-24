@@ -39,6 +39,9 @@
 #include <stdlib.h>
 #include "Crypto/chacha256.h"
 #include "Crypto/Aes.h"
+#if defined(ADIANTUM_USE_CTAES)
+#include "Crypto/AesCt.h"   /* T2-4b: route Adiantum's block cipher through the constant-time AES */
+#endif
 #include "poly1305.h"
 #include "adiantum_kats.h"
 
@@ -100,8 +103,12 @@ typedef struct
 	unsigned char k[32];		/* outer key (bulk-stream key) */
 	unsigned char rt[16], rm[16];
 	unsigned char kn[1072];		/* NH key: 268 LE u32 words */
+#if defined(ADIANTUM_USE_CTAES)
+	AesCtKey256 blk;			/* constant-time AES: one expanded key, used both directions */
+#else
 	aes_encrypt_ctx enc;
 	aes_decrypt_ctx dec;
+#endif
 } adiantum_key;
 
 static void adiantum_setkey (const unsigned char key[32], adiantum_key *ak)
@@ -114,8 +121,12 @@ static void adiantum_setkey (const unsigned char key[32], adiantum_key *ak)
 	memcpy (ak->rt, ks + 32, 16);
 	memcpy (ak->rm, ks + 48, 16);
 	memcpy (ak->kn, ks + 64, 1072);
+#if defined(ADIANTUM_USE_CTAES)
+	AesCtInit256 (&ak->blk, ks);		/* KE = ks[0:32]; one expanded key for enc + dec */
+#else
 	aes_encrypt_key256 (ks, &ak->enc);	/* KE = ks[0:32] */
 	aes_decrypt_key256 (ks, &ak->dec);
+#endif
 }
 
 /* ---- NH (local): chunk len multiple of 16, at most 1024 bytes ---- */
@@ -198,7 +209,11 @@ static void adiantum_encrypt (const adiantum_key *ak, const unsigned char *tweak
 	adiantum_hash (ak, tweak, tlen, pt, llen, h);
 	memcpy (pm, pt + llen, 16);
 	add128 (pm, h);				/* PM = PR + H(T, PL) */
+#if defined(ADIANTUM_USE_CTAES)
+	AesCtEncryptBlock (&ak->blk, pm, cm);	/* CM = AES256-E(KE, PM), constant-time */
+#else
 	aes_encrypt (pm, cm, &ak->enc);		/* CM = AES256-E(KE, PM) */
+#endif
 
 	memcpy (nonce, cm, 16); nonce[16] = 0x01; memset (nonce + 17, 0, 7);
 	xchacha12_xor (ak->k, nonce, pt, llen, ct);	/* CL = PL xor stream */
@@ -221,7 +236,11 @@ static void adiantum_decrypt (const adiantum_key *ak, const unsigned char *tweak
 	memcpy (nonce, cm, 16); nonce[16] = 0x01; memset (nonce + 17, 0, 7);
 	xchacha12_xor (ak->k, nonce, ct, llen, pt);	/* PL = CL xor stream */
 
+#if defined(ADIANTUM_USE_CTAES)
+	AesCtDecryptBlock (&ak->blk, cm, pm);	/* PM = AES256-D(KE, CM), constant-time */
+#else
 	aes_decrypt (cm, pm, &ak->dec);		/* PM = AES256-D(KE, CM) */
+#endif
 	adiantum_hash (ak, tweak, tlen, pt, llen, h);
 	memcpy (pt + llen, pm, 16);
 	sub128 (pt + llen, h);			/* PR = PM - H(T, PL) */

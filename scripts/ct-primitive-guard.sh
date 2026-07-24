@@ -28,7 +28,11 @@ HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(cd "$HERE/.." && pwd)"
 # GF(2^n) field arithmetic (multiply/inverse/dot). Blessed:
 #   src/Common/Shamir.c      — gf_mul/gf_inv: masked, fixed-iteration, table-free (dudect step [41] + ctgrind).
 #   verification/hctr2_poc.c — gf_dot: POLYVAL multiply, same masking (dudect step [82] + ctgrind).
-GF_BLESSED="src/Common/Shamir.c verification/hctr2_poc.c"
+#   src/Crypto/AesCt.c       — gf_mul/gf_inv: the SAME masked/branchless construction as Shamir.c, kept
+#                              local so this Crypto module has no Common dependency; the copy is
+#                              independently proven CORRECT (FIPS-197 KAT) and constant-time (ctgrind CLEAN)
+#                              at suite step [88] (constant-time AES-256 S-box = affine(gf_inv)).
+GF_BLESSED="src/Common/Shamir.c verification/hctr2_poc.c src/Crypto/AesCt.c"
 # Constant-time compare/equal (OR-accumulate `d |= a[i]^b[i]`, no early-out). Blessed:
 #   src/Common/Keyslot.c         — KeyslotConstTimeEqual: the SHIPPING compare (dudect step [46] + ctgrind).
 #   verification/keyslot_poc.c   — ct_equal: reviewed OR-accumulate in the standalone keyslot PoC.

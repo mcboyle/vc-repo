@@ -155,6 +155,9 @@ export VC_ENABLE_SHAMIR_MAC ?= 0
 export VC_ENABLE_SHARECODE ?= 0
 export VC_ENABLE_FLASH_WARN ?= 0
 export VC_ENABLE_V2FORMAT ?= 0
+export VC_ENABLE_CTAES ?= 0
+export VC_ENABLE_POLY1305 ?= 0
+export VC_ENABLE_ADIANTUM ?= 0
 export VC_ENABLE_HKF ?= 0
 
 export GCC_GTEQ_440 := 0
@@ -307,6 +310,33 @@ endif
 ifeq "$(origin V2FORMAT)" "command line"
 	VC_ENABLE_V2FORMAT := 1
 	C_CXX_FLAGS += -DVC_ENABLE_V2FORMAT
+endif
+
+# Constant-time AES-256 (opt-in; T2-3/T2-4). `make CTAES=1` links Crypto/AesCt.o (table-free/branch-free
+# AES-256, S-box = affine(gf_inv)), for the Adiantum non-AES-NI once-per-sector call. A plain `make` stays
+# byte-for-byte stock. docs/CT-AES-SPEC.md.
+ifeq "$(origin CTAES)" "command line"
+	VC_ENABLE_CTAES := 1
+	C_CXX_FLAGS += -DVC_ENABLE_CTAES
+endif
+
+# Poly1305 one-shot MAC (opt-in; T2-4c). `make POLY1305=1` links Crypto/Poly1305.o (RFC 8439). Consumed by
+# the Adiantum mode as its polynomial hash; independently useful. A plain `make` stays byte-for-byte stock.
+# docs/CT-AES-SPEC.md / docs/ADIANTUM-SPEC.md.
+ifeq "$(origin POLY1305)" "command line"
+	VC_ENABLE_POLY1305 := 1
+	C_CXX_FLAGS += -DVC_ENABLE_POLY1305
+endif
+
+# Adiantum wide-block mode (opt-in; T2-4d). `make ADIANTUM=1` links Crypto/Adiantum.o and implies CTAES +
+# POLY1305 (its AES-256 block runs through the constant-time AesCt, its stream through chacha256, its hash
+# through Poly1305). Whole-sector encrypt kills XTS's 16-byte malleability on the non-AES-NI path. A plain
+# `make` stays byte-for-byte stock. docs/ADIANTUM-SPEC.md.
+ifeq "$(origin ADIANTUM)" "command line"
+	VC_ENABLE_ADIANTUM := 1
+	VC_ENABLE_CTAES := 1
+	VC_ENABLE_POLY1305 := 1
+	C_CXX_FLAGS += -DVC_ENABLE_ADIANTUM -DVC_ENABLE_CTAES -DVC_ENABLE_POLY1305
 endif
 
 #------ Linux configuration ------

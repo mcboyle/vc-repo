@@ -104,4 +104,22 @@ ifeq "$(VC_ENABLE_V2FORMAT)" "1"
 OBJS += ../Common/V2Format.o
 endif
 
+# Constant-time AES-256 (opt-in via `make CTAES=1`). Self-contained (no Common dependency); a default
+# build stays byte-for-byte stock.
+ifeq "$(VC_ENABLE_CTAES)" "1"
+OBJS += ../Crypto/AesCt.o
+endif
+
+# Poly1305 one-shot MAC (opt-in via `make POLY1305=1`; also pulled in by ADIANTUM=1). Self-contained; a
+# default build stays byte-for-byte stock.
+ifeq "$(VC_ENABLE_POLY1305)" "1"
+OBJS += ../Crypto/Poly1305.o
+endif
+
+# Adiantum wide-block mode (opt-in via `make ADIANTUM=1`). Depends on Crypto/AesCt.o + Crypto/chacha256.o
+# (already in the build) + Crypto/Poly1305.o; a default build stays byte-for-byte stock.
+ifeq "$(VC_ENABLE_ADIANTUM)" "1"
+OBJS += ../Crypto/Adiantum.o
+endif
+
 include $(BUILD_INC)/Makefile.inc

@@ -1,7 +1,8 @@
-# Constant-time AES-256 (T2-3)
+# Constant-time AES-256 (T2-3 / T2-4a / T2-4b)
 
-**Status: PROVEN as a PoC (suite step `[87]`); promotion into `src/` as a selectable cipher is the
-follow-up.** Required by the wide-block roadmap: on non-AES-NI hardware the **Adiantum** branch still
+**Status: PROVEN (step `[87]`) AND promoted to a shippable module `src/Crypto/AesCt.{c,h}` (step `[88]`,
+gated `-DVC_ENABLE_CTAES` / `make CTAES=1`).** Required by the wide-block roadmap: on non-AES-NI hardware
+the **Adiantum** branch still
 invokes AES-256 on **one 16-byte block per sector** (D-4). That call must be **constant-time** — a
 table-based AES leaks the key through cache timing (measured LEAKY at ct step A1 / `docs/CT-HARDENING-R17.md`)
 — but it does **not** need to be fast (one block per sector, A-2). This spec records the construction and
@@ -52,10 +53,27 @@ with the constant-time property demonstrated directly:
   once-per-sector Adiantum AES call, so "exists and is constant-time" is the bar; a faster bitsliced
   variant (Boyar–Peralta S-box / BearSSL-style) can replace the S-box later behind the same interface
   without changing the format.
-- **Promotion.** This PoC is standalone; wiring it as a selectable AES implementation in `src/` (so the
-  Adiantum `EncryptionMode` picks it on non-AES-NI hardware) is the follow-up, and unblocks **T2-4**
-  (HCTR2/Adiantum promotion), which in turn unblocks the T1-1 v2 mount/create call sites
-  (`docs/V2-FORMAT-SPEC.md`).
+- **Promotion — DONE (step `[88]`).** The cipher now ships as `src/Crypto/AesCt.{c,h}` (gated
+  `-DVC_ENABLE_CTAES` / `make CTAES=1`, `Crypto/AesCt.o` in `Core.make`), **encrypt AND decrypt** (both
+  wide-block modes use the inverse direction): `AesCtInit256` (expand once) + `AesCtEncryptBlock` /
+  `AesCtDecryptBlock` (one block per sector) + `AesCtEncrypt256` / `AesCtDecrypt256` (one-shot). Decrypt is
+  the standard inverse cipher (inverse S-box `gf_inv(invAffine(y))`, InvShiftRows, InvMixColumns via the
+  branchless `gf_mul`), reusing the same round keys. Self-contained (no Common dependency; its local
+  `gf_mul`/`gf_inv` are the same proven construction, on the ct-primitive-guard allowlist). Proven by
+  linking the **real `AesCt.o`** against the real Gladman AES: FIPS-197 C.3 (encrypt + inverse) +
+  byte-for-byte agreement over 4096 random blocks in **both directions** + `Dec(Enc(x))==x` round-trip +
+  ctgrind CLEAN (encrypt and decrypt poisoned).
+- **Adiantum drop-in — PROVEN (step `[89]`, T2-4b).** The real `src/Crypto/AesCt` was substituted as
+  Adiantum's once-per-sector block cipher (`verification/adiantum_poc.c` built `-DADIANTUM_USE_CTAES
+  -DVC_ENABLE_CTAES` — a compile-time switch routing setkey/encrypt/decrypt through `AesCtInit256` /
+  `AesCtEncryptBlock` / `AesCtDecryptBlock` instead of the table Gladman AES) and still reproduces
+  **all 19 official google/adiantum KAT lines byte-for-byte** (asserted `diff`-identical to the Gladman
+  build in the same run). This closes the argument that the constant-time cipher is a behaviour-exact
+  replacement for the leaky one in the actual wide-block construction, not just in isolation. The
+  default (no-flag) Adiantum build is unchanged, so step `[24]` is unaffected. Remaining T2-4: the
+  **HCTR2/Adiantum `EncryptionMode` classes** that call this on the non-AES-NI path (real-build C++),
+  which in turn unblocks the T1-1 v2 mount/create call sites (`docs/V2-FORMAT-SPEC.md`). A faster
+  bitsliced S-box can drop into `AesCt.c` later behind the same interface.
 - **Scope.** Confidentiality-side hardening of the block cipher; no format or deniability impact.
 
 ## Cross-references

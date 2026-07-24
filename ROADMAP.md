@@ -343,10 +343,18 @@ brief:
   ways — the **official FIPS-197 C.3 AES-256 vector** (`8ea2b7ca…`) + byte-for-byte agreement with the
   **real in-tree Gladman AES** over 4096 random blocks — and demonstrated **ctgrind-CLEAN** under valgrind
   (key+plaintext poisoned, 0 secret-dependent branches/indexes; contrast: table AES is LEAKY,
-  `docs/CT-HARDENING-R17.md` / ct step A1). Remaining: promote into `src/` as a selectable AES so the
-  Adiantum `EncryptionMode` picks it on non-AES-NI hardware — this **unblocks HCTR2/Adiantum promotion
-  [D-4]** and thence the T1-1 v2 mount/create call sites. A faster bitsliced S-box can drop in later
-  behind the same interface.
+  `docs/CT-HARDENING-R17.md` / ct step A1). **Promoted to a shippable module** `src/Crypto/AesCt.{c,h}`
+  (gated `-DVC_ENABLE_CTAES` / `make CTAES=1`; step `[88]`: real `AesCt.o` **encrypt+decrypt** vs FIPS-197
+  C.3 + real Gladman agreement over 4096 blocks in both directions + `Dec(Enc(x))==x` + ctgrind CLEAN),
+  and **proven a byte-exact drop-in for Adiantum** (step `[89]`, T2-4b: `AesCt` substituted as Adiantum's
+  block cipher reproduces all 19 official google/adiantum KAT lines). The **Adiantum mode itself is now a
+  shippable module** `src/Crypto/Adiantum.{c,h}` (gated `-DVC_ENABLE_ADIANTUM` / `make ADIANTUM=1`; T2-4d
+  step `[91]`: real `Adiantum.o` linked against the real `AesCt.o` + `chacha256.o` + `Poly1305.o`
+  reproduces every official vector both directions == python), together with its polynomial hash promoted
+  to `src/Crypto/Poly1305.{c,h}` (T2-4c step `[90]`: RFC 8439 §2.5.2/A.3 + reference agreement). Remaining
+  **T2-4**: the HCTR2/Adiantum `EncryptionMode` classes that call `AdiantumEncrypt`/`AdiantumDecrypt` (and
+  `AesCt` for HCTR2) per sector on the non-AES-NI path (real-build C++), which unblocks the T1-1 v2
+  mount/create call sites. A faster bitsliced S-box can drop into `AesCt.c` later behind the same interface.
 - **SSD deniability warning at decoy creation [A-1] — blocking for the decoy feature (D-13 audience).**
   TRIM reveals which sectors are free (breaking free-space-indistinguishable-from-random); wear-levelling
   cannot be disabled and leaves hidden-volume-creation residue in retired pages. **Now partly built:** the
