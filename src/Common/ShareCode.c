@@ -333,8 +333,7 @@ int ShareCodeCodex32Decode (const char *str, int *k, char id[4], char *shareInde
 	if (slen < 3 || slen > SHARECODE_CODEX32_MAX_LEN - 1) return SHARECODE_ERR_FORMAT;
 	if (sc_tolower (str[0]) != 'm' || sc_tolower (str[1]) != 's' || str[2] != '1') return SHARECODE_ERR_FORMAT;
 
-	dlen = slen - 3;
-	if (dlen > SHARECODE_CODEX32_MAX_LEN) return SHARECODE_ERR_FORMAT;
+	dlen = slen - 3;   /* <= SHARECODE_CODEX32_MAX_LEN - 4 by the slen cap above; data[] write is in bounds */
 	isLong = dlen >= 96;
 	csumLen = isLong ? MS32_CSUM_LONG : MS32_CSUM_SHORT;
 	if (dlen < 6 + 1 + csumLen) return SHARECODE_ERR_FORMAT;   /* k+id+index + >=1 payload + checksum */
