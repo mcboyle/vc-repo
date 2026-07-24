@@ -2543,3 +2543,41 @@ if [ -n "$SB_CC" ] \
 else
 	skip_step " no compiler for the hkf salt-bind test (see /tmp/sb_log)"
 fi
+echo "[94] ristretto255 THIRD oracle — libsodium (RFC 9496 A.1 + A.2) cross-checks the from-scratch group (D-8)"
+# D-8 adopts libsodium's ristretto255 for the shipped network-share / OPRF group. This step stands
+# libsodium up as an RFC-9496-anchored oracle and cross-checks the from-scratch group ENCODING against it.
+# It PASSES on what agrees (A.1 base multiples: from-scratch == libsodium == RFC) and hard-asserts the
+# libsodium oracle reproduces RFC 9496 A.1 + A.2. The hash-to-group divergence the cross-check surfaced is
+# a documented finding (docs/OPRF-SPEC.md; ROADMAP D-8), not chased here — D-8 deletes the bespoke map.
+# libsodium is a VERIFICATION-only oracle (never linked into the product). Skip cleanly if it is absent
+# (default suite needs only clang + python); CI installs libsodium-dev.
+RX_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then RX_CC="$c"; break; fi; done
+RX_SCFLAGS=""; RX_SLIBS=""; RX_SRUN=""
+if pkg-config --exists libsodium 2>/dev/null; then
+	RX_SCFLAGS="$(pkg-config --cflags libsodium)"; RX_SLIBS="$(pkg-config --libs libsodium)"
+elif [ -n "${LIBSODIUM_PREFIX:-}" ] && [ -f "${LIBSODIUM_PREFIX}/include/sodium.h" ]; then
+	RX_SCFLAGS="-I${LIBSODIUM_PREFIX}/include"; RX_SLIBS="-L${LIBSODIUM_PREFIX}/lib -lsodium"; RX_SRUN="${LIBSODIUM_PREFIX}/lib"
+elif [ -f /tmp/libsodium-build/prefix/include/sodium.h ]; then
+	RX_SCFLAGS="-I/tmp/libsodium-build/prefix/include"; RX_SLIBS="-L/tmp/libsodium-build/prefix/lib -lsodium"; RX_SRUN="/tmp/libsodium-build/prefix/lib"
+fi
+RX_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+if [ -n "$RX_CC" ] && [ -n "$RX_SLIBS" ] \
+   && $RX_CC -O2 $RX_SCFLAGS "$HERE/ristretto255_libsodium_xcheck.c" $RX_SLIBS -o /tmp/rx_xcheck 2>/tmp/rx_log \
+   && $RX_CC -O2 -Wno-implicit-function-declaration $RX_NOASM $INC -I$SRCROOT/Crypto -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/rx_sha2.o 2>>/tmp/rx_log \
+   && $RX_CC -O2 -Wno-implicit-function-declaration $RX_NOASM $INC -I$SRCROOT/Crypto "$HERE/oprf_ristretto_poc.c" /tmp/rx_sha2.o -o /tmp/rx_poc 2>>/tmp/rx_log; then
+	if LD_LIBRARY_PATH="$RX_SRUN" /tmp/rx_xcheck > /tmp/rx_ref.txt 2>/tmp/rx_diag.txt; then
+		grep -E 'A\.2 hash-to-group KAT OK|libsodium .* ristretto255 oracle|A\.1 \+ A\.2 reproduced' /tmp/rx_diag.txt | sed 's/^/    /'
+		/tmp/rx_poc | grep '^REF ristretto' > /tmp/rx_poc_a1.txt
+		if diff -q /tmp/rx_ref.txt /tmp/rx_poc_a1.txt >/dev/null; then
+			echo "    MATCH: from-scratch ristretto255 == libsodium == RFC 9496 A.1 (group encoding + base scalar-mult)"
+			echo "    FINDING (documented): the bespoke hash-to-group (Elligator map) is NON-RFC — it diverges from RFC 9496 A.2 / libsodium; only the group-encoding layer above is RFC-anchored. D-8 replaces the map with libsodium. See docs/OPRF-SPEC.md."
+		else
+			echo "    A.1 CROSS-CHECK MISMATCH (from-scratch group encoding disagrees with libsodium/RFC)"; diff /tmp/rx_ref.txt /tmp/rx_poc_a1.txt | head; exit 1
+		fi
+	else
+		echo "    LIBSODIUM RFC 9496 KAT FAILED (oracle does not reproduce the standard)"; cat /tmp/rx_diag.txt; exit 1
+	fi
+else
+	skip_step " libsodium not available (apt install libsodium-dev, or set LIBSODIUM_PREFIX) — D-8 ristretto255 third oracle"
+fi
