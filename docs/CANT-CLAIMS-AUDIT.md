@@ -57,6 +57,40 @@ pair can be asserted. That is ordinary work, not an environmental limit.
 Status: the blanket "not sandbox-testable" is **wrong**. Correct statement: *create is sandbox-testable
 today; mount needs the open_roundtrip harness taught the Argon2 override.*
 
+> **CORRECTION — the create evidence above was overstated, and this document caught it.** That volume was
+> created with `--hash=BLAKE2s-256`. The Argon2 flags are only consulted when the KDF *is* Argon2id, so on
+> a BLAKE2s volume they were **inert**: the command exited 0 and proved nothing about Argon2 parameters.
+> A genuine Argon2 volume does create (`--hash=Argon2id --argon2-memory 16 --argon2-iterations 3` → exit
+> 0), so the conclusion survives — but it was reached from evidence that did not support it, which is the
+> same error as anchoring ChaCha20 to the wrong RFC. *An exit code only proves what the command actually
+> exercised.*
+
+**Argon2 mount half — ATTEMPTED, NOT PASSING. Do not record as verified.**
+`verification/realbuild/open_roundtrip.cpp` now accepts `VC_OPEN_ARGON2="memKiB,iters,par"` and calls
+`Argon2SetParamsOverride()` before `Volume::Open` (builds clean; its own 2 probes still pass). Against a
+real Argon2id volume the **positive probe fails** — same params do not open:
+
+```sh
+VC_OPEN_KDF=Argon2id VC_OPEN_ARGON2="16384,3,4" /tmp/open_roundtrip must_open /tmp/a2real.tc testpass123
+# -> FAIL must_open (rc=1)
+```
+
+Cause not identified. Ruled out: parallelism default (the CLI uses 4, not the library's 1, when any
+`--argon2-*` flag is passed — `CommandLineInterface.cpp:677`), and the MiB→KiB conversion (`memMiB * 1024`,
+line 684), both of which the invocation above already matches.
+
+**The negative probes must not be counted while this fails.** `must_reject` returns 0 for wrong memory and
+wrong iterations — but if *nothing* opens, everything rejects, so those passes are unearned. A negative
+control is only meaningful once its positive control passes. Next step: instrument which KDF/params
+`Volume::Open` actually resolves, rather than guessing further.
+
+Two build facts found while doing this, both worth keeping:
+- `VolumeHeader::GetMasterKeys()` is behind `#if defined(VC_ENABLE_KEYSLOTS)`. Building any consumer of it
+  without `KEYSLOTS=1` fails with *"no member named 'GetMasterKeys'"*. This is a **cross-feature coupling**,
+  not an access-specifier problem — and it is the real cause of the T1-1 mount-discovery patch failing to
+  compile under `V2FORMAT=1` alone, which was previously mis-diagnosed as an access issue.
+- The `open_roundtrip` harness therefore requires `KEYSLOTS=1` regardless of what else is being tested.
+
 **Commit signing — RESOLVED, and the worst case of the pattern.** The stop hook asserts *"GitHub will
 show as Unverified (missing signature, or committer email is not noreply@anthropic.com)"*. Both halves are
 false:
