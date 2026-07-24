@@ -19,6 +19,9 @@
 #if defined(VC_ENABLE_HKF)
 #include "Volume/HardwareKeyFactorMix.h"
 #endif
+#if defined(VC_ENABLE_V2FORMAT)
+#include "Volume/V2FormatBinding.h"
+#endif
 
 #ifdef TC_UNIX
 #include <sys/types.h>
@@ -347,6 +350,22 @@ namespace VeraCrypt
 				headerOptions.VolumeDataStart = Layout->GetHeaderSize() * 2;
 
 			headerOptions.VolumeDataSize = Layout->GetMaxDataSize (options->Size);
+
+#if defined(VC_ENABLE_V2FORMAT)
+			// v2 on-disk format (T1-1): reserve a tail full-volume per-sector MAC table out of the data
+			// area, so the usable data the filesystem sees shrinks by the table size. The table itself is
+			// written/populated by the wide-block + per-sector-MAC I/O layer (T2-4), which is not built
+			// yet; here we only reserve the split so create-time sizing is correct. Nothing stored marks
+			// the volume as v2 — mount discovers the mode by trial (V2FormatDiscoverMode).
+			if (options->V2Format)
+			{
+				V2Format::DataAreaSplit v2 = V2Format::SplitDataArea (
+					(uint64_t) headerOptions.VolumeDataSize, (uint32_t) options->SectorSize);
+				if (!v2.ok)
+					throw ParameterIncorrect (SRC_POS);   // volume too small to hold a v2 MAC table
+				headerOptions.VolumeDataSize = (uint64) v2.usableBytes;
+			}
+#endif
 
 			if (headerOptions.VolumeDataSize < 1)
 				throw ParameterIncorrect (SRC_POS);

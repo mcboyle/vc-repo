@@ -39,6 +39,12 @@ namespace VeraCrypt
 		shared_ptr <EncryptionAlgorithm> EA;
 		bool Quick;
 		bool EMVSupportEnabled;
+#if defined(VC_ENABLE_V2FORMAT)
+		// v2 on-disk format (T1-1): reserve a tail per-sector MAC table at create time. Set by the
+		// --v2-format CLI switch. The wide-block cipher + MAC-table population are T2-3/T2-4; here we
+		// only reserve the data-area split (docs/V2-FORMAT-SPEC.md).
+		bool V2Format;
+#endif
 
 		struct FilesystemType
 		{

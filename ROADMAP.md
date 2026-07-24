@@ -237,9 +237,22 @@ the on-disk format design review is **not** waived.
   anchors `tag0 = 8a0dcab3…` / `table_hash = 26618168…`): (A) mode discrimination with **nothing stored**
   via a per-mode domain-separated MAC key over ciphertext (+ anti-downgrade binding, + v1 fallthrough);
   (B) full-volume MAC-table indistinguishability — byte-uniform, free slots read as free not tamper, and a
-  hidden-volume overwrite of the outer's free region still reads as free. The remaining T1-1 work is
-  product-code integration (real-build): the actual on-disk table sizing/placement and the mount trial
-  loop in the C++ path.
+  hidden-volume overwrite of the outer's free region still reads as free. **The shippable module is now
+  built & proven** (`src/Common/V2Format.{c,h}`, gated `-DVC_ENABLE_V2FORMAT` / `make V2FORMAT=1`; step
+  `[85]`, HMAC-SHA256 over the real in-tree `Sha2.c` vs independent python, anchors `K_mac[hctr2] =
+  ef82a0ba…` / `tag0 = fecde672…`): per-mode MAC keys, per-sector tag, const-time verify, the
+  store-nothing mount `V2FormatDiscoverMode`, and the MAC-table layout math (16-byte slot, tail-of-data
+  split). Shipping PRF is HMAC-SHA256 (no vetted in-tree BLAKE3 exists; the format is PRF-agnostic, BLAKE3
+  stays the target). The **C++ binding seam is built & link-proven** (`src/Volume/V2FormatBinding.h`, step
+  `[86]`: a g++ TU drives the real `V2Format.o`+`Sha2.o`, reproducing the `tag0` anchor through the C++
+  layer, same pattern as `hkf_cli_test.cpp`). The **create-side call site is wired** (real-build compile
+  only, gated `VC_ENABLE_V2FORMAT`): `--v2-format` CLI → `VolumeCreationOptions::V2Format` →
+  `VolumeCreator.cpp` reserves the tail MAC table via `V2Format::SplitDataArea` (threads like `--quick`;
+  default build byte-for-byte stock so CI's compile matrix doesn't exercise it). Remaining T1-1 work is the
+  **mount-side** `DiscoverMode` call site + **populating** the reserved table + backup-header mirroring +
+  real-media validation — all blocked on the wide-block cipher mode classes (HCTR2/Adiantum as an
+  `EncryptionMode`, T2-3/T2-4): no mode to select, no sector-0 read, nothing to write the table until those
+  exist.
 - **Anti-forensic (AF) key splitting** (LUKS/TKS1) — **core proven AND keyslot-format integration
   built & proven (`[FORMAT]` done); real-flash validation remains.** The concrete answer to the
   SSD-remnant caveat: diffuse a keyslot's wrapped key across s stripes so recovery needs all of them
@@ -322,11 +335,18 @@ brief:
   `Hacl_EC_Ed25519` primitives without an independent audit (that glue would be new unverified C). Watch:
   reopen if HACL\*/libcrux ships verified ristretto255. Supersedes the "constant-time group for shipping"
   remaining-work in both proven-group entries above.
-- **Constant-time AES — now on the critical path [D-4 / A-2].** Required by the Adiantum branch's
-  single-block-per-sector AES-256 call on non-AES-NI hardware. Because it runs once per sector, not over
-  the whole sector, it only has to **exist**, not be fast — a bitsliced / constant-time implementation is
-  acceptable even if slow. Blocks the HCTR2/Adiantum promotion [D-4] on the non-AES-NI path. (The table-AES
-  cache-timing leak this replaces is measured under ctgrind, `docs/CT-HARDENING-R17.md`.)
+- **Constant-time AES [D-4 / A-2] — CORE PROVEN (step `[87]`); src promotion is the follow-up.** Required
+  by the Adiantum branch's single-block-per-sector AES-256 call on non-AES-NI hardware; it only has to
+  **exist** and be constant-time, not be fast. **Built the cheapest correct way** (`verification/ctaes_poc.c`,
+  `docs/CT-AES-SPEC.md`): the S-box is `affine(gf_inv(x))` using the project's proven branchless GF(2⁸)
+  arithmetic (Shamir.c, ctgrind-clean step `[41]`), so the cipher is table-free/branch-free. Proven two
+  ways — the **official FIPS-197 C.3 AES-256 vector** (`8ea2b7ca…`) + byte-for-byte agreement with the
+  **real in-tree Gladman AES** over 4096 random blocks — and demonstrated **ctgrind-CLEAN** under valgrind
+  (key+plaintext poisoned, 0 secret-dependent branches/indexes; contrast: table AES is LEAKY,
+  `docs/CT-HARDENING-R17.md` / ct step A1). Remaining: promote into `src/` as a selectable AES so the
+  Adiantum `EncryptionMode` picks it on non-AES-NI hardware — this **unblocks HCTR2/Adiantum promotion
+  [D-4]** and thence the T1-1 v2 mount/create call sites. A faster bitsliced S-box can drop in later
+  behind the same interface.
 - **SSD deniability warning at decoy creation [A-1] — blocking for the decoy feature (D-13 audience).**
   TRIM reveals which sectors are free (breaking free-space-indistinguishable-from-random); wear-levelling
   cannot be disabled and leaves hidden-volume-creation residue in retired pages. **Now partly built:** the

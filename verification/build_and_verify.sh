@@ -2240,3 +2240,108 @@ if [ -n "$VF_CC" ] && "$VF_CC" -O2 -Wall -I"$HERE" "$HERE/v2format_poc.c" -o /tm
 else
 	skip_step " no compiler for the v2-format PoC (see /tmp/vf_log)"
 fi
+
+echo "[85] v2 on-disk format — SHIPPING module (src/Common/V2Format.c, HMAC-SHA256 over real Sha2.c) vs independent python"
+# The step-[84] PoC proved the format LOGIC PRF-agnostically (keyed-BLAKE3). This proves the SHIPPING
+# module that instantiates the same logic on HMAC-SHA256 over the REAL in-tree Crypto/Sha2.c (no new
+# crypto dependency), gated VC_ENABLE_V2FORMAT: per-mode MAC keys, per-sector tag over ciphertext, the
+# mount-time MODE DISCOVERY that stores nothing (correct mode found; wrong key/legacy -> NONE -> v1),
+# const-time verify, and the MAC-table layout math. Links the real Sha2 object like the DuressToken step
+# [7]; v2format_module_reference.py is an independent hashlib HMAC-SHA256. See docs/V2-FORMAT-SPEC.md.
+VM_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then VM_CC="$c"; break; fi; done
+VM_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+VM_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+VM_GC="-ffunction-sections -fdata-sections"
+VM_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$VM_CC" ] \
+   && "$VM_CC" -O2 $VM_WNO $VM_NOASM $VM_GC -DVC_ENABLE_V2FORMAT $VM_INC -c "$SRCROOT/Common/V2Format.c" -o /tmp/v2m.o 2>/tmp/v2m.log \
+   && "$VM_CC" -O2 $VM_WNO $VM_NOASM $VM_GC $VM_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/v2m_sha2.o 2>>/tmp/v2m.log \
+   && "$VM_CC" -O2 $VM_WNO $VM_NOASM -DVC_ENABLE_V2FORMAT $VM_INC "$HERE/v2format_module_test.c" /tmp/v2m.o /tmp/v2m_sha2.o -Wl,--gc-sections -o /tmp/v2m_test 2>>/tmp/v2m.log; then
+	if /tmp/v2m_test > /tmp/v2m_c.txt; then
+		grep -E 'PASS$|FAIL$' /tmp/v2m_c.txt | sed 's/^/    /'
+		grep -q '^V2 FORMAT MODULE TESTS PASSED' /tmp/v2m_c.txt || { echo "    V2 FORMAT MODULE TESTS FAILED"; exit 1; }
+		python3 "$HERE/v2format_module_reference.py" > /tmp/v2m_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+		grep '^REF' /tmp/v2m_c.txt > /tmp/v2m_c_ref.txt
+		if diff -q /tmp/v2m_c_ref.txt /tmp/v2m_py.txt >/dev/null; then
+			echo "    MATCH: shipping V2Format (real Sha2 HMAC-SHA256) == independent python over $(wc -l < /tmp/v2m_c_ref.txt) REF lines"
+		else
+			echo "    MISMATCH"; diff /tmp/v2m_c_ref.txt /tmp/v2m_py.txt; exit 1
+		fi
+	else
+		grep -E 'FAIL$' /tmp/v2m_c.txt | sed 's/^/    /'; echo "    V2 FORMAT MODULE TESTS FAILED"; exit 1
+	fi
+else
+	skip_step " no compiler accepted the stock Crypto sources for the V2Format module (see /tmp/v2m.log)"
+fi
+
+echo "[86] v2 on-disk format — C++ binding link-proof (src/Volume/V2FormatBinding.h) over the real C module"
+# The mount/create paths call the format core through a C++ glue header (V2FormatBinding.h, same pattern
+# as HardwareKeyFactorMix.h). This link-proves that seam: a g++ TU includes the binding and drives the
+# REAL Common/V2Format.o + Sha2.o (like hkf_cli_test.cpp link-proves the HKF C module), reproducing the
+# step-[85] tag0 anchor (fecde672..) through the C++ layer. The product mount/create CALL SITES that use
+# this seam are owner-gated real-build (blocked on the wide-block cipher mode classes) — see the header.
+VC_CC=""; VC_CXX=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then VC_CC="$c"; break; fi; done
+for c in g++ clang++ c++; do if command -v "$c" >/dev/null 2>&1; then VC_CXX="$c"; break; fi; done
+VC_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+VC_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+VC_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$VC_CC" ] && [ -n "$VC_CXX" ] \
+   && "$VC_CC" -O2 $VC_WNO $VC_NOASM -ffunction-sections -fdata-sections -DVC_ENABLE_V2FORMAT $VC_INC -c "$SRCROOT/Common/V2Format.c" -o /tmp/v2b.o 2>/tmp/v2b.log \
+   && "$VC_CC" -O2 $VC_WNO $VC_NOASM -ffunction-sections -fdata-sections $VC_INC -c "$SRCROOT/Crypto/Sha2.c" -o /tmp/v2b_sha2.o 2>>/tmp/v2b.log \
+   && "$VC_CXX" -O2 -std=c++14 $VC_NOASM -DVC_ENABLE_V2FORMAT $VC_INC "$HERE/v2format_cpp.cpp" /tmp/v2b.o /tmp/v2b_sha2.o -Wl,--gc-sections -o /tmp/v2b_cpp 2>>/tmp/v2b.log; then
+	if /tmp/v2b_cpp > /tmp/v2b_out.txt; then
+		grep -E 'PASS$|FAIL$' /tmp/v2b_out.txt | sed 's/^/    /'
+		grep -qF 'V2 FORMAT C++ BINDING LINK-PROOF PASSED' /tmp/v2b_out.txt || { echo "    V2 FORMAT C++ BINDING LINK-PROOF FAILED"; exit 1; }
+		grep -q '^REF cpp_tag0 fecde672c46895b69b783821435a7afa$' /tmp/v2b_out.txt \
+			|| { echo "    C++ binding tag0 != step-[85] anchor"; exit 1; }
+		echo "    MATCH: C++ binding drives the real V2Format.o (tag0 == step-[85] anchor fecde672..)"
+	else
+		grep -E 'FAIL$' /tmp/v2b_out.txt | sed 's/^/    /'; echo "    V2 FORMAT C++ BINDING LINK-PROOF FAILED"; exit 1
+	fi
+else
+	skip_step " no C/C++ compiler pair for the V2Format C++ binding (see /tmp/v2b.log)"
+fi
+
+echo "[87] Constant-time AES-256 (research T2-3) — FIPS-197 KAT + real Gladman agreement + ctgrind CLEAN"
+# The Adiantum non-AES-NI branch calls AES-256 once per sector; it must EXIST and be constant-time, not
+# fast (D-4/A-2). ctaes_poc.c builds it table-free/branch-free by computing the S-box as affine(gf_inv(x))
+# with the project's PROVEN constant-time GF(2^8) arithmetic (Shamir.c, dudect+ctgrind clean step [41]).
+# Correctness proven the usual two ways: the OFFICIAL FIPS-197 C.3 AES-256 vector + byte-for-byte
+# agreement with the REAL in-tree Gladman AES (Aescrypt/Aeskey/Aestab) over 4096 random blocks. The
+# constant-time property is demonstrated directly under valgrind/memcheck when available (poison key +
+# plaintext -> CLEAN). See docs/CT-AES-SPEC.md.
+AX_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then AX_CC="$c"; break; fi; done
+AX_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+AX_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+AX_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$AX_CC" ] \
+   && "$AX_CC" -O2 $AX_WNO $AX_NOASM $AX_INC -c "$SRCROOT/Crypto/Aescrypt.c" -o /tmp/ax_aescrypt.o 2>/tmp/ax.log \
+   && "$AX_CC" -O2 $AX_WNO $AX_NOASM $AX_INC -c "$SRCROOT/Crypto/Aeskey.c"   -o /tmp/ax_aeskey.o   2>>/tmp/ax.log \
+   && "$AX_CC" -O2 $AX_WNO $AX_NOASM $AX_INC -c "$SRCROOT/Crypto/Aestab.c"   -o /tmp/ax_aestab.o   2>>/tmp/ax.log \
+   && "$AX_CC" -O2 $AX_WNO $AX_NOASM $AX_INC "$HERE/ctaes_poc.c" /tmp/ax_aescrypt.o /tmp/ax_aeskey.o /tmp/ax_aestab.o -lm -o /tmp/ctaes 2>>/tmp/ax.log; then
+	if /tmp/ctaes > /tmp/ax_out.txt; then
+		grep -E 'PASS$|FAIL$' /tmp/ax_out.txt | sed 's/^/    /'
+		grep -q '^CT-AES POC PASSED' /tmp/ax_out.txt || { echo "    CT-AES POC FAILED"; exit 1; }
+		grep -q '^REF fips197_aes256 8ea2b7ca516745bfeafc49904b496089$' /tmp/ax_out.txt || { echo "    FIPS-197 anchor mismatch"; exit 1; }
+		grep -q '^REF agree_random 4096 0$' /tmp/ax_out.txt || { echo "    real-AES agreement mismatch"; exit 1; }
+		echo "    MATCH: constant-time AES-256 == FIPS-197 C.3 + real Gladman AES (4096 random blocks)"
+		# constant-time DEMONSTRATION under valgrind if present (else it is a documented real-build/CI leg)
+		if command -v valgrind >/dev/null 2>&1 \
+		   && "$AX_CC" -O2 $AX_WNO $AX_NOASM -DCT_USE_VALGRIND $AX_INC "$HERE/ctaes_poc.c" /tmp/ax_aescrypt.o /tmp/ax_aeskey.o /tmp/ax_aestab.o -lm -o /tmp/ctaes_vg 2>>/tmp/ax.log; then
+			if valgrind -q --error-exitcode=99 /tmp/ctaes_vg >/dev/null 2>/tmp/ax_vg.txt; then
+				echo "    ctgrind: CLEAN under memcheck (key+plaintext poisoned; 0 secret-dependent branches/indexes)"
+			else
+				echo "    ctgrind: LEAK detected in constant-time AES (unexpected)"; sed 's/^/      /' /tmp/ax_vg.txt | head; exit 1
+			fi
+		else
+			echo "    (valgrind absent — ctgrind CLEAN demonstration is a real-build/CI leg)"
+		fi
+	else
+		grep -E 'FAIL$' /tmp/ax_out.txt | sed 's/^/    /'; echo "    CT-AES POC FAILED"; exit 1
+	fi
+else
+	skip_step " no compiler accepted the stock Crypto sources for constant-time AES (see /tmp/ax.log)"
+fi

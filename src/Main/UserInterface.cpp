@@ -1530,6 +1530,9 @@ const FileManager fileManagers[] = {
 				options->Password = cmdLine.ArgPassword;
 				options->Pim = cmdLine.ArgPim;
 				options->Quick = cmdLine.ArgQuick;
+#if defined(VC_ENABLE_V2FORMAT)
+				options->V2Format = cmdLine.ArgV2Format;
+#endif
 				options->Size = cmdLine.ArgSize;
 				options->Type = cmdLine.ArgVolumeType;
 

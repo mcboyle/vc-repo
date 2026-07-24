@@ -115,8 +115,13 @@ uses** — which *reveals the hidden volume*. That failure mode is the single th
 ### Layout
 
 A contiguous **MAC table** sized for **every** data sector of the volume, placed at a deterministic
-offset (a function of volume size) between the header group and the data it protects. For each data
-sector `i` the table holds one fixed-width slot:
+offset (a function of volume size). The shipping module (step `[85]`) places it at the **tail of the data
+area** (`V2FormatSplitDataArea`), so the **front** of the volume — header group + data start — stays
+byte-identical in structure to v1, and a v2 volume is not distinguishable from v1 by its early layout.
+Slot width is **16 bytes** (`V2_MAC_TAG_LEN`, a 128-bit truncated tag); the usable data area shrinks by
+the table size, and the table region must still be clamped below a hidden-volume start
+(`docs/KEYSLOTS-SPEC.md` reasons about the same clamp). For each data sector `i` the table holds one
+fixed-width slot:
 
 - **written sectors** → the real tag `keyed-BLAKE3(K_mac, le64(i) ‖ ciphertext_i)[0..16]`
   (`docs/PERSECTOR-AUTH-SPEC.md`, proven step `[21]`);
@@ -154,6 +159,46 @@ free space — it is **not** flagged as tampering. Consequences, each a deniabil
 - The MAC table and any v2 data-area state **must be mirrored into the backup header group** (the 3rd/4th
   64 KiB slots) or header recovery silently drops integrity — a real-build acceptance item.
 
+## Shipping module (`src/Common/V2Format.{c,h}`, step `[85]`)
+
+The format's shippable core exists and is proven two ways (real in-tree `Sha2.c` vs independent python,
+byte-identical over 9 REF lines; suite step `[85]`, gated `-DVC_ENABLE_V2FORMAT` / `make V2FORMAT=1`):
+`V2FormatDeriveModeKey`, `V2FormatSectorTag`, `V2FormatSectorVerify` (const-time), `V2FormatDiscoverMode`
+(the store-nothing mount trial), and the layout math (`V2FormatMacTableBytes` / `V2FormatSplitDataArea` /
+`V2FormatSlotOffset`).
+
+**Shipping PRF: HMAC-SHA256 over the in-tree `Crypto/Sha2.c`.** There is no vetted in-tree BLAKE3, and
+adding one would be a large unverified dependency; HMAC-SHA256 is the fork's existing MAC workhorse
+(DuressToken, KeyslotKdf), so the shipping module adds **no new crypto dependency**. The step-`[84]`
+reference PoC proved the same format **logic** with keyed-BLAKE3 — the format is **PRF-agnostic**, and
+keyed-BLAKE3 remains the target if a vetted in-tree BLAKE3 is ever added (the two would be selectable by a
+PRF-id under the same trial machinery, exactly as HKF mix v2↔v1 already are). Anchors (HMAC-SHA256):
+`K_mac[hctr2] = ef82a0ba…`, `tag0 = fecde672…`.
+
+**C++ binding (`src/Volume/V2FormatBinding.h`, step `[86]`).** The mount/create paths reach the module
+through a header-only C++ glue (same pattern as `HardwareKeyFactorMix.h`): `V2Format::DiscoverMode`,
+`V2Format::SplitDataArea`, `V2Format::ModeIsV2`, in namespace `VeraCrypt`, over plain byte buffers. It is
+**link-proven** standalone — a g++ TU drives the real `V2Format.o` + `Sha2.o` and reproduces the step-`[85]`
+`tag0` anchor through the C++ layer (exactly as `hkf_cli_test.cpp` link-proves the HKF C module). When
+`VC_ENABLE_V2FORMAT` is off the helpers degrade to safe no-ops (`DiscoverMode` → v1), so a stock build is
+unaffected. This header is the seam the mount/create call sites plug into.
+
+**Create-side call site — WIRED (real-build compile only).** The cipher-independent half of the create
+path is in place, gated `VC_ENABLE_V2FORMAT`: a `--v2-format` CLI switch → `CommandLineInterface::ArgV2Format`
+→ `VolumeCreationOptions::V2Format` → `Core/VolumeCreator.cpp`, where `V2Format::SplitDataArea` reserves the
+tail MAC table out of `headerOptions.VolumeDataSize` (the usable data the filesystem sees shrinks by the
+table; a volume too small to hold a table is rejected). This threads through exactly like the `--quick`
+switch. It is **real-build-only for compilation** — the default build (no flag) is byte-for-byte stock, so
+CI's compile matrix does not exercise it; validated by inspection against the `--quick` precedent, like the
+HKF C++ wiring.
+
+**Remaining (real-build, owner-gated):** the **mount-side** call site — `DiscoverMode` in the mount trial
+(Core/Volume open, after unlock, reading data sector 0 + its tag) — plus **writing/populating** the reserved
+MAC table at create, backup-header mirroring, and real-media validation. These are **blocked on the
+wide-block cipher mode classes** (HCTR2/Adiantum as an `EncryptionMode` + a per-sector MAC I/O layer, i.e.
+T2-3/T2-4): there is no mode to select among, no sector-0 ciphertext to read, and nothing to write the table
+bytes until those exist. The create-side reservation above is the furthest the format can wire without them.
+
 ## HKF-v2 salt binding (D-1) fits here, not separately
 
 The D-1 salt-binding migration (bind the volume salt into HKDF-Extract so the same factor yields a
@@ -189,10 +234,12 @@ This is the same parameter-binding principle proven for the header parameters in
 
 ## What is NOT decided here (for the design proper / owner)
 
-- **MAC slot width and table offset formula** — fix the exact bytes-per-sector overhead and the
-  size→offset function; validate the table never collides with the hidden-volume start
-  (`docs/KEYSLOTS-SPEC.md` already reasons about clamping below the hidden start).
-- **Sector size interaction** — MAC-table sizing across 512 vs 4096-byte sectors.
+- **MAC slot width and table offset formula — DECIDED and implemented** (step `[85]`): 16-byte slot,
+  one per data sector, table at the tail of the data area (`V2FormatSplitDataArea`), sized up to a whole
+  sector. Still needs real-media validation that the tail placement is clamped below the hidden-volume
+  start on an actual decoy/hidden layout.
+- **Sector size interaction** — the layout math takes `sectorSize` (512 vs 4096) and is unit-tested at
+  512; the create/mount path must pass the volume's real sector size through.
 - **Migration UX** — v1→v2 is a re-encrypt (new format), not an in-place flag flip; scope with R22.
 - **Verification plan** — before any code: a Python reference for (a) the trial-mount discriminator and
   (b) the MAC-table-with-keystream-free-slots indistinguishability, then the two-way proof against real

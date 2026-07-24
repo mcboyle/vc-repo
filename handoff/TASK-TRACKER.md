@@ -71,9 +71,30 @@ over 9 REF lines; anchors `tag0 = 8a0dcab3…`, `table_hash = 26618168…`, tabl
 discrimination with nothing stored + v1 fallthrough + anti-downgrade; (B) full-volume MAC-table
 indistinguishability — byte-uniform, free reads-as-free, hidden-overwrite reads-as-free.
 
-Still owner-gated for **product-code integration** (real-build: on-disk table sizing/placement + the C++
-mount trial loop). Open sub-decisions (MAC slot width, table offset formula, sector-size interaction,
-migration UX) remain per the spec.
+**Shippable module now built & proven** (`src/Common/V2Format.{c,h}`, gated `-DVC_ENABLE_V2FORMAT` /
+`make V2FORMAT=1`; suite step `[85]`, HMAC-SHA256 over the real in-tree `Sha2.c` vs independent python,
+byte-identical over 9 REF lines; anchors `K_mac[hctr2]=ef82a0ba…`, `tag0=fecde672…`): `V2FormatDeriveModeKey`,
+`V2FormatSectorTag`, `V2FormatSectorVerify` (const-time), `V2FormatDiscoverMode` (store-nothing mount
+trial), and the layout math (`V2FormatMacTableBytes`/`V2FormatSplitDataArea`/`V2FormatSlotOffset`).
+Resolved sub-decisions: **16-byte slot**, **tail-of-data table placement** (front stays v1-identical),
+sector-size-parameterised sizing. Shipping PRF is **HMAC-SHA256** (no vetted in-tree BLAKE3; step-[84]
+BLAKE3 PoC proved the same logic PRF-agnostically; BLAKE3 stays the target under the same trial machinery).
+
+**C++ binding seam built & link-proven** (`src/Volume/V2FormatBinding.h`, suite step `[86]`): namespace
+`VeraCrypt::V2Format` helpers (`DiscoverMode`/`SplitDataArea`/`ModeIsV2`) over byte buffers, same pattern as
+`HardwareKeyFactorMix.h`; a g++ TU drives the real `V2Format.o`+`Sha2.o` and reproduces the `tag0` anchor
+through the C++ layer. Degrades to safe no-ops when the flag is off.
+
+**Create-side call site WIRED** (real-build compile only, gated `VC_ENABLE_V2FORMAT`): `--v2-format` CLI
+switch → `CommandLineInterface::ArgV2Format` → `VolumeCreationOptions::V2Format` → `Core/VolumeCreator.cpp`
+reserves the tail MAC table via `V2Format::SplitDataArea` (threads exactly like `--quick`). Default build
+(no flag) byte-for-byte stock, so CI's compile matrix doesn't exercise it — validated by inspection against
+the `--quick` precedent, same as the HKF C++ wiring.
+
+Still owner-gated (blocked on the wide-block cipher mode classes = T2-3/T2-4): the **mount-side**
+`DiscoverMode` call site (needs a sector-0 read), **populating** the reserved MAC table at create (needs the
+cipher + MAC I/O), backup-header mirroring, real-media validation, and the migration UX (v1→v2 re-encrypt,
+scope with R22). The create-side reservation is the furthest the format wires without those classes.
 
 ---
 
@@ -83,7 +104,7 @@ migration UX) remain per the spec.
 |---|---|---|---|---|
 | **T2-1** | Bind volume salt in **HKF-v2** HKDF-Extract per Rank-1 | D-1 | TODO | Code change; migration handled by T1-3. |
 | **T2-2** | Recovery-share encoding: **codex32 default + bech32m ≤ 89 chars**; add BIP-173 insertion-deletion note to `docs/VSS-SPEC.md` | D-2 | TODO | 89 = written constant. Closes R-3. |
-| **T2-3 [gate]** | **Constant-time AES** (bitsliced OK; needn't be fast — one block/sector) | D-4, A-2 | TODO | Gates T2-4 on non-AES-NI path. |
+| **T2-3 [gate]** | **Constant-time AES** (bitsliced OK; needn't be fast — one block/sector) | D-4, A-2 | **CORE PROVEN (step [87]); src promotion follow-up** | `verification/ctaes_poc.c` + `docs/CT-AES-SPEC.md`: S-box = affine(gf_inv(x)) via proven branchless GF(2⁸) (Shamir.c). FIPS-197 C.3 (`8ea2b7ca…`) + real Gladman agreement (4096 blocks) + **ctgrind-CLEAN** (key+plaintext poisoned, 0 leaks). Remaining: promote into `src/` behind the Adiantum EncryptionMode → unblocks T2-4. |
 | **T2-4** | Promote **HCTR2 + Adiantum** into `src/`, both on every platform | D-4 | BLOCKED (T1-2, T2-3) | Adiantum still calls AES-256 once/sector → needs T2-3. |
 | **T2-5** | Replace bespoke ristretto255/Ed25519: **libsodium ≥ 1.0.21** (ristretto255) + **HACL\*** (Ed25519) | D-8 | TODO | Pin ≥ 1.0.21 (CVE-2025-69277). Do NOT hand-roll ristretto on HACL\* without audit. |
 

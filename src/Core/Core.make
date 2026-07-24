@@ -98,4 +98,10 @@ ifeq "$(VC_ENABLE_FLASH_WARN)" "1"
 OBJS += ../Common/FlashProbe.o
 endif
 
+# v2 on-disk format core (opt-in via `make V2FORMAT=1`). V2Format.o uses HMAC-SHA256 over Crypto/Sha2.o
+# (already in the build); a default build stays byte-for-byte stock.
+ifeq "$(VC_ENABLE_V2FORMAT)" "1"
+OBJS += ../Common/V2Format.o
+endif
+
 include $(BUILD_INC)/Makefile.inc

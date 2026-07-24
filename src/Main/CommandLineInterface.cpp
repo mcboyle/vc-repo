@@ -194,6 +194,9 @@ namespace VeraCrypt
 		parser.AddSwitch (L"",  L"restore-headers",		_("Restore volume headers"));
 		parser.AddSwitch (L"",	L"save-preferences",	_("Save user preferences"));
 		parser.AddSwitch (L"",	L"quick",				_("Enable quick format"));
+#if defined(VC_ENABLE_V2FORMAT)
+		parser.AddSwitch (L"",	L"v2-format",			_("Create a v2-format volume (reserve a per-sector MAC table)"));
+#endif
 		parser.AddOption (L"",	L"size",				_("Size in bytes"));
 		parser.AddOption (L"",	L"slot",				_("Volume slot number"));
 		parser.AddSwitch (L"",	L"test",				_("Test internal algorithms"));
@@ -736,6 +739,9 @@ namespace VeraCrypt
 		}
 
 		ArgQuick = parser.Found (L"quick");
+#if defined(VC_ENABLE_V2FORMAT)
+		ArgV2Format = parser.Found (L"v2-format");
+#endif
 
 		if (parser.Found (L"random-source", &str))
 			ArgRandomSourcePath = FilesystemPath (str.wc_str());
