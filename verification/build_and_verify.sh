@@ -2678,3 +2678,35 @@ if [ -n "$PB_CC" ] \
 else
 	skip_step " no compiler accepted the PBKDF2-SHA512 vector build (see /tmp/pb_cc.log)"
 fi
+
+echo "[98] in-tree ChaCha20 (real src/Crypto/chacha256.c) vs libsodium crypto_stream_chacha20 (anchor audit)"
+# ANCHOR AUDIT. In-tree ChaCha20 encrypts the keyslot VMK wrap [8] and backs the KeyScrub RAM transform
+# [6]; both were checked only against our own python. Oracle here is libsodium -- code we did not write.
+# NOTE THE VARIANT: chacha256.c is the ORIGINAL (Bernstein) framing -- 64-bit counter in words 12,13 and
+# an 8-byte nonce in words 14,15 -- NOT RFC 8439 (32-bit counter + 12-byte nonce). RFC 8439 vectors cannot
+# reproduce its keystream and a mismatch against them would be a category error, not a bug. The matching
+# oracle is crypto_stream_chacha20 (NOT ..._ietf). chacha-xmm.c needs -mssse3, as in the real build.
+CC20_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then CC20_CC="$c"; break; fi; done
+CC20_SCFLAGS=""; CC20_SLIBS=""; CC20_SRUN=""
+if pkg-config --exists libsodium 2>/dev/null; then
+	CC20_SCFLAGS="$(pkg-config --cflags libsodium)"; CC20_SLIBS="$(pkg-config --libs libsodium)"
+elif [ -n "${LIBSODIUM_PREFIX:-}" ] && [ -f "${LIBSODIUM_PREFIX}/include/sodium.h" ]; then
+	CC20_SCFLAGS="-I${LIBSODIUM_PREFIX}/include"; CC20_SLIBS="-L${LIBSODIUM_PREFIX}/lib -lsodium"; CC20_SRUN="${LIBSODIUM_PREFIX}/lib"
+elif [ -f /tmp/libsodium-build/prefix/include/sodium.h ]; then
+	CC20_SCFLAGS="-I/tmp/libsodium-build/prefix/include"; CC20_SLIBS="-L/tmp/libsodium-build/prefix/lib -lsodium"; CC20_SRUN="/tmp/libsodium-build/prefix/lib"
+fi
+printf 'volatile int g_hasSSE2=0,g_hasAVX2=0,g_hasSSE42=0,g_hasAVX=0,g_hasSSSE3=0,g_hasAESNI=0,g_hasSHA256=0,g_isIntel=0,g_isAMD=0,g_hasSSE41=0,g_hasRDRAND=0,g_hasRDSEED=0;\n' > /tmp/cc20_stub.c
+CC20_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$CC20_CC" ] && [ -n "$CC20_SLIBS" ] \
+   && "$CC20_CC" -O2 -mssse3 -Wno-implicit-function-declaration $CC20_INC -c "$SRCROOT/Crypto/chacha-xmm.c" -o /tmp/cc20_xmm.o 2>/tmp/cc20.log \
+   && "$CC20_CC" -O2 -Wno-implicit-function-declaration $CC20_SCFLAGS $CC20_INC "$HERE/chacha20_libsodium_xcheck.c" \
+        "$SRCROOT/Crypto/chacha256.c" /tmp/cc20_xmm.o /tmp/cc20_stub.c $CC20_SLIBS -o /tmp/cc20_xcheck 2>>/tmp/cc20.log; then
+	if LD_LIBRARY_PATH="$CC20_SRUN" /tmp/cc20_xcheck > /tmp/cc20_out.txt 2>&1; then
+		grep -E 'MATCH|MISMATCH' /tmp/cc20_out.txt | sed 's/^/    /'
+		grep -q '^CHACHA20 LIBSODIUM XCHECK: in-tree ChaCha20 == libsodium' /tmp/cc20_out.txt \
+			|| { echo "    CHACHA20 XCHECK FAILED"; cat /tmp/cc20_out.txt; exit 1; }
+	else echo "    CHACHA20 XCHECK RUN FAILED"; cat /tmp/cc20_out.txt; exit 1; fi
+else
+	skip_step " libsodium or compiler unavailable for the ChaCha20 cross-check (see /tmp/cc20.log)"
+fi
