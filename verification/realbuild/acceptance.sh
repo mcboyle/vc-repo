@@ -350,6 +350,21 @@ else
   pend "network-share (McCallum-Relyea) enroll/unlock CLI + transport (docs/NETWORK-SHARE-SPEC.md)"
 fi
 
+echo; echo "=== Tier 2b: in-process Volume::Open round-trip (library-level, no kernel) ==="
+# Links the real Core/Volume/Platform archives and calls Volume::Open directly (open_roundtrip.sh):
+# correct password opens + recovers a non-trivial master key, wrong password rejects, and — on an
+# HKF_SIMULATOR build — correct factor opens while wrong-factor / password-alone reject (2FA, through
+# the salt-bound T2-1 derivation). No kernel dm-crypt. Reuses the product this script already built.
+if [ -f "$SRC/Volume/Volume.a" ] && [ -f "$SRC/Core/Core.a" ] && [ -f "$SRC/Platform/Platform.a" ]; then
+  if VC_OR_SKIP_BUILD=1 bash "$HERE/open_roundtrip.sh" ${FLAGS:-} >/"$WORK/or.log" 2>&1; then
+    ok "in-process Volume::Open round-trip (plain open/reject + factor 2FA) — open_roundtrip.sh"
+  else
+    bad "in-process Volume::Open round-trip failed"; sed 's/^/    /' "$WORK/or.log" | tail -15
+  fi
+else
+  skip "in-process Volume::Open round-trip — product archives absent (a prebuilt binary was supplied, not built here)"
+fi
+
 echo; echo "=== Tier 3: real hardware (OUT OF SCOPE — documented, needs devices) ==="
 skip "YubiKey / FIDO2 USB round-trip (physical token)"
 skip "KeyScrub logind screen-lock / udev new-device triggers (desktop session)"

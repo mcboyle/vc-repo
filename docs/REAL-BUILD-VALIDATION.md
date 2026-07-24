@@ -42,7 +42,7 @@ whose CLI/mount glue is the remaining work (so it doubles as a live checklist).
 | 2 | Fork builds with all flags | 0 | `make NOGUI=1 KEYSLOTS=1 …` links (this is where the AF-split link gap was caught) | wired |
 | 3 | Balloon as `--hash` | 2 | create + mount + dismount a `--hash=Balloon` volume | **create proven**; mount blocked only by kernel dm-crypt |
 | 4 | Argon2 explicit params | 2 | create + mount with `--argon2-memory/-iterations`; **mount with different params must fail** | **PROVEN to the kernel boundary** (see below) |
-| 5 | HKF factor (simulator) | 2 | create + mount with `--hkf-backend simulator`; wrong secret fails | **PROVEN to the kernel boundary** (same secret → key OK; wrong secret AND password-alone → rejected) |
+| 5 | HKF factor (simulator) | 2 | create + mount with `--hkf-backend simulator`; wrong secret fails | **PROVEN in-process** (`verification/realbuild/open_roundtrip.{cpp,sh}`, CI-gated): correct factor opens via the real `Volume::Open` and recovers a non-trivial master key; wrong factor AND password-alone both throw `PasswordIncorrect`. Only the final dm-crypt table load needs a real kernel |
 | 6 | Multiple keyslots enroll/open/rotate/revoke | 2 | `--keyslot-add/open/rotate/kill/list` round-trip; duress-slot hook | **PROVEN** — CLI lifecycle + all 3 backends + **mount-time auto-search** (plain `--mount` tries slots; normal slot rebuilds the header & reaches dm-crypt, duress slot fires the safe duress action). Only the final dm-crypt table load needs a real kernel |
 | 7 | Duress-dismount end-to-end | 2 | mounted volumes + `--duress-dismount` + duress passphrase → all dismount + scrub | **registration + recognition-routing PROVEN** (`--duress-register`; duress pass routes to the action, real pass mounts, wrong tag falls through). Force-dismount of live mounts needs kernel dm-crypt |
 | 8 | Network-share (MR) unlock | 2+ | enroll against a Tang-style server, unlock; off-network stays locked | **transport round-trip PROVEN** over a real socket to a forked server (step `[49]`); off-network + wrong-server fail. Remaining: HTTP(S) to a *live* Tang server + CLI wiring |
@@ -280,26 +280,36 @@ sandbox does verify for the C path: the **new wrapper's logic** (constants, seam
 control flow) compiles clean against the real `Common/HardwareKeyFactor.h` in an isolated micro-TU on
 gcc + clang; the pattern mirrors the pre-existing `#if defined(VC_ENABLE_HKF)` block two lines above.
 
-**Sandbox CANNOT (permanent — real-build only):** a behavioural **header round-trip** through the real
-`CreateVolumeHeaderInMemory` → `ReadVolumeHeader` (C path, Windows) or `VolumeHeader::Decrypt` (C++ path).
-That requires *linking the whole mount/create pipeline* — every cipher, `EncryptionModeXTS`, `Pkcs5`, the
-`EncryptionThreadPool` runtime — which the verification suite has never done and is not its convention.
-Confirmed: `build_and_verify.sh` references `Volumes.c` only in a comment (never links it); `hkf_cpp.cpp`
-is a reference-only harness ("needs the compiled VeraCrypt C++ objects"). Therefore the v2/v1 version-try
-**mount round-trip, the wrong-factor rejection end-to-end, and real-token round-trips are REAL-BUILD
-acceptance items**, not suite steps. The sandbox proof stops at the **seam level** (suite step `[81]`,
-`hkf_mixv2_wiring_test.c`): the process-wide active-config seam (`HKFSetActiveConfig`), compute-once
-(`HKFComputeActiveResponse`, one backend query across both version attempts), v2-first/v1-fallback
-dispatch over the real `HKFApplyIfConfiguredVer`, wrong-factor-opens-neither, and cross-path
-byte-identity (C create path == the C++ overload's operations) — all over the real compiled
-`HardwareKeyFactor.o`, with the v2-enrolled key additionally cross-checked against the independent
-python HKDF.
+**Sandbox NOW DOES (C++ path — updated):** a behavioural **header round-trip** through the real
+`VolumeHeader::Decrypt` **is** now exercised in-process. `verification/realbuild/open_roundtrip.cpp` links
+the actual `Core.a`/`Volume.a`/`Platform.a` and calls `Volume::Open` directly — the whole C++ mount
+pipeline (every cipher, `EncryptionModeXTS`, `Pkcs5`, the factor mix) — with **no kernel dm-crypt**. It
+proves, against a volume the CLI created: correct password opens and recovers a **non-trivial master
+key**; wrong password throws `PasswordIncorrect`; and on an `HKF_SIMULATOR` build the correct factor opens
+while a **wrong factor and password-alone are both rejected** (the 2FA property), through the salt-bound
+(T2-1) derivation. `verification/realbuild/open_roundtrip.sh` runs the matrix and is **gated in CI**
+(the `product-build` job, against the full-featured archives). This flips items 1, 3 and the factor 2FA
+below from real-build-only to sandbox-verified for the **C++ (Linux app) path**.
 
-Acceptance items to run on a real build for the Rank-1 wiring:
+**Sandbox CANNOT (permanent — real-build only):** the **C path** header round-trip through
+`CreateVolumeHeaderInMemory` → `ReadVolumeHeader` (`Volumes.c`, the **Windows driver / shared** path) —
+that file compiles only under the Windows driver toolchain (see above). The **kernel dm-crypt table
+load** (an actual mount) and **real-token** (YubiKey/FIDO2 USB) round-trips also remain real-build/hardware
+items. The in-process harness stops exactly at the kernel boundary; the seam-level proof (suite step
+`[81]`, `hkf_mixv2_wiring_test.c`) still stands underneath it — the process-wide active-config seam
+(`HKFSetActiveConfig`), compute-once (`HKFComputeActiveResponse`), v2-first/v1-fallback dispatch over the
+real `HKFApplyIfConfiguredVer`, and cross-path byte-identity — over the real compiled `HardwareKeyFactor.o`.
+
+Acceptance items to run on a real build for the Rank-1 wiring
+(**items 1 and 3 are now covered in-process by `open_roundtrip.{cpp,sh}`** — no kernel needed; the rest
+still need a real mount or the Windows toolchain):
 1. Create a factored volume with the flag on (⇒ v2); mount it — succeeds on the **first** (v2) attempt.
+   **In-process: `open_roundtrip must_open <vol> <pw> <factor>` opens via `Volume::Open`.**
 2. Create a factored volume with the flag off / forced v1; mount with the flag on — succeeds via the
-   **v1 fallback** (v2 tried first and failed).
-3. Wrong factor: mount opens **neither** version.
+   **v1 fallback** (v2 tried first and failed). *(Still real-build: T2-1 removed the v1-only build knob,
+   so a v1-mix volume can no longer be created here to open under a v2 build.)*
+3. Wrong factor: mount opens **neither** version. **In-process: `open_roundtrip must_reject <vol> <pw>
+   <wrong-factor>` and password-alone both throw `PasswordIncorrect`.**
 4. No factor configured: single-pass mount, derived header key byte-identical to a control build without
    `VC_ENABLE_HKF_MIX_V2`.
 5. YubiKey/FIDO2: the try loop performs **one** token round-trip per mount attempt, not two (compute the
