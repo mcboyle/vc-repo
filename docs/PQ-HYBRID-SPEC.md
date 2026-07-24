@@ -37,6 +37,24 @@ combiner is a PRF keyed by the concatenated secrets, so **either** secret remain
 output pseudorandom — a quantum break of the classical exchange, or a future ML-KEM break, alone
 reveals nothing.
 
+## Parameter licence — do not alter the ML-KEM parameters (R-5)
+
+The parameters in the Construction block above (`n=256, q=3329, k=3, eta1=eta2=2, du=10, dv=4`) are the
+FIPS-203 ML-KEM-768 set and **must stay fixed.** This is a *licensing* constraint, not only a security
+one. NIST's US-Portfolio patent licence for the standardized PQC algorithms is royalty-free only for
+implementations that meet the definition of the standardized algorithm. Quoting §2.9 verbatim:
+
+> "For the sake of clarity, any implementation or use of the LICENSED PATENT by LICENSOR, SUBLICENSEE
+> or any of the party that does not meet the definition of the PQC ALGORITHM, including any
+> modification, extension, or derivation of the parameters of the PQC ALGORITHM, is not an
+> implementation or use of the PQC algorithm."
+
+Consequence, in one line: **altering the ML-KEM parameters exits the royalty-free abeyance** and
+re-exposes the implementer to the underlying patents. Any proposal to tune these values is therefore an
+FTO question for the counsel brief (`docs/COUNSEL-BRIEF.md`), not a routine parameter change. This
+constraint must survive staff turnover — it is the reason the numbers are frozen, recorded here so no
+future reader "optimizes" them. `[COUNSEL-REVIEW]`
+
 ## What the PoC proves (`verification/mlkem_poc.c` + `mlkem_reference.py`, step `[25]`)
 
 Three-way agreement against the primary authority:

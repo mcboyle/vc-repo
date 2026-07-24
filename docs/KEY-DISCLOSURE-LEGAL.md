@@ -27,8 +27,8 @@ every entry is `[COUNSEL-REVIEW]` for current text and application.
 | Jurisdiction | Instrument | Exposure (as understood; verify) |
 |---|---|---|
 | United Kingdom | RIPA 2000 Part III **s.49** (notice to disclose), **s.53** (offence of failing to comply) | Up to **2 years**; **5 years** for national-security or child-indecency cases. A s.49 notice can compel the key or the plaintext; failure is the offence, independent of the data. |
-| France | Code pénal **Art. 434-15-2** | Up to **3 years** + fine for refusing to hand over a decryption key to an authority; **5 years** if disclosure would have prevented or limited a crime. |
-| Australia | Crimes Act 1914 **s.3LA** (assistance order) | Up to **10 years** for non-compliance (raised from 2 years). The *Assistance and Access Act 2018* separately compels providers, not end users, but is part of the same posture. |
+| France | Code pénal **Art. 434-15-2** | Up to **3 years** and **€270,000**, rising to **5 years and €450,000** if disclosure would have prevented or limited a crime. Amounts per **Conseil constitutionnel décision 2018-696 QPC**, quoting the text as amended by loi 2016-731. `[COUNSEL-REVIEW]` |
+| Australia | Crimes Act 1914 **s.3LA** (assistance order) | **Tiered** penalty (not a single ceiling): **5 years / 300 penalty units**, rising to **10 years / 600 penalty units** for aggravated cases, per the current AustLII text of s.3LA (raised from 2 years). The *Assistance and Access Act 2018* separately compels providers, not end users, but is part of the same posture. `[COUNSEL-REVIEW]` |
 
 In these jurisdictions a **decoy handed over as if it were the whole volume** is not a safe move: if the
 existence of a hidden volume is later established (see the multi-snapshot / media limits in
@@ -50,6 +50,14 @@ excusing it.
   **how broadly the "foregone conclusion" exception applies** to a password — whether the state must
   already know what is on the device, or merely that the suspect knows the password. There is no
   settled national rule; do not represent one.
+- **United States — biometric unlock is a live circuit split** `[COUNSEL-REVIEW]` — compelling a
+  *biometric* (thumbprint / face) to unlock is being treated differently from compelling a password, and
+  the federal circuits now disagree: **United States v. Payne, 99 F.4th 495 (9th Cir. 2024)** held a
+  compelled thumbprint **not** testimonial; **United States v. Brown, 125 F.4th 1186 (D.C. Cir. 2025)**
+  held a compelled unlock **testimonial**. **No SCOTUS merits ruling** resolves the split. This
+  materially changes the threat model for a user who unlocks **biometrically** rather than by
+  passphrase — the password-in-the-mind protection above may not carry over. Feeds the counsel brief
+  (`docs/COUNSEL-BRIEF.md`).
 - Any jurisdiction not listed above: **treated as unknown here.** A missing row is not "no law" — it is
   "the authors did not verify it." Leave the gap rather than guessing.
 

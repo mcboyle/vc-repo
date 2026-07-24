@@ -91,4 +91,11 @@ ifeq "$(VC_ENABLE_SHARECODE)" "1"
 OBJS += ../Common/ShareCode.o
 endif
 
+# Flash-media deniability probe (opt-in via `make FLASH_WARN=1`). FlashProbe.o is self-contained C (no
+# VeraCrypt platform dependency), consumed by TextUserInterface::CreateVolume's hidden-volume warning.
+# A default build stays byte-for-byte stock.
+ifeq "$(VC_ENABLE_FLASH_WARN)" "1"
+OBJS += ../Common/FlashProbe.o
+endif
+
 include $(BUILD_INC)/Makefile.inc

@@ -74,9 +74,35 @@ const char *FlashProbeCaveat (void);
 
 /* Platform device probe (real-build glue; not exercised in the sandbox except the Linux fixture path).
    Returns the aggregated warn bitmask for a named base device. Linux: FlashProbeRotationalSysfs over
-   "/sys" plus best-effort ATA/NVMe identify. macOS: no reliable rotational flag => always warns.
+   "/sys" plus best-effort ATA/NVMe identify. macOS: parses `diskutil info` (FlashProbeMacDiskutil).
    Windows: IOCTL_STORAGE_QUERY_PROPERTY seek-penalty descriptor. */
 unsigned int FlashProbeDevice (const char *dev);
+
+/* macOS `diskutil info <dev>` output decoder. CLEAN only when the output POSITIVELY confirms rotational
+   media (a "Solid State:" line whose value is "No"); "Solid State: ... Yes" => VC_FLASH_WARN_ROTATIONAL;
+   a missing / unparseable "Solid State:" line, or NULL => VC_FLASH_WARN_UNKNOWN (fail closed). Split from
+   the popen glue so it is unit-testable with fixture strings (verification/flash_probe_test.c). */
+unsigned int FlashProbeMacDiskutil (const char *diskutilOutput);
+
+/* Reduce a device PATH to the sysfs base-device leaf the rotational probe wants, so the volume-creation
+   flow can pass the raw volume path. "/dev/sda1" -> "sda", "/dev/nvme0n1p3" -> "nvme0n1",
+   "/dev/mmcblk0p1" -> "mmcblk0", "sdb" -> "sdb". Strips a leading "/dev/", then the partition suffix
+   (trailing digits for sd/hd/vd; a trailing "pN" for nvme/mmcblk, leaving a suffix-less nvme/mmcblk base
+   untouched). Writes a NUL-terminated leaf into leafOut; returns 0 on success, non-zero if path is
+   NULL/empty or does not fit leafOut. Heuristic and fail-closed: the downstream sysfs read warns anyway
+   if the derived leaf has no rotational attribute. */
+int FlashProbeDeviceLeaf (const char *path, char *leafOut, size_t leafLen);
+
+/* Convenience for a caller holding a full device path (the creation flow): reduce it with
+   FlashProbeDeviceLeaf and run FlashProbeDevice on the leaf. A path that cannot be reduced fails closed
+   (VC_FLASH_WARN_ROTATIONAL | VC_FLASH_WARN_UNKNOWN). */
+unsigned int FlashProbePath (const char *path);
+
+/* A stable, multi-line human-readable warning for the deniability-relevant reasons set in `warn`, phrased
+   for the moment of DECOY / HIDDEN-volume creation: what this medium leaks and what the user should
+   weigh. On a CLEAN mask it returns the positive-but-still-cautioned message (the two-snapshot caveat
+   from FlashProbeCaveat always applies). Never returns NULL. */
+const char *FlashProbeWarningText (unsigned int warn);
 
 #ifdef __cplusplus
 }

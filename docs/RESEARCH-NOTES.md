@@ -92,10 +92,30 @@ future session does not re-propose a dead line from a stale backlog. One-line re
 cited sources if reconsidering.
 
 **Modes / ciphers**
-- **AEZ, FAST, XCB, EME2** (wide-block alternatives to Adiantum/HCTR2) — **don't build.** Patent
-  encumbrance and/or known side-channel and analysis concerns; Adiantum (no-AES) and HCTR2 (AES-NI) are
-  the vetted pair already in tree (`docs/ADIANTUM-SPEC.md`, `docs/HCTR2-SPEC.md`). AEZ/FAST/EME2 also
-  appear in `IDEAS-BACKLOG.md`; this is the disposition.
+- **AEZ, FAST, XCB, EME2** (wide-block alternatives to Adiantum/HCTR2) — **don't build.** The verdict
+  stands; the grounds are **per-mode security**, not patents (the earlier "patent encumbrance" phrasing
+  was wrong and is corrected below):
+  - **XCB** — *cryptanalytically broken.* Three plaintext-recovery attacks published (2024–2025); the
+    IEEE P1619.2/SISWG working group moved to remove XCB-AES from the 1619.2 standard. Do not build.
+  - **EME2** — avoid on **security** grounds, not legal ones: only a ~2^(n/2) birthday-bound security
+    guarantee, plus a data-dependent GF multiply that is a side-channel surface (Mancillas-López et al.,
+    ICISS 2009).
+  - **AEZ** — a CAESAR round-3 candidate that **missed the final portfolio**, with published
+    key-recovery attacks. Not a shipping-grade wide-block mode.
+  - **FAST** — no specific published break located; it simply adds nothing over the vetted pair, so it
+    is not worth the new-code / new-analysis cost.
+
+  Adiantum (no-AES) and HCTR2 (AES-NI) remain the vetted pair already in tree
+  (`docs/ADIANTUM-SPEC.md`, `docs/HCTR2-SPEC.md`). AEZ/FAST/EME2 also appear in `IDEAS-BACKLOG.md`; this
+  is the disposition.
+
+  **Patent record (corrected, R-1 / D-12).** The earlier claim of "patent encumbrance" over this group
+  was overbroad — it generalized a single *abandoned* filing to a group spanning three institutions. No
+  granted patent has been found covering EME/EME2/CMC. The only filing located was **US 2004/0131182**
+  (naming Rogaway of **UC Davis**; assignee the **Regents of the University of California**), **abandoned
+  in 2007** per the IEEE P1619.2/SISWG record. Phrase this as **"no patent basis found,"** not "no patent
+  problem" — the affirmative freedom-to-operate question is FTO territory and lives in the counsel brief
+  (`docs/COUNSEL-BRIEF.md`), not here.
 - **LEA as a no-AES fallback** — **don't build.** Adiantum is the recommended fallback (see HCTR2 spec);
   do not substitute LEA.
 

@@ -128,6 +128,80 @@ const char *FlashProbeCaveat (void)
 	       "volume). Do not rely on deniability if the device may be imaged on more than one occasion.";
 }
 
+unsigned int FlashProbeMacDiskutil (const char *diskutilOutput)
+{
+	const char *p;
+	if (!diskutilOutput)
+		return VC_FLASH_WARN_UNKNOWN;                 /* no data -> fail closed */
+
+	/* Find a line "Solid State: <value>" (diskutil pads with spaces). We scan case-insensitively for
+	   the label, then read the first non-space token of its value. */
+	for (p = diskutilOutput; *p; p++)
+	{
+		if ((p[0] == 'S' || p[0] == 's')
+		    && strncmp (p, "Solid State", 11) != 0
+		    && strncmp (p, "solid state", 11) != 0)
+			continue;
+		if (strncmp (p, "Solid State", 11) == 0 || strncmp (p, "solid state", 11) == 0)
+		{
+			const char *q = p + 11;
+			while (*q == ' ' || *q == '\t' || *q == ':')   /* skip label punctuation/padding */
+				q++;
+			if ((q[0] == 'N' || q[0] == 'n') && (q[1] == 'o' || q[1] == 'O'))
+				return VC_FLASH_CLEAN;                 /* "No" -> confirmed rotational on this axis */
+			if ((q[0] == 'Y' || q[0] == 'y') && (q[1] == 'e' || q[1] == 'E'))
+				return VC_FLASH_WARN_ROTATIONAL;       /* "Yes" -> SSD/flash */
+			return VC_FLASH_WARN_UNKNOWN;              /* label present, value not understood */
+		}
+	}
+	return VC_FLASH_WARN_UNKNOWN;                     /* no "Solid State" line at all -> fail closed */
+}
+
+int FlashProbeDeviceLeaf (const char *path, char *leafOut, size_t leafLen)
+{
+	const char *base;
+	size_t n, i;
+	if (!path || !leafOut || leafLen == 0)
+		return 1;
+
+	/* strip a leading "/dev/" (and any directory prefix) -> leaf name */
+	base = strrchr (path, '/');
+	base = base ? base + 1 : path;
+	n = strlen (base);
+	if (n == 0 || n >= leafLen)
+		return 1;
+	memcpy (leafOut, base, n + 1);
+
+	/* strip the partition suffix. nvme/mmcblk partitions are "pN" (e.g. nvme0n1p3); sd/hd/vd/xvd
+	   partitions are trailing digits (sda1). A suffix-less nvme/mmcblk base (nvme0n1) is left alone. */
+	if (strstr (leafOut, "nvme") || strstr (leafOut, "mmcblk"))
+	{
+		i = n;
+		while (i > 0 && leafOut[i - 1] >= '0' && leafOut[i - 1] <= '9')   /* trailing digits */
+			i--;
+		if (i > 1 && i < n && leafOut[i - 1] == 'p')                      /* preceded by 'p' => "pN" */
+			leafOut[i - 1] = '\0';                                        /* drop "pN..." */
+		/* else: no "pN" suffix (whole device) -> leave unchanged */
+	}
+	else
+	{
+		i = n;
+		while (i > 0 && leafOut[i - 1] >= '0' && leafOut[i - 1] <= '9')
+			i--;
+		if (i > 0)                       /* keep at least the alpha stem; all-digit name is left as-is */
+			leafOut[i] = '\0';
+	}
+	return leafOut[0] ? 0 : 1;
+}
+
+unsigned int FlashProbePath (const char *path)
+{
+	char leaf[128];
+	if (FlashProbeDeviceLeaf (path, leaf, sizeof leaf) != 0)
+		return VC_FLASH_WARN_ROTATIONAL | VC_FLASH_WARN_UNKNOWN;   /* cannot reduce -> fail closed */
+	return FlashProbeDevice (leaf);
+}
+
 unsigned int FlashProbeDevice (const char *dev)
 {
 #if defined(__linux__)
@@ -138,9 +212,25 @@ unsigned int FlashProbeDevice (const char *dev)
 	unsigned int rot = FlashProbeRotationalSysfs ("/sys", dev);
 	return FlashProbeAggregate (rot, VC_FLASH_CLEAN, VC_FLASH_WARN_UNKNOWN);
 #elif defined(__APPLE__)
-	/* macOS: no reliable rotational flag exposed to userspace -> always warn. */
-	(void) dev;
-	return FlashProbeAggregate (VC_FLASH_WARN_ROTATIONAL, VC_FLASH_WARN_UNKNOWN, VC_FLASH_WARN_UNKNOWN);
+	/* macOS: `diskutil info <dev>` reports "Solid State: Yes/No". Run it and decode; a failed exec or
+	   an unparseable value fails closed via FlashProbeMacDiskutil. */
+	{
+		char out[8192];
+		size_t total = 0, got;
+		FILE *pp;
+		char cmd[256];
+		int r = snprintf (cmd, sizeof cmd, "diskutil info %s 2>/dev/null", dev ? dev : "");
+		if (r < 0 || (size_t) r >= sizeof cmd)
+			return FlashProbeAggregate (VC_FLASH_WARN_ROTATIONAL, VC_FLASH_WARN_UNKNOWN, VC_FLASH_WARN_UNKNOWN);
+		pp = popen (cmd, "r");
+		if (!pp)
+			return FlashProbeAggregate (VC_FLASH_WARN_ROTATIONAL, VC_FLASH_WARN_UNKNOWN, VC_FLASH_WARN_UNKNOWN);
+		while (total + 1 < sizeof out && (got = fread (out + total, 1, sizeof out - 1 - total, pp)) > 0)
+			total += got;
+		out[total] = '\0';
+		pclose (pp);
+		return FlashProbeAggregate (FlashProbeMacDiskutil (out), VC_FLASH_CLEAN, VC_FLASH_WARN_UNKNOWN);
+	}
 #elif defined(_WIN32)
 	/* Windows: IOCTL_STORAGE_QUERY_PROPERTY with StorageDeviceSeekPenaltyProperty; IncursSeekPenalty
 	   == TRUE means rotational. Real-build only (needs <winioctl.h> + a device handle); fail closed
@@ -151,6 +241,26 @@ unsigned int FlashProbeDevice (const char *dev)
 	(void) dev;
 	return FlashProbeAggregate (VC_FLASH_WARN_ROTATIONAL, VC_FLASH_WARN_UNKNOWN, VC_FLASH_WARN_UNKNOWN);
 #endif
+}
+
+const char *FlashProbeWarningText (unsigned int warn)
+{
+	if (FlashProbeIsClean (warn))
+		return "This device appears to be rotational (magnetic) media. Hidden-volume deniability is "
+		       "plausible here, BUT it still fails against an adversary who images the device on more "
+		       "than one occasion (a changed-block classifier over two snapshots detects hidden-volume "
+		       "writes). Do not rely on deniability if the device may be imaged more than once.";
+
+	/* One combined, stable message covering the deniability-relevant reasons. We do not branch a distinct
+	   string per bit (the reasons co-occur and the user action is the same); we name what was detected. */
+	return "WARNING: this medium is NOT safe for a deniable hidden/decoy volume.\n"
+	       "The device is a solid-state / flash device, is unknown, or supports TRIM/discard. On flash "
+	       "media the flash translation layer (wear levelling, over-provisioning, TRIM) leaves "
+	       "hidden-volume-creation residue in retired pages that chip-off recovery can read, and TRIM "
+	       "reveals which blocks are unallocated \xE2\x80\x94 both break the assumption that free space is "
+	       "indistinguishable from random. A hidden volume created here is NOT plausibly deniable against "
+	       "a forensic examiner. Use rotational media (or accept that deniability does not hold), and note "
+	       "that even rotational media does not survive repeated imaging (multi-snapshot attack).";
 }
 
 #endif /* VC_ENABLE_FLASH_WARN */
