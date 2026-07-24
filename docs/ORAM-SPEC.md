@@ -1,9 +1,12 @@
 # Write-only ORAM — access-pattern hiding for multi-snapshot deniability
 
-**Status: DESIGN — the access-pattern-hiding property is proven in a PoC; integration into the volume
-layout is a large, real-build effort (see §6).** This is the **real** mitigation for the
-multi-snapshot attack that `docs/THREAT-MODEL.md` names as the #1 limitation of hidden volumes — and
-which no factor, decoy, or scrub in this fork addresses.
+**Status: OPT-IN EXPERIMENTAL [D-3] — the access-pattern-hiding property is proven in a PoC; integration
+into the volume layout is a large, real-build effort (see §6).** This targets the multi-snapshot attack
+that `docs/THREAT-MODEL.md` names as the #1 limitation of hidden volumes — and which no factor, decoy, or
+scrub in this fork addresses. It is **not** promoted to a flagship or default feature: the two reference
+systems it derives from were both broken in implementation (see §"Costs and honest limits"), the
+throughput cost is severe, and a required countermeasure (mandatory public-write cloak) is not yet built.
+Treat it as a research-grade, opt-in path, and read the limits section before relying on it.
 
 ## The attack it answers
 
@@ -57,6 +60,27 @@ PoC parameters (illustrative): `B=8` logical, `N=24` physical, `K=10` touched/wr
 
 ## Costs and honest limits (state these)
 
+- **Measured throughput cost (R-4).** This is not a marginal overhead. DataLair (Chakraborti et al.,
+  PoPETs 2017, Table 1) measures a **hidden write at 2.92 MB/s** against a dm-crypt **public write at
+  210.10 MB/s** — roughly a **70×** penalty; HIVE's hidden write is **0.60 MB/s**. (The comparison is
+  public-vs-hidden because dm-crypt has no hidden mode; there is no like-for-like baseline.) At these
+  rates the feature is usable only for small, infrequently-written hidden volumes.
+- **Both reference systems were broken (R-4).** The design and its security proof are not refuted, but
+  every *implementation* published to date had an exploitable flaw — a caution about how hard this is to
+  ship correctly, not a reason to abandon the construction:
+  - **HIVE** — Paterson & Strefler, ePrint 2014/901 (AsiaCCS 2015): an **RC4 keystream bias** in the
+    free-block fill made the "random" fill distinguishable. Implementation-specific; the design and proof
+    stand, but the shipped fill PRNG leaked.
+  - **DataLair** — Roche et al., CCS 2017 §6: **free-block selection was biased toward free blocks**,
+    violating write-only obliviousness — the exact property the scheme exists to provide. The authors
+    acknowledged it and proposed a fix.
+- **Mandatory public-write cloak is not built (R-4 / R13).** R13 requires that the public (decoy) volume
+  itself perform ORAM-shaped writes **unconditionally**, so that "writes are happening at all" is not
+  itself a tell — the hidden-activity signal must be cloaked by public activity of the same shape. This
+  fork's PoC does not implement that cloak; without it, a snapshot adversary who knows the decoy is idle
+  can still infer that *some* write-hiding write layer is active. This is a prerequisite for the feature,
+  tracked as part of the §6 integration work, and a reason the status is opt-in experimental, not
+  default.
 - **Write amplification.** Every logical write costs `K` physical block writes (plus reads to
   re-encrypt). This is the price of hiding the pattern; `K` and `N/B` trade security margin against
   overhead. Not free, and heavy for write-intensive workloads.
