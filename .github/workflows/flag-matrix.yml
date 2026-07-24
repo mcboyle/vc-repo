@@ -114,3 +114,24 @@ jobs:
       - uses: actions/checkout@v4
       - name: Constant-time primitive guard (self-test then full tree)
         run: ./scripts/ct-primitive-guard.sh --self-test && ./scripts/ct-primitive-guard.sh
+
+  # Build the FULL console product (NOGUI), not just the fork modules — links Volume/Core/Main so the C++
+  # mount/create wiring (previously "real-build-only", never compiled in CI) is gated on every PR. Builds
+  # BOTH stock (proves the fork doesn't break upstream VeraCrypt) and a full-featured config that exercises
+  # every fork knob's C++ (HKF + v2 salt-binding + keyslots + duress + keyscrub + sharecode + shamir-mac +
+  # flash-warn). scripts/build-product.sh does a TRUE clean first (make clean leaves Common/*.o stale, which
+  # otherwise silently mixes flag sets / breaks the KEYSCRUB link). Kernel dm-crypt mounting is not
+  # exercised (CI/containers lack the device-mapper driver) — this is a build + binary smoke.
+  product-build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install product build deps
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang yasm libwxgtk3.2-dev libpcsclite-dev libfuse-dev libfido2-dev libykpers-1-dev pkg-config
+      - name: Build stock console product (NOGUI)
+        run: ./scripts/build-product.sh NOGUI=1
+      - name: Build full-featured console product (all fork knobs)
+        run: ./scripts/build-product.sh NOGUI=1 HKF=1 HKF_SIMULATOR=1 HKF_MIX_V2_SALTBIND=1 KEYSCRUB=1 DURESS=1 KEYSLOTS=1 SHARECODE=1 SHAMIRMAC=1 FLASH_WARN=1
