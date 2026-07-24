@@ -2293,7 +2293,7 @@ if [ -n "$VC_CC" ] && [ -n "$VC_CXX" ] \
    && "$VC_CXX" -O2 -std=c++14 $VC_NOASM -DVC_ENABLE_V2FORMAT $VC_INC "$HERE/v2format_cpp.cpp" /tmp/v2b.o /tmp/v2b_sha2.o -Wl,--gc-sections -o /tmp/v2b_cpp 2>>/tmp/v2b.log; then
 	if /tmp/v2b_cpp > /tmp/v2b_out.txt; then
 		grep -E 'PASS$|FAIL$' /tmp/v2b_out.txt | sed 's/^/    /'
-		grep -q '^V2 FORMAT C\+\+ BINDING LINK-PROOF PASSED' /tmp/v2b_out.txt || { echo "    V2 FORMAT C++ BINDING LINK-PROOF FAILED"; exit 1; }
+		grep -qF 'V2 FORMAT C++ BINDING LINK-PROOF PASSED' /tmp/v2b_out.txt || { echo "    V2 FORMAT C++ BINDING LINK-PROOF FAILED"; exit 1; }
 		grep -q '^REF cpp_tag0 fecde672c46895b69b783821435a7afa$' /tmp/v2b_out.txt \
 			|| { echo "    C++ binding tag0 != step-[85] anchor"; exit 1; }
 		echo "    MATCH: C++ binding drives the real V2Format.o (tag0 == step-[85] anchor fecde672..)"
