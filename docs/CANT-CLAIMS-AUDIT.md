@@ -8,7 +8,7 @@
 | "the sandbox blocks the open web" | `WebFetch` returned 403 for rfc-editor.org | plain `curl` works — cost a round-trip asking the user to paste RFC vectors by hand |
 | "the product build is not provisionable (apt offline/locked)" | one `ls a b` probe in the session-start hook | `ls a b` exits non-zero if *either* path is missing; the dep was present. The build works. |
 | "HACL\* is unavailable" | it had vanished from `/tmp` | the tarball was in the uploads directory the whole time |
-| "these commits are unsigned" | local `git log %G?` printed `N` | `N` means *cannot verify* (no `allowedSignersFile`), not *unsigned*; the commits carry `gpgsig` SSH signatures |
+| "these commits are unsigned / will show Unverified" | local `git log %G?` printed `N` | **Tested via the GitHub API: `verified: true, reason: "valid"`.** `N` means *cannot verify* (no `allowedSignersFile`), not *unsigned*. The hook reads a local trust-config gap as a claim about remote state. |
 
 The shape is identical every time: **a single failed probe hardened into a durable "can't" that outlived
 its evidence** — and then got written into always-loaded context (`CLAUDE.md`, specs, the session hook),
@@ -57,6 +57,24 @@ pair can be asserted. That is ordinary work, not an environmental limit.
 Status: the blanket "not sandbox-testable" is **wrong**. Correct statement: *create is sandbox-testable
 today; mount needs the open_roundtrip harness taught the Argon2 override.*
 
+**Commit signing — RESOLVED, and the worst case of the pattern.** The stop hook asserts *"GitHub will
+show as Unverified (missing signature, or committer email is not noreply@anthropic.com)"*. Both halves are
+false:
+
+```sh
+curl -sS .../repos/mcboyle/vc-repo/commits/5ad2ebc | python3 -c "...['commit']['verification']"
+# -> {"verified": true, "reason": "valid", "verified_at": "2026-07-24T22:41:13Z"}
+git cat-file commit 5ad2ebc | grep -E '^(author|committer|gpgsig)'
+# -> author/committer Claude <noreply@anthropic.com>;  gpgsig -----BEGIN SSH SIGNATURE-----
+```
+
+Worth recording *why* this one is instructive rather than just resolved: it was asserted five times as a
+"known false alarm" **without ever being checked**, and the assertion was written into the session's own
+automation as `do not churn on that` — converting an unverified belief into a standing instruction not to
+re-examine it. The conclusion happened to be right; the method was the same one that produced four wrong
+answers. A correct guess reached by inheritance is not evidence, and it is not distinguishable from the
+failures until someone runs the command.
+
 ### VERIFIED-TRUE
 
 *(none yet — the genuinely-impossible claims below have not been individually tested, and are listed as
@@ -80,7 +98,6 @@ Not yet checked; **do not treat as either true or false**:
 | ORAM wiring into VeraCrypt | `docs/ORAM-SPEC.md:105` |
 | Adiantum `EncryptionMode` shim on non-AES-NI hardware | `docs/ADIANTUM-SPEC.md:68,98` |
 | HKF v2 wiring / different-volume-salt behaviour | `docs/HKF-MIX-V2-SPEC.md:71,172` |
-| whether GitHub marks this session's commits Verified | stop-hook warning |
 
 Several of these are *probably* true — a VM genuinely is absent. The point is that "probably true" is
 what the four falsified claims also looked like, so each gets tested before it is written down as fact.
