@@ -245,10 +245,14 @@ the on-disk format design review is **not** waived.
   split). Shipping PRF is HMAC-SHA256 (no vetted in-tree BLAKE3 exists; the format is PRF-agnostic, BLAKE3
   stays the target). The **C++ binding seam is built & link-proven** (`src/Volume/V2FormatBinding.h`, step
   `[86]`: a g++ TU drives the real `V2Format.o`+`Sha2.o`, reproducing the `tag0` anchor through the C++
-  layer, same pattern as `hkf_cli_test.cpp`). Remaining T1-1 work is the real-build **mount/create call
-  sites** that use the binding — blocked on the wide-block cipher mode classes (HCTR2/Adiantum as an
-  `EncryptionMode`, T2-3/T2-4): there's no mode to select nor a sector-0 read until those exist. Plus
-  backup-header mirroring and real-media validation.
+  layer, same pattern as `hkf_cli_test.cpp`). The **create-side call site is wired** (real-build compile
+  only, gated `VC_ENABLE_V2FORMAT`): `--v2-format` CLI → `VolumeCreationOptions::V2Format` →
+  `VolumeCreator.cpp` reserves the tail MAC table via `V2Format::SplitDataArea` (threads like `--quick`;
+  default build byte-for-byte stock so CI's compile matrix doesn't exercise it). Remaining T1-1 work is the
+  **mount-side** `DiscoverMode` call site + **populating** the reserved table + backup-header mirroring +
+  real-media validation — all blocked on the wide-block cipher mode classes (HCTR2/Adiantum as an
+  `EncryptionMode`, T2-3/T2-4): no mode to select, no sector-0 read, nothing to write the table until those
+  exist.
 - **Anti-forensic (AF) key splitting** (LUKS/TKS1) — **core proven AND keyslot-format integration
   built & proven (`[FORMAT]` done); real-flash validation remains.** The concrete answer to the
   SSD-remnant caveat: diffuse a keyslot's wrapped key across s stripes so recovery needs all of them

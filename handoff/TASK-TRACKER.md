@@ -85,11 +85,16 @@ BLAKE3 PoC proved the same logic PRF-agnostically; BLAKE3 stays the target under
 `HardwareKeyFactorMix.h`; a g++ TU drives the real `V2Format.o`+`Sha2.o` and reproduces the `tag0` anchor
 through the C++ layer. Degrades to safe no-ops when the flag is off.
 
-Still owner-gated: the real-build **mount/create call sites** that use the binding (`DiscoverMode` in the
-mount trial after unlock; `SplitDataArea` at create) — **blocked on the wide-block cipher mode classes**
-(HCTR2/Adiantum as an `EncryptionMode` + per-sector MAC I/O = T2-3/T2-4): there is no mode to select nor a
-sector-0 ciphertext to read until those exist. Plus backup-header mirroring, real-media validation, and the
-migration UX (v1→v2 re-encrypt, scope with R22).
+**Create-side call site WIRED** (real-build compile only, gated `VC_ENABLE_V2FORMAT`): `--v2-format` CLI
+switch → `CommandLineInterface::ArgV2Format` → `VolumeCreationOptions::V2Format` → `Core/VolumeCreator.cpp`
+reserves the tail MAC table via `V2Format::SplitDataArea` (threads exactly like `--quick`). Default build
+(no flag) byte-for-byte stock, so CI's compile matrix doesn't exercise it — validated by inspection against
+the `--quick` precedent, same as the HKF C++ wiring.
+
+Still owner-gated (blocked on the wide-block cipher mode classes = T2-3/T2-4): the **mount-side**
+`DiscoverMode` call site (needs a sector-0 read), **populating** the reserved MAC table at create (needs the
+cipher + MAC I/O), backup-header mirroring, real-media validation, and the migration UX (v1→v2 re-encrypt,
+scope with R22). The create-side reservation is the furthest the format wires without those classes.
 
 ---
 

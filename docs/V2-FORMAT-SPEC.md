@@ -183,13 +183,21 @@ through a header-only C++ glue (same pattern as `HardwareKeyFactorMix.h`): `V2Fo
 `VC_ENABLE_V2FORMAT` is off the helpers degrade to safe no-ops (`DiscoverMode` → v1), so a stock build is
 unaffected. This header is the seam the mount/create call sites plug into.
 
-**Remaining (real-build, owner-gated):** the mount/create **call sites** that use the binding —
-`DiscoverMode` in the mount trial (Core/Volume open, after unlock, reading data sector 0 + its tag) and
-`SplitDataArea` at create time (Core/VolumeCreator, when the data-area size is known) — plus backup-header
-mirroring and real-media validation. Those call sites are **blocked on the wide-block cipher mode classes**
-(HCTR2/Adiantum as an `EncryptionMode` + a per-sector MAC I/O layer, i.e. T2-3/T2-4): there is no mode to
-select among nor a sector-0 ciphertext to read until those exist. The binding + module are the seam they
-plug into; nothing else in the format is untested here.
+**Create-side call site — WIRED (real-build compile only).** The cipher-independent half of the create
+path is in place, gated `VC_ENABLE_V2FORMAT`: a `--v2-format` CLI switch → `CommandLineInterface::ArgV2Format`
+→ `VolumeCreationOptions::V2Format` → `Core/VolumeCreator.cpp`, where `V2Format::SplitDataArea` reserves the
+tail MAC table out of `headerOptions.VolumeDataSize` (the usable data the filesystem sees shrinks by the
+table; a volume too small to hold a table is rejected). This threads through exactly like the `--quick`
+switch. It is **real-build-only for compilation** — the default build (no flag) is byte-for-byte stock, so
+CI's compile matrix does not exercise it; validated by inspection against the `--quick` precedent, like the
+HKF C++ wiring.
+
+**Remaining (real-build, owner-gated):** the **mount-side** call site — `DiscoverMode` in the mount trial
+(Core/Volume open, after unlock, reading data sector 0 + its tag) — plus **writing/populating** the reserved
+MAC table at create, backup-header mirroring, and real-media validation. These are **blocked on the
+wide-block cipher mode classes** (HCTR2/Adiantum as an `EncryptionMode` + a per-sector MAC I/O layer, i.e.
+T2-3/T2-4): there is no mode to select among, no sector-0 ciphertext to read, and nothing to write the table
+bytes until those exist. The create-side reservation above is the furthest the format can wire without them.
 
 ## HKF-v2 salt binding (D-1) fits here, not separately
 

@@ -106,6 +106,9 @@ namespace VeraCrypt
 		shared_ptr <FilePath> ArgKeyslotSidecar;          // --keyslot-sidecar path (KSB_SIDECAR)
 #endif
 		bool ArgQuick;
+#if defined(VC_ENABLE_V2FORMAT)
+		bool ArgV2Format;                                 // --v2-format: create a v2-format volume (T1-1)
+#endif
 		FilesystemPath ArgRandomSourcePath;
 		uint64 ArgSize;
 		shared_ptr <VolumePath> ArgVolumePath;
