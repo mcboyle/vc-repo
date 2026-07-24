@@ -15,7 +15,7 @@ would do differently depending on the answer — so counsel can prioritise by im
 
 Cross-references: `docs/KEY-DISCLOSURE-LEGAL.md` (compelled disclosure), `docs/RESEARCH-NOTES.md` R-1
 (wide-block modes), `docs/PQ-HYBRID-SPEC.md` (ML-KEM licence), `docs/DELAY-SPEC.md` (time-release),
-`docs/IDEAS-BACKLOG.md` (OPAQUE, FROST). Source register: `repo-merge/CORRECTIONS-VERIFIED.md`.
+`docs/IDEAS-BACKLOG.md` (OPAQUE, FROST). Source register: `handoff/repo-merge/CORRECTIONS-VERIFIED.md`.
 
 ---
 
