@@ -26,6 +26,9 @@
 #include "Common/EMVToken.h"
 #include "Core/RandomNumberGenerator.h"
 #include "Application.h"
+#if defined(VC_ENABLE_FLASH_WARN)
+#include "Common/FlashProbe.h"
+#endif
 #ifdef TC_MACOSX
 #include "Main/MacOSXFormatterDevice.h"
 #endif
@@ -705,6 +708,21 @@ namespace VeraCrypt
 				}
 			}
 		}
+
+#if defined(VC_ENABLE_FLASH_WARN)
+		// Deniability of a hidden/decoy volume does not survive flash media (FTL wear-levelling and
+		// over-provisioning leave hidden-volume-creation residue; TRIM reveals free blocks). Surface an
+		// explicit warning as a code path at creation time, not just in the docs (ROADMAP A-1 / D-13).
+		// Probe the underlying device; a non-device (file-hosted) host or an unknown medium fails closed.
+		if (options->Type == VolumeType::Hidden)
+		{
+			unsigned int flashWarn = options->Path.IsDevice()
+				? FlashProbePath (string (options->Path).c_str())
+				: (VC_FLASH_WARN_ROTATIONAL | VC_FLASH_WARN_UNKNOWN);
+			if (!FlashProbeIsClean (flashWarn))
+				ShowWarning (StringConverter::ToWide (string (FlashProbeWarningText (flashWarn))));
+		}
+#endif
 
 		// Sector size
 		if (options->Path.IsDevice())

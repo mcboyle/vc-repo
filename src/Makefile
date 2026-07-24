@@ -153,6 +153,7 @@ export VC_ENABLE_KEYSLOTS ?= 0
 export VC_ENABLE_ARGON2_PARAMS ?= 0
 export VC_ENABLE_SHAMIR_MAC ?= 0
 export VC_ENABLE_SHARECODE ?= 0
+export VC_ENABLE_FLASH_WARN ?= 0
 export VC_ENABLE_HKF ?= 0
 
 export GCC_GTEQ_440 := 0
@@ -289,6 +290,14 @@ endif
 ifeq "$(origin SHARECODE)" "command line"
 	VC_ENABLE_SHARECODE := 1
 	C_CXX_FLAGS += -DVC_ENABLE_SHARECODE
+endif
+
+# Flash-media deniability warning at hidden/decoy-volume creation (opt-in). `make FLASH_WARN=1` links
+# Common/FlashProbe.o and makes TextUserInterface::CreateVolume warn when the target device is SSD/flash
+# (Linux sysfs rotational, macOS `diskutil info`) — ROADMAP A-1. A plain `make` stays byte-for-byte stock.
+ifeq "$(origin FLASH_WARN)" "command line"
+	VC_ENABLE_FLASH_WARN := 1
+	C_CXX_FLAGS += -DVC_ENABLE_FLASH_WARN
 endif
 
 #------ Linux configuration ------

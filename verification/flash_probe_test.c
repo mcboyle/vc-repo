@@ -117,6 +117,47 @@ int main (void)
 	check ("caveat string is non-empty and mentions imaging twice",
 	       FlashProbeCaveat () && strstr (FlashProbeCaveat (), "twice") != NULL);
 
+	printf ("[macOS diskutil decode (fixture strings, sandbox-testable half of the macOS path)]\n");
+	check ("'Solid State: No' -> CLEAN (confirmed rotational)",
+	       FlashProbeMacDiskutil ("   Device / Media Name: Fusion\n   Solid State:              No\n") == VC_FLASH_CLEAN);
+	check ("'Solid State: Yes' -> WARN_ROTATIONAL (SSD)",
+	       FlashProbeMacDiskutil ("   Protocol: PCI-Express\n   Solid State:              Yes\n") == VC_FLASH_WARN_ROTATIONAL);
+	check ("no 'Solid State' line -> WARN_UNKNOWN (fail closed)",
+	       FlashProbeMacDiskutil ("   Device Identifier: disk3\n   Protocol: USB\n") == VC_FLASH_WARN_UNKNOWN);
+	check ("'Solid State: Maybe' (unparseable value) -> WARN_UNKNOWN",
+	       FlashProbeMacDiskutil ("   Solid State: Maybe\n") == VC_FLASH_WARN_UNKNOWN);
+	check ("NULL diskutil output -> WARN_UNKNOWN (fail closed)",
+	       FlashProbeMacDiskutil (NULL) == VC_FLASH_WARN_UNKNOWN);
+
+	printf ("[device-path -> sysfs leaf reduction]\n");
+	{
+		char leaf[128];
+		check ("/dev/sda1 -> sda",
+		       FlashProbeDeviceLeaf ("/dev/sda1", leaf, sizeof leaf) == 0 && strcmp (leaf, "sda") == 0);
+		check ("/dev/sdb12 -> sdb",
+		       FlashProbeDeviceLeaf ("/dev/sdb12", leaf, sizeof leaf) == 0 && strcmp (leaf, "sdb") == 0);
+		check ("sdc (bare, no partition) -> sdc",
+		       FlashProbeDeviceLeaf ("sdc", leaf, sizeof leaf) == 0 && strcmp (leaf, "sdc") == 0);
+		check ("/dev/nvme0n1p3 -> nvme0n1",
+		       FlashProbeDeviceLeaf ("/dev/nvme0n1p3", leaf, sizeof leaf) == 0 && strcmp (leaf, "nvme0n1") == 0);
+		check ("/dev/nvme0n1 (whole device) -> nvme0n1 (unchanged)",
+		       FlashProbeDeviceLeaf ("/dev/nvme0n1", leaf, sizeof leaf) == 0 && strcmp (leaf, "nvme0n1") == 0);
+		check ("/dev/mmcblk0p1 -> mmcblk0",
+		       FlashProbeDeviceLeaf ("/dev/mmcblk0p1", leaf, sizeof leaf) == 0 && strcmp (leaf, "mmcblk0") == 0);
+		check ("NULL path -> error (fail closed)",
+		       FlashProbeDeviceLeaf (NULL, leaf, sizeof leaf) != 0);
+		check ("FlashProbePath on unreducible '' -> not clean (fail closed)",
+		       !FlashProbeIsClean (FlashProbePath ("")));
+	}
+
+	printf ("[creation-time warning text]\n");
+	check ("warn text for a flagged mask names flash/deniability and is non-empty",
+	       FlashProbeWarningText (VC_FLASH_WARN_ROTATIONAL) != NULL
+	       && strstr (FlashProbeWarningText (VC_FLASH_WARN_ROTATIONAL), "deniab") != NULL);
+	check ("warn text for CLEAN still carries the multi-snapshot caveat",
+	       FlashProbeWarningText (VC_FLASH_CLEAN) != NULL
+	       && strstr (FlashProbeWarningText (VC_FLASH_CLEAN), "imag") != NULL);
+
 	/* cleanup fixtures (best-effort) */
 	{
 		char cmd[1100]; snprintf (cmd, sizeof cmd, "rm -rf '%s'", root); if (system (cmd)) { /* ignore */ }
