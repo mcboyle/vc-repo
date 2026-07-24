@@ -1,8 +1,10 @@
 # Adiantum — wide-block mode (sector-atomic encryption)
 
-**Status: full construction proven against the official published vectors; the XTS-replacement wiring
-is `[FORMAT]`/real-build.** Addresses `IDEAS-BACKLOG.md` §B — the backlog calls wide-block modes "the
-single strongest *cryptographic* upgrade available to a disk encryptor."
+**Status: full construction proven against the official published vectors AND promoted to a shippable
+module `src/Crypto/Adiantum.{c,h}` (steps `[90]`/`[91]`, gated `-DVC_ENABLE_ADIANTUM` / `make ADIANTUM=1`);
+the XTS-replacement `EncryptionMode` wiring is `[FORMAT]`/real-build.** Addresses `IDEAS-BACKLOG.md` §B —
+the backlog calls wide-block modes "the single strongest *cryptographic* upgrade available to a disk
+encryptor."
 
 ## The gap it closes
 
@@ -59,6 +61,41 @@ Property checks on the 4096-byte vector, asserted identically on both sides: **s
 → ≥40% of all ciphertext bits change** including both ends of the sector (`enc_diffusion`); single-bit
 ciphertext flip → whole-sector randomized plaintext (`dec_diffusion`); wrong key and wrong tweak each
 change the output.
+
+## Shippable module (`src/Crypto/Adiantum.{c,h}`, steps `[90]`/`[91]`, T2-4c/d)
+
+The mode is now a shippable C module (gated `-DVC_ENABLE_ADIANTUM` / `make ADIANTUM=1`; default builds
+are byte-for-byte stock), so the remaining `EncryptionMode` wrapper is a thin real-build-only shim over
+proven code rather than new crypto:
+
+- **`src/Crypto/Adiantum.c`** — `AdiantumInit` / `AdiantumEncrypt` / `AdiantumDecrypt`, transcribed
+  byte-for-byte from the PoC math that reproduces every official vector. The three block primitives are
+  the **real in-tree objects**: the AES-256 block runs through the constant-time `src/Crypto/AesCt`
+  (VC_ENABLE_CTAES — one block per sector, so a table-free AES is affordable and closes the cache-timing
+  leak, `docs/CT-AES-SPEC.md`); the bulk XChaCha12 stream through `src/Crypto/chacha256`; the polynomial
+  hash through the new `src/Crypto/Poly1305`. HChaCha12, NH and the 128-bit add/sub stay local (the
+  in-tree ChaCha does not export the keyless permutation), exactly as in the proven PoC. `AdiantumEncrypt`/
+  `AdiantumDecrypt` bound-check `len ∈ [16, ADIANTUM_MAX_SECTOR]` and `tlen ≤ ADIANTUM_MAX_TWEAK`, support
+  `in == out` aliasing, and return 0 (output untouched) on a bounds violation.
+- **`src/Crypto/Poly1305.{c,h}`** (gated `-DVC_ENABLE_POLY1305` / `make POLY1305=1`, pulled in by
+  `ADIANTUM=1`) — the shippable form of the step-`[18]` RFC 8439 PoC, used as the ε-almost-Δ-universal
+  hash's polynomial term (called with key `r‖0^16` so the trailing `+s` vanishes and the output is the
+  hash mod 2^128).
+
+Proven the fork's two ways by **linking the real objects**:
+
+- **Step `[90]`** (`verification/poly1305_module_test.c`): the real `Poly1305.o` reproduces the published
+  RFC 8439 §2.5.2 (`a8061dc1…`) and A.3 #1/#2 vectors and agrees byte-for-byte with the independent
+  `verification/poly1305.h` reference over 4096 random key/length inputs.
+- **Step `[91]`** (`verification/adiantum_module_test.c`): the real `Adiantum.o` — linked against the real
+  `AesCt.o` + `chacha256.o` + `Poly1305.o` — reproduces **every official google/adiantum vector** both
+  directions (`kat_all_match`, `roundtrip_all`), cross-checked line-for-line against `adiantum_reference.py`,
+  plus whole-sector diffusion, wrong-key/wrong-tweak separation, `in==out` aliasing, and the bounds guard.
+
+Make knobs: `POLY1305=1` links `Crypto/Poly1305.o`; `ADIANTUM=1` links `Crypto/Adiantum.o` and implies
+`CTAES=1` + `POLY1305=1` (top-level `Makefile` + `Core/Core.make`). Remaining T2-4: the C++
+`EncryptionModeAdiantum` that calls `AdiantumEncrypt`/`AdiantumDecrypt` per sector and selects Adiantum on
+non-AES-NI hardware (real-build only), which then unblocks the T1-1 v2 mount/create call sites.
 
 ## Integration & honest notes
 

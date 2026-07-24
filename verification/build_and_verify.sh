@@ -2419,3 +2419,64 @@ if [ -n "$AJ_CC" ] \
 else
 	skip_step " no compiler for the Adiantum-over-constant-time-AES build (see /tmp/aj.log)"
 fi
+
+echo "[90] Poly1305 one-shot MAC — SHIPPABLE module (src/Crypto/Poly1305.c, VC_ENABLE_POLY1305) vs RFC 8439 + reference"
+# Step [18] proved the header-only PoC vs the RFC KATs + a python bigint; this proves the src/ module the
+# Adiantum mode calls, by LINKING the real Poly1305.o against the independent verification/poly1305.h.
+PM_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then PM_CC="$c"; break; fi; done
+PM_WNO="-Wno-implicit-function-declaration -Wno-unused-command-line-argument"
+PM_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$PM_CC" ] \
+   && "$PM_CC" -O2 $PM_WNO -DVC_ENABLE_POLY1305 $PM_INC -c "$SRCROOT/Crypto/Poly1305.c" -o /tmp/pm_poly.o 2>/tmp/pm.log \
+   && "$PM_CC" -O2 $PM_WNO -DVC_ENABLE_POLY1305 $PM_INC "$HERE/poly1305_module_test.c" /tmp/pm_poly.o -o /tmp/pm_test 2>>/tmp/pm.log; then
+	if /tmp/pm_test > /tmp/pm_out.txt; then
+		grep -E 'PASS$|FAIL$' /tmp/pm_out.txt | sed 's/^/    /'
+		grep -q '^POLY1305 MODULE TESTS PASSED' /tmp/pm_out.txt || { echo "    POLY1305 MODULE TESTS FAILED"; exit 1; }
+		grep -q '^REF rfc_2.5.2 a8061dc1305136c6c22b8baf0c0127a9$' /tmp/pm_out.txt || { echo "    RFC 8439 §2.5.2 anchor mismatch"; exit 1; }
+		grep -q '^REF agree_reference 4096 0$' /tmp/pm_out.txt || { echo "    reference-agreement mismatch"; exit 1; }
+		echo "    MATCH: shippable Poly1305.o == RFC 8439 §2.5.2/A.3 + verification reference (4096 random inputs)"
+	else
+		grep -E 'FAIL$' /tmp/pm_out.txt | sed 's/^/    /'; echo "    POLY1305 MODULE TESTS FAILED"; exit 1
+	fi
+else
+	skip_step " no compiler accepted the Poly1305 module build (see /tmp/pm.log)"
+fi
+
+echo "[91] Adiantum wide-block mode — SHIPPABLE module (src/Crypto/Adiantum.c, VC_ENABLE_ADIANTUM) vs official KATs + reference"
+# Links the real Adiantum.o against the real in-tree primitives it depends on — the constant-time AesCt.o,
+# the XChaCha12 stream chacha256.o, and Poly1305.o — and reproduces every official google/adiantum vector
+# both directions through the shipped code path, cross-checked against the independent adiantum_reference.py.
+A2_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then A2_CC="$c"; break; fi; done
+A2_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
+A2_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+A2_D="-DVC_ENABLE_ADIANTUM -DVC_ENABLE_CTAES -DVC_ENABLE_POLY1305"
+A2_INC="$INC -I$SRCROOT/Crypto"
+if [ -n "$A2_CC" ] \
+   && "$A2_CC" -O2 $A2_WNO $A2_NOASM $A2_D $A2_INC -c "$SRCROOT/Crypto/chacha256.c" -o /tmp/a2_chacha.o 2>/tmp/a2.log \
+   && "$A2_CC" -O2 $A2_WNO $A2_NOASM $A2_D $A2_INC -c "$SRCROOT/Crypto/AesCt.c"      -o /tmp/a2_aesct.o  2>>/tmp/a2.log \
+   && "$A2_CC" -O2 $A2_WNO $A2_NOASM $A2_D $A2_INC -c "$SRCROOT/Crypto/Poly1305.c"   -o /tmp/a2_poly.o   2>>/tmp/a2.log \
+   && "$A2_CC" -O2 $A2_WNO $A2_NOASM $A2_D $A2_INC -c "$SRCROOT/Crypto/Adiantum.c"   -o /tmp/a2_adi.o    2>>/tmp/a2.log \
+   && "$A2_CC" -O2 $A2_WNO $A2_NOASM $A2_D $A2_INC "$HERE/adiantum_module_test.c" /tmp/a2_adi.o /tmp/a2_chacha.o /tmp/a2_aesct.o /tmp/a2_poly.o -o /tmp/a2_test 2>>/tmp/a2.log; then
+	if /tmp/a2_test > /tmp/a2_out.txt; then
+		grep -E 'PASS$|FAIL$' /tmp/a2_out.txt | sed 's/^/    /'
+		grep -q '^ADIANTUM MODULE TESTS PASSED' /tmp/a2_out.txt || { echo "    ADIANTUM MODULE TESTS FAILED"; exit 1; }
+		grep -q '^REF kat_all_match YES$' /tmp/a2_out.txt || { echo "    official KAT mismatch"; exit 1; }
+		grep -q '^REF roundtrip_all YES$' /tmp/a2_out.txt || { echo "    round-trip mismatch"; exit 1; }
+		( cd "$HERE" && python3 adiantum_reference.py ) > /tmp/a2_py.txt 2>/dev/null || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+		grep -E '^REF kat_[0-9]' /tmp/a2_out.txt > /tmp/a2_ck.txt
+		grep -E '^REF kat_[0-9]' /tmp/a2_py.txt  > /tmp/a2_pk.txt
+		n2="$(wc -l < /tmp/a2_ck.txt)"
+		if [ "$n2" -ge 18 ] && diff -q /tmp/a2_ck.txt /tmp/a2_pk.txt >/dev/null; then
+			echo "    MATCH: shippable Adiantum.o (real AesCt+chacha256+Poly1305) == official KATs == python over $n2 vectors"
+		else
+			echo "    MISMATCH vs python reference"; diff /tmp/a2_ck.txt /tmp/a2_pk.txt | head -6; exit 1
+		fi
+		rm -rf "$HERE/__pycache__"
+	else
+		grep -E 'FAIL$' /tmp/a2_out.txt | sed 's/^/    /'; echo "    ADIANTUM MODULE TESTS FAILED"; exit 1
+	fi
+else
+	skip_step " no compiler accepted the Adiantum module build (see /tmp/a2.log)"
+fi
