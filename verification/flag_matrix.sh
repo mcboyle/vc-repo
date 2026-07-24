@@ -34,6 +34,11 @@ HERE="$(cd "$(dirname "$0")" && pwd)"; SRCROOT="$HERE/../src"
 INC="-I$SRCROOT -I$SRCROOT/Common -I$HERE -I$SRCROOT/Crypto -I$SRCROOT/Crypto/Argon2/include"
 WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier -Wno-unused-command-line-argument"
 NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+# This matrix sweeps VC_ENABLE_HKF_MIX_V2 to check its symbol interactions with every other flag. The
+# product-only guard in HardwareKeyFactor.h (v2 mix must ship with salt binding) is a #error, not a
+# symbol, and would spuriously fail the many pairwise cells that turn on MIX_V2 without SALTBIND; a
+# symbol-collision check is orthogonal to that build-config policy, so opt out of the guard here.
+NOASM="$NOASM -DVC_ALLOW_UNSALTED_HKF_MIX_V2"
 
 # Fork Common modules that carry gated symbols (the surface where a partial combo can collide).
 MODULES="HardwareKeyFactor KeyScrub DuressToken Keyslot KeyslotStore AfSplit KeyslotAreaFile Shamir ShamirMac ShareCode SelfTest VcStatus VcJson HeaderBackup HkfOrSet VcPosture KeyslotAreaMac VolumeLabel AtomicHeader Pkcs5 FlashProbe"

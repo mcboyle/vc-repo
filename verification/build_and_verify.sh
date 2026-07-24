@@ -2115,7 +2115,7 @@ MV_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE
 MV_INC="$INC -I$SRCROOT/Crypto"
 MV_SRC="$SRCROOT/Common/HardwareKeyFactor.c $SRCROOT/Crypto/Sha2.c"
 if [ -n "$MV_CC" ] \
-   && "$MV_CC" -O2 -Wno-implicit-function-declaration -DVC_ENABLE_HKF -DVC_ENABLE_HKF_MIX_V2 $MV_NOASM $MV_INC "$HERE/hkf_mixv2_test.c" $MV_SRC -o /tmp/mixv2_test 2>/tmp/mv_log; then
+   && "$MV_CC" -O2 -Wno-implicit-function-declaration -DVC_ENABLE_HKF -DVC_ENABLE_HKF_MIX_V2 -DVC_ALLOW_UNSALTED_HKF_MIX_V2 $MV_NOASM $MV_INC "$HERE/hkf_mixv2_test.c" $MV_SRC -o /tmp/mixv2_test 2>/tmp/mv_log; then
 	if /tmp/mixv2_test > /tmp/mv_c.txt; then
 		grep -vE '^PASSWORD|^RESPONSE|^MIXV2 ' /tmp/mv_c.txt
 		A=$(awk '/^MIXV2 /{print $2}' /tmp/mv_c.txt); P=$(python3 "$HERE/hkf_mixv2_reference.py" < /tmp/mv_c.txt | awk '/^MIXV2EXP/{print $2}')
@@ -2144,7 +2144,7 @@ WW_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE
 WW_INC="$INC -I$SRCROOT/Crypto"
 WW_SRC="$SRCROOT/Common/HardwareKeyFactor.c $SRCROOT/Crypto/Sha2.c"
 if [ -n "$WW_CC" ] \
-   && "$WW_CC" -O2 -Wno-implicit-function-declaration -DVC_ENABLE_HKF -DVC_ENABLE_HKF_MIX_V2 $WW_NOASM $WW_INC "$HERE/hkf_mixv2_wiring_test.c" $WW_SRC -o /tmp/mixv2_wiring 2>/tmp/ww_log; then
+   && "$WW_CC" -O2 -Wno-implicit-function-declaration -DVC_ENABLE_HKF -DVC_ENABLE_HKF_MIX_V2 -DVC_ALLOW_UNSALTED_HKF_MIX_V2 $WW_NOASM $WW_INC "$HERE/hkf_mixv2_wiring_test.c" $WW_SRC -o /tmp/mixv2_wiring 2>/tmp/ww_log; then
 	if /tmp/mixv2_wiring > /tmp/ww_c.txt; then
 		grep -vE '^PASSWORD|^RESPONSE|^MIXV2 ' /tmp/ww_c.txt
 		A=$(awk '/^MIXV2 /{print $2}' /tmp/ww_c.txt); P=$(python3 "$HERE/hkf_mixv2_reference.py" < /tmp/ww_c.txt | awk '/^MIXV2EXP/{print $2}')

@@ -70,6 +70,44 @@ password[0..128) = HKDF-SHA256(salt = <the volume's PBKDF2 salt>,
   mount/create round-trip (that a salt-bound-created volume opens under the salt-bound mount and *not*
   under a different volume's salt) is real-build-only, like the rest of the v2 wiring.
 
+### Build-configuration compatibility — the v1↔v2 asymmetry (T2-1 fix)
+
+The mix version a build performs is fixed at compile time and **is not recorded in the header**, so
+compatibility is not only a property of *volumes* — it is also a property of *builds*, and the two
+directions are **asymmetric**:
+
+- **v2 builds are forward-compatible with v1 volumes.** A build that compiles the v2 mix in runs the
+  mount-time version-try loop (v2 first, then v1), so it opens *both* v1 and v2 volumes.
+- **v1-only builds are NOT backward-compatible with v2 volumes.** A build without the v2 mix has no
+  try-loop; given a v2 volume it v1-mixes the password, the header decrypt fails, and it reports
+  **"Incorrect password."** for the *correct* password. For the D-13 audience that false negative — under
+  duress, indistinguishable from a genuinely wrong password — is close to the worst diagnostic the tool
+  can emit.
+
+This failure was **reachable** before the fix: a plain `make HKF=1` produced a v1-only build, while
+`make … HKF_MIX_V2_SALTBIND=1` produced a v2 volume, and the former could not open the latter. The fix
+(in `src/Makefile`) makes **every** HKF-enabled build (`HKF` / `HKF_SIMULATOR` / `YUBIKEY` / `FIDO2`)
+default to the v2 salt-bound mix. Because a v2 build is a strict superset for *mounting* (it still opens
+legacy v1 volumes through the try-loop), unifying on v2 removes the only distributable v1-only
+configuration without losing the ability to read older volumes. A plain `make` with no HKF knob stays
+byte-for-byte stock and is unaffected. A companion compile-time `#error` in `HardwareKeyFactor.h` rejects
+the narrower, no-longer-reachable combination of the v2 mix *without* salt binding — defence-in-depth for
+a hand-rolled `-DVC_ENABLE_HKF_MIX_V2`, since an unsalted-v2 build would fail to open a salt-bound volume
+the same way. The verification suite keeps the unsalted derivation reachable via
+`-DVC_ALLOW_UNSALTED_HKF_MIX_V2` (step `[80]`'s `MIXV2EXP` anchor must stay byte-identical).
+
+**Why config-level prevention rather than a runtime diagnostic.** The alternative — have the mount path
+detect the mismatch and report *"this volume uses a derivation this build does not support"* instead of
+"wrong password" — is rejected on two grounds. First, unlike the `HKF_SALT_BIND` RAW_SECRET parameter
+(supplied at mount like PIM, so its mismatch has a remedy: re-supply `--hkf-bind-salt`; see
+`docs/SALT-BINDING-SPEC.md`), the mix version is baked into the binary — a user cannot re-supply the
+*build* they were handed, so there is nothing a clearer message lets them do. Second, such a message is a
+**disclosure oracle**: it tells anyone holding the volume (a coercer included) that it requires a factor
+they have not been given, which is exactly the kind of leak a deniability-focused tool must not emit.
+Keeping the derivation silent and removing the bad configuration at build time is therefore both safer and
+strictly more useful than a diagnostic. The change is preventive: no v2 volumes exist outside testing
+yet, so it lands before the exposure window opens.
+
 ## Backward compatibility — a version-try loop, not a format break
 
 The mix changes the *value* fed to PBKDF2/Argon2 but leaves the on-disk header untouched (no new field,
