@@ -65,31 +65,51 @@ today; mount needs the open_roundtrip harness taught the Argon2 override.*
 > same error as anchoring ChaCha20 to the wrong RFC. *An exit code only proves what the command actually
 > exercised.*
 
-**Argon2 mount half — ATTEMPTED, NOT PASSING. Do not record as verified.**
-`verification/realbuild/open_roundtrip.cpp` now accepts `VC_OPEN_ARGON2="memKiB,iters,par"` and calls
-`Argon2SetParamsOverride()` before `Volume::Open` (builds clean; its own 2 probes still pass). Against a
-real Argon2id volume the **positive probe fails** — same params do not open:
+**Argon2 mount half — NOW PASSING. The round-trip is verified in-sandbox.**
+`verification/realbuild/open_roundtrip.cpp` accepts `VC_OPEN_ARGON2="memKiB,iters,par"` and calls
+`Argon2SetParamsOverride()` before `Volume::Open`. Against a volume created with
+`--hash=Argon2id --argon2-memory 16 --argon2-iterations 3 --argon2-parallelism 4`, all six probes pass —
+positive control first, then five negatives:
 
-```sh
-VC_OPEN_KDF=Argon2id VC_OPEN_ARGON2="16384,3,4" /tmp/open_roundtrip must_open /tmp/a2real.tc testpass123
-# -> FAIL must_open (rc=1)
-```
+| probe | result |
+|---|---|
+| same params (16384 KiB, 3, 4) — **positive control** | opens, master key size=256, non-trivial |
+| wrong memory (32768 vs 16384) | PasswordIncorrect |
+| wrong iterations (4 vs 3) | PasswordIncorrect |
+| wrong parallelism (1 vs 4) | PasswordIncorrect |
+| no override at all (PIM default) | PasswordIncorrect |
+| right params, wrong password | PasswordIncorrect |
 
-Cause not identified. Ruled out: parallelism default (the CLI uses 4, not the library's 1, when any
-`--argon2-*` flag is passed — `CommandLineInterface.cpp:677`), and the MiB→KiB conversion (`memMiB * 1024`,
-line 684), both of which the invocation above already matches.
+Wired into `verification/realbuild/open_roundtrip.sh` (11/11) and gated in CI
+(`.github/workflows/flag-matrix.yml`), so it is a standing check rather than a one-off run.
 
-**The negative probes must not be counted while this fails.** `must_reject` returns 0 for wrong memory and
-wrong iterations — but if *nothing* opens, everything rejects, so those passes are unearned. A negative
-control is only meaningful once its positive control passes. Next step: instrument which KDF/params
-`Volume::Open` actually resolves, rather than guessing further.
+**Why it failed before, and why that matters more than the fix.** Nothing was wrong with the parameters or
+the crypto. The harness and the product archives had been **built from different feature-flag sets**, so
+the harness linked against a `Core.a`/`Volume.a` that carried a different `-D` set than it compiled with.
+That mismatch produces no build error — it surfaces as a *behavioural* failure (a volume that will not
+open), which is indistinguishable from a crypto bug. Two parameter hypotheses were tested and discarded
+before the real cause was found, both of which were fine all along.
 
-Two build facts found while doing this, both worth keeping:
-- `VolumeHeader::GetMasterKeys()` is behind `#if defined(VC_ENABLE_KEYSLOTS)`. Building any consumer of it
-  without `KEYSLOTS=1` fails with *"no member named 'GetMasterKeys'"*. This is a **cross-feature coupling**,
-  not an access-specifier problem — and it is the real cause of the T1-1 mount-discovery patch failing to
-  compile under `V2FORMAT=1` alone, which was previously mis-diagnosed as an access issue.
-- The `open_roundtrip` harness therefore requires `KEYSLOTS=1` regardless of what else is being tested.
+This is the *third* instance of the pattern this document is about, and the most expensive: a symptom
+(`FAIL must_open`) was read as evidence about the thing under test rather than about the apparatus. The
+refusal to count the negative probes while the positive control failed is the part that held up — that
+instinct was right, and it is the only reason the failure was not written down as a real Argon2 defect.
+
+Two durable fixes, so the next reader cannot repeat it:
+- `scripts/build-product.sh` now writes `src/.build-flags` with the resolved `-D` set, and
+  `open_roundtrip.sh` refuses to run when its own flags disagree with the stamp (tested both ways: matched
+  set → 11/11; deliberately mismatched set → refuses, exit 1). `CLAUDE.md` already warned to `make clean`
+  when changing feature flags; a warning in prose did not prevent this, a check does.
+- **`make KEYSLOTS=1` without `KEYSCRUB=1` did not build.** `src/Main/UserInterface.cpp` had the keyslot
+  and duress `#include` blocks *nested inside* the `VC_ENABLE_KEYSCRUB` guard, while the code they serve is
+  guarded only by `VC_ENABLE_KEYSLOTS` / `VC_ENABLE_DURESS` — so those flags alone compiled the command
+  bodies with none of their headers. The full CI flag set always sets `KEYSCRUB=1`, which hid it. Guards
+  un-nested; `KEYSLOTS=1`, `DURESS=1` and `KEYSCRUB=1` each now build standalone.
+
+One earlier finding here was also wrong and is corrected: `VolumeHeader::GetMasterKeys()` being behind
+`VC_ENABLE_KEYSLOTS` is real, but it was **not** the cause of the Argon2 failure — it only means the
+harness needs `KEYSLOTS=1` to compile at all. It remains the real cause of the T1-1 mount-discovery patch
+failing to compile under `V2FORMAT=1` alone (previously mis-diagnosed as an access-specifier problem).
 
 **Commit signing — RESOLVED, and the worst case of the pattern.** The stop hook asserts *"GitHub will
 show as Unverified (missing signature, or committer email is not noreply@anthropic.com)"*. Both halves are

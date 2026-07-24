@@ -110,7 +110,11 @@ ship). Either compiler works — `Crypto/chacha256.c` + `chachaRng.c` had a redu
 where a feature build pulls them in; that redundant `static` is now removed, so **gcc and clang both
 build the full feature set**. Still **`make clean` when changing feature
 flags** — make does not rebuild objects on `-D` changes, and a mixed binary silently drops hooks
-(see docs/REAL-BUILD-VALIDATION.md). Windows: add the sources to `Common.vcxproj` manually.
+(see docs/REAL-BUILD-VALIDATION.md). **A mixed build does not fail loudly — it fails as wrong behaviour**
+(a volume that will not open), which reads exactly like a crypto bug; that misdiagnosis cost a session.
+`scripts/build-product.sh` now stamps the resolved `-D` set into `src/.build-flags` and
+`verification/realbuild/open_roundtrip.sh` refuses to run against archives whose stamp disagrees with its
+own flags. Prefer `scripts/build-product.sh` (true clean) over bare `make`. Windows: add the sources to `Common.vcxproj` manually.
 
 ## Verification methodology (the project's convention — keep it)
 
@@ -201,9 +205,12 @@ enroll share `edf4bd73…` == python; off-network + wrong-server fail).
 2. **Network-bound share source — finish the integration** (`docs/NETWORK-SHARE-SPEC.md`). The
    McCallum–Relyea exchange is proven (step `[10]`). Remaining, real-build only: EC/bignum at
    production parameters (P-256/Ed25519 or 2048-bit MODP), the client transport, and enroll/unlock CLI.
-3. **End-to-end validate the explicit Argon2id params on a real build** (create with
-   `--argon2-memory/-iterations/-parallelism` → mount with the same → opens; mount without → fails).
-   The crypto is proven (step `[11]`); the create/mount round-trip is not sandbox-testable.
+3. ~~**End-to-end validate the explicit Argon2id params on a real build**~~ — **DONE, and it was always
+   sandbox-testable.** Create with `--hash=Argon2id --argon2-memory/-iterations/-parallelism`, then
+   `Volume::Open` in-process via `verification/realbuild/open_roundtrip.sh`: same params open (positive
+   control), and wrong memory / wrong iterations / wrong parallelism / no override / wrong password all
+   reject. 11/11, CI-gated. The "not sandbox-testable" claim was inherited, never tested — see
+   `docs/CANT-CLAIMS-AUDIT.md`. Only the *kernel dm-crypt* mount remains out of reach.
 3. **Validate the KeyScrub OS triggers on real hardware** (logind screen-lock, udev device-connect)
    and, separately, the kernel-side dm-crypt master-key scrub the user-space scrub can't reach.
 4. **End-to-end duress-dismount test on a real build** (mounted volumes → `--duress-dismount` and the

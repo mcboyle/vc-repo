@@ -40,3 +40,4 @@ verification/__pycache__/
 *.bmp.h
 *.pch
 src/Main/veracrypt
+src/.build-flags

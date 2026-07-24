@@ -70,7 +70,10 @@ VeraCrypt objects (see `verification/` and `CLAUDE.md` §Verification).
    in-tree Argon2 reproduces the **RFC 9106** Argon2id vector (parallelism 4); the override plumbs
    parallelism (p=1 == stock, p=4 differs); the resolver matches an independent Python reimpl; and the
    stock `Pkcs5.o` is byte-for-byte identical without the flag (`verification/argon2_params_test.c`,
-   step `[11]`). `docs/ARGON2-PARAMS-SPEC.md`, `patches/argon2-params.patch`.
+   step `[11]`). **The create→open round-trip is now verified too**, in-process against the real
+   `Volume::Open` (`verification/realbuild/open_roundtrip.sh`, CI-gated): same params open; wrong
+   memory / iterations / parallelism, no override, and wrong password all reject. Only the kernel
+   dm-crypt mount remains untested. `docs/ARGON2-PARAMS-SPEC.md`, `patches/argon2-params.patch`.
 12. **Salt-binding for RAW_SECRET** (`Common/HardwareKeyFactor.c`, gated `-DVC_ENABLE_HKF_SALT_BIND`,
    `make HKF_SALT_BIND=1`) — the `RAW_SECRET` factor optionally returns `HMAC-SHA256(secret, volume
    salt)` instead of the raw secret, binding a reconstructed/threshold secret to the specific volume

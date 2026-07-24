@@ -77,4 +77,16 @@ for a in "$ROOT/src/Volume/Volume.a" "$ROOT/src/Core/Core.a"; do
 	[ -f "$a" ] && log "archive present: $a" || { log "missing archive: $a"; exit 1; }
 done
 
+# --- 4. Stamp the resolved feature flags next to the archives -----------------------------------------
+# A consumer that links these archives (verification/realbuild/open_roundtrip.sh) must compile itself with
+# the SAME -D set, or it links a mixed binary: the harness sees one feature set and the archives another.
+# That is not hypothetical — it silently produced a false "explicit Argon2 params do not round-trip"
+# result that survived a whole session, because the harness and the product had been built from different
+# flag sets. The stamp lets the consumer detect the mismatch instead of inferring a crypto bug from it.
+STAMP="$ROOT/src/.build-flags"
+make -C "$ROOT/src" -pn "${MAKE_ARGS[@]}" 2>/dev/null \
+	| grep -E '^C_CXX_FLAGS :?= ' | tail -1 \
+	| grep -oE '\-D(VC_ENABLE|TC)_[A-Z_0-9]*' | sort -u | tr '\n' ' ' > "$STAMP"
+log "feature-flag stamp: $STAMP -> $(cat "$STAMP")"
+
 log "OK — product builds, binary runs, Volume.a/Core.a present"
