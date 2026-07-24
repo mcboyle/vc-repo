@@ -29,9 +29,30 @@ commit per task prefixed with the ID). Per-task outcome notes below; the full-su
 
 | ID | Task | Source | Status | Notes |
 |---|---|---|---|---|
-| **T1-1 [gate]** | Design **v2 on-disk format** alongside compatible v1. Hard rule: no v2 feature reduces deniability below v1 | D-10 | TODO | Gates T1-2, T1-3, T2-2. Each feature carries a deniability-impact line. |
-| **T1-2** | v2 header: **wide-block mode selector field** (HCTR2 / Adiantum), set at creation | D-4, D-10 | BLOCKED (T1-1) | Per-volume, not per-machine. Test selector vs deniability constraint. |
+| **T1-1 [gate]** | Design **v2 on-disk format** alongside compatible v1. Hard rule: no v2 feature reduces deniability below v1 | D-10 | TODO (design inputs locked, see below) | Gates T1-2, T1-3, T2-2. Each feature carries a deniability-impact line. |
+| **T1-2** | v2 header: **wide-block mode selector** (HCTR2 / Adiantum), set at creation | D-4, D-10 | BLOCKED (T1-1) | **Per owner decision: store NO selector — derive/trial the mode at mount** (see below). Per-volume, not per-machine, satisfied implicitly. |
 | **T1-3** | v2 migration path for **HKF-v2 salt binding** — existing v2 volumes re-derive once salt is bound | D-1, D-10 | BLOCKED (T1-1) | Examined by R22 (T3-1). Closes R-2. |
+
+### T1-1 design inputs — owner decisions (2026-07-24), NOT yet implemented
+
+The three T1-1 gating questions were put to the owner interactively and answered. These **lock the design
+inputs** for T1-1; the format design and any code remain owner-gated and **were not started this session.**
+
+1. **Wide-block mode selector — store nothing; derive/trial at mount** (owner asked for the most secure
+   option). Rationale: against a key-less adversary this is indistinguishable from "encrypted-in-header",
+   but strictly stronger — nothing on disk can ever leak, and it removes the *mild creating-hardware
+   fingerprint* D-4 itself flagged about a recorded field. Composes with decision (2): the KDF runs once;
+   HCTR2-vs-Adiantum is a cheap symmetric re-decrypt of the header block (no extra Argon2). Satisfies D-4
+   "per-volume, not per-machine" — the creator fixes the mode by how it writes the body; mount discovers
+   it by trial on any hardware. **This supersedes the D-4 delta's "recorded in a v2 header field" leaning.**
+2. **v1/v2 detection — trial-derivation loop** (v2 → v1 fallback), mirroring the existing HKF mix
+   v2→v1 loop. No readable version marker anywhere; indistinguishable from random without the password.
+3. **Per-sector MACs — full-volume MAC table** (fixed size covering every sector whether allocated or
+   not; unused slots hold keystream/random, indistinguishable from real tags). Presence/size reveal
+   nothing about which sectors are in use — no allocation leak.
+
+Combined mount trial set becomes `{ v2-HCTR2, v2-Adiantum, v1 }` header-verify attempts after a single
+KDF pass. Deniability-impact line for each (required by D-10) to be written during the T1-1 design proper.
 
 ---
 
