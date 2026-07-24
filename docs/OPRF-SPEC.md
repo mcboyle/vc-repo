@@ -91,6 +91,14 @@ cannot pass — it is exactly the check that would have caught the original bug.
 stands as documented above; D-8's libsodium adoption is now **proven conformant in the verification
 layer** (the product OPRF / network-share swap to libsodium remains real-build).
 
+**VOPRF/POPRF too, including the DLEQ proof (step `[96]`).** The verifiable family is proven conformant on
+libsodium against the official RFC 9497 **A.1.2 (VOPRF)** and **A.1.3 (POPRF)** vectors
+(`verification/voprf_poprf_ristretto255_rfc9497.c`): HashToGroup + chain, the **DLEQ proof** of RFC 9497
+§2.2 (`VerifyProof` accepts the official `Proof`, `GenerateProof(ProofRandomScalar)` reproduces its bytes),
+a tampered-`EvaluationElement`-rejected negative, and POPRF's Info-tweaked key (`tweakedKey == T·G + pkS`).
+With step `[95]` this resolves the step-`[94]` hash-to-group finding for all three ristretto255 PoCs
+(`oprf`/`voprf`/`toprf`).
+
 **Verifiable mode (VOPRF) — proven (step `[47]`).** In verifiable mode the server commits a public
 key `pk = k·G` and, with each `EE = k·BE`, proves in zero knowledge (Chaum–Pedersen / **DLEQ**) that
 the *same* `k` relates `(G, pk)` and `(BE, EE)`. The client verifies before finalizing, so a server

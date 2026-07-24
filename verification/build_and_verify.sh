@@ -2609,3 +2609,31 @@ if [ -n "$OF_CC" ] && [ -n "$OF_SLIBS" ] \
 else
 	skip_step " libsodium not available (apt install libsodium-dev, or set LIBSODIUM_PREFIX) — D-8 RFC 9497 OPRF conformance"
 fi
+
+echo "[96] VOPRF/POPRF(ristretto255,SHA-512) on libsodium vs OFFICIAL RFC 9497 vectors incl. DLEQ (D-8; [94] finding resolved for the verifiable family)"
+# Companion to step [95] (plain OPRF). Proves the VERIFIABLE family on libsodium against the official CFRG
+# RFC 9497 vectors: VOPRF (A.1.2) and POPRF (A.1.3) — HashToGroup + chain + the DLEQ proof (RFC 9497 Sec
+# 2.2: VerifyProof accepts the official Proof, GenerateProof reproduces its bytes) + tamper-reject + Output.
+# This is the same bespoke ristretto255 group flagged non-conformant at [94], now proven conformant once
+# rebuilt on libsodium. Verification-only; skip cleanly if libsodium absent (strict-verify installs it).
+OV_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then OV_CC="$c"; break; fi; done
+OV_SCFLAGS=""; OV_SLIBS=""; OV_SRUN=""
+if pkg-config --exists libsodium 2>/dev/null; then
+	OV_SCFLAGS="$(pkg-config --cflags libsodium)"; OV_SLIBS="$(pkg-config --libs libsodium)"
+elif [ -n "${LIBSODIUM_PREFIX:-}" ] && [ -f "${LIBSODIUM_PREFIX}/include/sodium.h" ]; then
+	OV_SCFLAGS="-I${LIBSODIUM_PREFIX}/include"; OV_SLIBS="-L${LIBSODIUM_PREFIX}/lib -lsodium"; OV_SRUN="${LIBSODIUM_PREFIX}/lib"
+elif [ -f /tmp/libsodium-build/prefix/include/sodium.h ]; then
+	OV_SCFLAGS="-I/tmp/libsodium-build/prefix/include"; OV_SLIBS="-L/tmp/libsodium-build/prefix/lib -lsodium"; OV_SRUN="/tmp/libsodium-build/prefix/lib"
+fi
+if [ -n "$OV_CC" ] && [ -n "$OV_SLIBS" ] \
+   && $OV_CC -O2 -Wno-unused-result $OV_SCFLAGS "$HERE/voprf_poprf_ristretto255_rfc9497.c" $OV_SLIBS -o /tmp/ov_vp 2>/tmp/ov_log; then
+	if LD_LIBRARY_PATH="$OV_SRUN" /tmp/ov_vp > /tmp/ov_out.txt 2>/tmp/ov_diag.txt; then
+		grep -E 'MATCH|FAIL|vector' /tmp/ov_out.txt | sed 's/^/    /'
+		grep -q '^VOPRF/POPRF RISTRETTO255 RFC9497: ALL MATCH' /tmp/ov_out.txt || { echo "    VOPRF/POPRF RFC9497 CONFORMANCE FAILED"; cat /tmp/ov_out.txt; exit 1; }
+	else
+		echo "    VOPRF/POPRF RFC9497 harness run FAILED"; cat /tmp/ov_out.txt /tmp/ov_diag.txt; exit 1
+	fi
+else
+	skip_step " libsodium not available (apt install libsodium-dev, or set LIBSODIUM_PREFIX) — D-8 RFC 9497 VOPRF/POPRF conformance"
+fi

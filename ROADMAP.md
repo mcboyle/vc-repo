@@ -360,6 +360,11 @@ brief:
   vectors** end-to-end (BlindedElement, EvaluationElement, Output). The step-`[94]` finding is thus
   resolved in the verification layer; adopting libsodium fixes the non-conformant map. The product
   OPRF / network-share swap to libsodium remains real-build.
+  **Verifiable family (step `[96]`, `verification/voprf_poprf_ristretto255_rfc9497.c`).** VOPRF (mode 1) +
+  POPRF (mode 2) rebuilt on libsodium reproduce the official RFC 9497 A.1.2 / A.1.3 vectors end-to-end,
+  including the DLEQ proof (RFC 9497 §2.2: VerifyProof accepts the official Proof, GenerateProof reproduces
+  its bytes) + tamper-reject + POPRF's Info-tweaked key. With step `[95]` the finding is fully resolved for
+  all three ristretto255 PoCs (oprf/voprf/toprf) in the verification layer.
 - **Constant-time AES [D-4 / A-2] — CORE PROVEN (step `[87]`); src promotion is the follow-up.** Required
   by the Adiantum branch's single-block-per-sector AES-256 call on non-AES-NI hardware; it only has to
   **exist** and be constant-time, not be fast. **Built the cheapest correct way** (`verification/ctaes_poc.c`,
