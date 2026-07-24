@@ -8,9 +8,21 @@ build box** can run. This maps each pending item to its test and the tier of env
 ## How to run
 
 ```sh
-cd src && make NOGUI=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 ARGON2PARAMS=1 BALLOON=1 SHAMIRMAC=1 SHARECODE=1
+./scripts/build-product.sh NOGUI=1 HKF=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 SHAMIRMAC=1 SHARECODE=1
 sudo bash verification/realbuild/acceptance.sh          # loopback create/mount round-trips
 ```
+
+**Use `scripts/build-product.sh`, not a bare `make`.** `make clean` is *incomplete* — it leaves the
+`Common/*.o` objects in place, so an object compiled under a previous flag set (e.g. `HardwareKeyFactor.o`
+built HKF-on / KEYSCRUB-off) is **silently reused** when flags change, producing a mixed binary or a bogus
+link error (a stale `HardwareKeyFactor.o` lacking `HKFScrubActiveConfig` fails the `KEYSCRUB` link even
+though the code is correct). `build-product.sh` does a **true clean** (`rm` every `*.o`/`*.a`/`*.d` +
+binary) first, then builds and smoke-tests. **The `product-build` CI job (`.github/workflows/flag-matrix.yml`)
+now runs this on every PR** — building both the stock console product *and* a full-featured config (every
+fork knob) — so the C++ mount/create wiring in `Volume/`/`Core/`/`Main/`, previously "real-build-only" and
+uncompiled in CI, is gated on each change. (Kernel dm-crypt mounting is still not exercised in CI — runners
+lack the device-mapper driver — so the CI leg is build + binary smoke; the loopback round-trips below need
+a rootful box.)
 
 The harness is self-gating: it builds if it can, runs Tier-2 round-trips only with root + a loop
 device, prints `SKIP` for anything the environment can't do, and `PENDING-INTEGRATION` for features

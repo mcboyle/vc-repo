@@ -73,7 +73,9 @@ if [ "${CLAUDE_CODE_REMOTE:-}" = "true" ]; then
     haveyasm=no; command -v yasm >/dev/null 2>&1 && haveyasm=yes
     log "build deps: wxWidgets=$havewx  libpcsclite-dev=$havepcsc  yasm=$haveyasm"
     if [ "$havewx" = yes ] && [ "$havepcsc" = yes ]; then
-      log "product build ready:  cd src && make NOGUI=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 ARGON2PARAMS=1 BALLOON=1 SHAMIRMAC=1 SHARECODE=1$([ $haveyasm = yes ] || echo ' NOASM=1')"
+      # scripts/build-product.sh does a TRUE clean first (make clean leaves Common/*.o stale, which
+      # silently mixes flag sets); it builds + smoke-tests the console binary. CI gates this on every PR.
+      log "product build ready:  ./scripts/build-product.sh NOGUI=1 HKF=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 SHAMIRMAC=1 SHARECODE=1$([ $haveyasm = yes ] || echo ' NOASM=1')"
     else
       log "product build NOT fully provisionable here (apt offline/locked). The verification suite still works: cd verification && ./build_and_verify.sh"
       [ "$havepcsc" = no ] && log "  missing libpcsclite-dev — the one stock dep that blocked the build in this image"
