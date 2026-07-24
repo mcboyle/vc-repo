@@ -271,6 +271,10 @@ endif
 # RAW_SECRET salt-binding (opt-in; an HKF sub-feature). `make HKF_SALT_BIND=1` makes the RAW_SECRET
 # backend return HMAC-SHA256(secret, volume salt) when --hkf-bind-salt is given. Only touches the
 # already-gated HardwareKeyFactor.c + the CLI; a plain `make` stays stock. See docs/SALT-BINDING-SPEC.md.
+# NOTE: distinct from HKF_MIX_V2_SALTBIND below (one underscore apart, different layer). This one binds
+# the RAW_SECRET *backend response*; that one binds the *v2 HKDF mix*. This is a supply-at-mount parameter
+# (like PIM — re-supply --hkf-bind-salt if you forget), so its off/on mismatch has a remedy; the v2-mix
+# case is compile-time and has none, which is why only that one gets the build-level implication rule.
 ifeq "$(origin HKF_SALT_BIND)" "command line"
 	C_CXX_FLAGS += -DVC_ENABLE_HKF_SALT_BIND
 endif
@@ -279,8 +283,28 @@ endif
 # AND folds the volume salt into its HKDF-Extract, binding the derived key to the volume (a factor/share
 # enrolled on one volume cannot open another). Implies VC_ENABLE_HKF_MIX_V2. Only touches the already-gated
 # HKF derivation + mount/create seams; a plain `make` stays byte-for-byte stock. docs/HKF-MIX-V2-SPEC.md.
+# NOTE: distinct from HKF_SALT_BIND above (the RAW_SECRET backend feature). This is the v2 HKDF mix; it is
+# now implied by any HKF build (see the T2-1 implication rule below), so this explicit knob is redundant
+# with `HKF=1` but kept for clarity in build invocations. A plain-v2 (mix without saltbind) build is not
+# offered here — see HardwareKeyFactor.h for the compile-time guard that rejects it.
 ifeq "$(origin HKF_MIX_V2_SALTBIND)" "command line"
 	C_CXX_FLAGS += -DVC_ENABLE_HKF_MIX_V2 -DVC_ENABLE_HKF_MIX_V2_SALTBIND
+endif
+
+# T2-1 fix — close the reachable v1<->v2 mount asymmetry. A build with the v2 mix runs the mount-time
+# version-try loop, which opens BOTH v1 and v2 volumes (v2 builds are forward-compatible with v1 volumes).
+# A v1-only build has no such loop: given a v2 volume it v1-mixes the password, the header decrypt fails,
+# and it reports "Incorrect password." for the CORRECT password. That failure is REACHABLE today — a plain
+# `make HKF=1` (v1-only) build versus a volume created by a `make ... HKF_MIX_V2_SALTBIND=1` build. To
+# ensure no distributed HKF build can hit it, every HKF-enabled build defaults to the v2 salt-bound mix
+# (a strict superset for mounting; it still opens legacy v1 volumes via the try-loop). This runs after all
+# HKF-enabling knobs (HKF/HKF_SIMULATOR/YUBIKEY/FIDO2) and is skipped if the v2 mix was already requested
+# explicitly. A plain `make` (no HKF) stays byte-for-byte stock — VC_ENABLE_HKF is 0 and this never fires.
+# docs/HKF-MIX-V2-SPEC.md §"Salt binding".
+ifeq "$(VC_ENABLE_HKF)" "1"
+ifeq "$(findstring -DVC_ENABLE_HKF_MIX_V2,$(C_CXX_FLAGS))" ""
+	C_CXX_FLAGS += -DVC_ENABLE_HKF_MIX_V2 -DVC_ENABLE_HKF_MIX_V2_SALTBIND
+endif
 endif
 
 # Balloon memory-hard KDF as a selectable PRF (opt-in). `make BALLOON=1` exposes the Balloon hash

@@ -137,6 +137,26 @@ void HKFMixResponseIntoPassword (unsigned char *password, int *password_len,
 #define HKF_MIX_V1  1   /* legacy CRC-32 keyfile-pool mix (HKFMixResponseIntoPassword)   */
 #define HKF_MIX_V2  2   /* HKDF-SHA256 mix (HKFMixResponseIntoPasswordV2)                */
 
+/* Build-configuration safety guard (T2-1) — defence in depth for one edge of the v1<->v2 mount asymmetry.
+ *
+ * None of these mix versions is recorded in the header, so which derivation a build performs is fixed at
+ * compile time. The mount version-try loop, when the v2 mix is compiled in, opens BOTH v1 and v2 volumes
+ * (v2 builds are forward-compatible). The REACHABLE hazard is the other direction: a v1-only build has no
+ * try-loop, v1-mixes the password against a v2 volume, and reports "wrong password" for the CORRECT one.
+ * That is fixed in the Makefile — every HKF-enabled build now defaults to the v2 salt-bound mix, so no
+ * distributed build is v1-only (docs/HKF-MIX-V2-SPEC.md §"Salt binding").
+ *
+ * This #error covers a narrower, today-unreachable edge: a build that enables the v2 mix but NOT salt
+ * binding. No make knob can produce it (HKF_MIX_V2_SALTBIND sets both; HKF now implies both), so it can
+ * only arise from a hand-rolled -DVC_ENABLE_HKF_MIX_V2. Such a build would derive HKDF(salt = 0^32) and a
+ * salt-bound volume would fail to open under it — the same false "wrong password", close to the worst
+ * diagnostic for the D-13 audience. The UNSALTED derivation is deliberately retained for the verification
+ * suite (step [80]'s MIXV2EXP anchor must stay byte-identical), which opts out by defining
+ * VC_ALLOW_UNSALTED_HKF_MIX_V2. */
+#if defined(VC_ENABLE_HKF_MIX_V2) && !defined(VC_ENABLE_HKF_MIX_V2_SALTBIND) && !defined(VC_ALLOW_UNSALTED_HKF_MIX_V2)
+#  error "HKF v2 HKDF mix without salt binding is not a valid product build: a salt-bound volume would fail to open (reported as 'wrong password') under this build. Build with VC_ENABLE_HKF_MIX_V2_SALTBIND (make HKF_MIX_V2_SALTBIND=1). The unsalted derivation exists only for the verification suite, which defines VC_ALLOW_UNSALTED_HKF_MIX_V2. See docs/HKF-MIX-V2-SPEC.md."
+#endif
+
 #if defined(VC_ENABLE_HKF_MIX_V2)
 /*
  * Rank-1 v2 mixing (addendum §7): replace the CRC-32 keyfile-pool combine with an HKDF-SHA256
