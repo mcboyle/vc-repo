@@ -2206,3 +2206,37 @@ if [ -n "$FP_CC" ] && "$FP_CC" -O2 -I"$SRCROOT" "$HERE/flash_probe_test.c" -o /t
 else
 	skip_step " no compiler for the flash-probe test (see /tmp/fp_log)"
 fi
+
+echo "[84] v2 on-disk format (T1-1) — mode discrimination w/ nothing stored + full-volume MAC-table indistinguishability vs independent python"
+# The v2 format (docs/V2-FORMAT-SPEC.md) composes proven primitives under three owner decisions: store NO
+# wide-block mode selector (derive/trial at mount), trial-derivation v1/v2 detection, and a full-volume
+# per-sector MAC table (free slots = keystream). This proves the two NOVEL format-level properties:
+#  A. mode discrimination via a per-mode DOMAIN-SEPARATED MAC key over ciphertext (the ciphertext tag
+#     alone can't tell HCTR2 from Adiantum; the KEY does) -> nothing stored, and anti-downgrade binding;
+#  B. the MAC table is byte-uniform (real tags UNION free keystream), a free slot reads as free not tamper,
+#     and a hidden-volume overwrite of the outer's free region still reads as free (no new tell).
+# Reuses the real proven BLAKE3 (v2format_poc.c includes blake3_poc.c); v2format_reference.py is
+# independent. REF lines diffed byte-for-byte.
+VF_CC=""
+for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then VF_CC="$c"; break; fi; done
+if [ -n "$VF_CC" ] && "$VF_CC" -O2 -Wall -I"$HERE" "$HERE/v2format_poc.c" -o /tmp/v2_poc 2>/tmp/vf_log; then
+	if /tmp/v2_poc > /tmp/vf_c.txt; then
+		grep -E 'PASS$|FAIL$' /tmp/vf_c.txt | sed 's/^/    /'
+		grep -q '^V2 FORMAT POC PASSED' /tmp/vf_c.txt || { echo "    V2 FORMAT POC FAILED"; exit 1; }
+		python3 "$HERE/v2format_reference.py" > /tmp/vf_py.txt || { echo "    PYTHON REFERENCE FAILED"; exit 1; }
+		grep '^REF' /tmp/vf_c.txt > /tmp/vf_c_ref.txt; grep '^REF' /tmp/vf_py.txt > /tmp/vf_py_ref.txt
+		if diff -q /tmp/vf_c_ref.txt /tmp/vf_py_ref.txt >/dev/null; then
+			echo "    MATCH: v2 format (real keyed BLAKE3) == independent python over $(wc -l < /tmp/vf_c_ref.txt) REF lines"
+		else
+			echo "    MISMATCH"; diff /tmp/vf_c_ref.txt /tmp/vf_py_ref.txt; exit 1
+		fi
+		for k in discriminate v1_fallthrough written_verify free_reads_as_free hidden_reads_as_free; do
+			grep -q "^REF $k YES$" /tmp/vf_c.txt || { echo "    PROPERTY $k FAILED"; exit 1; }
+		done
+		echo "    mode discrimination (nothing stored), v1 fallthrough, allocated-data integrity, and hidden-reads-as-free all hold"
+	else
+		grep -E 'FAIL$' /tmp/vf_c.txt | sed 's/^/    /'; echo "    V2 FORMAT POC FAILED"; exit 1
+	fi
+else
+	skip_step " no compiler for the v2-format PoC (see /tmp/vf_log)"
+fi

@@ -58,9 +58,22 @@ KDF pass. Deniability-impact line for each (required by D-10) to be written duri
 a concrete layout + mount algorithm and states the D-10 deniability-impact line for every v2 feature. Key
 resolved design point: the full-volume MAC table gives **integrity for allocated data, not free space**
 (a MAC mismatch reads as "free," not "tamper"), which is what lets a hidden volume stay indistinguishable
-— so v2 adds integrity without regressing v1's free-space ambiguity. Still owner-gated; T1-1 build not
-started. Open sub-decisions (MAC slot width, table offset formula, sector-size interaction, migration UX,
-verification plan) listed in the spec.
+— so v2 adds integrity without regressing v1's free-space ambiguity.
+
+**Correctness refinement found during PoC (spec updated):** the per-sector tag is over CIPHERTEXT, so the
+tag alone cannot discriminate HCTR2 from Adiantum — discrimination comes from a per-mode **domain-separated
+MAC key** `K_mac[mode] = keyed-BLAKE3(master, "VeraCrypt/v2/mac/"||mode)`, which also gives anti-downgrade
+binding for free.
+
+**The two novel format-level properties are PROVEN two ways** (suite step `[84]`,
+`verification/v2format_poc.c` real keyed-BLAKE3 vs `v2format_reference.py` independent python, byte-identical
+over 9 REF lines; anchors `tag0 = 8a0dcab3…`, `table_hash = 26618168…`, table chi-square 214): (A) mode
+discrimination with nothing stored + v1 fallthrough + anti-downgrade; (B) full-volume MAC-table
+indistinguishability — byte-uniform, free reads-as-free, hidden-overwrite reads-as-free.
+
+Still owner-gated for **product-code integration** (real-build: on-disk table sizing/placement + the C++
+mount trial loop). Open sub-decisions (MAC slot width, table offset formula, sector-size interaction,
+migration UX) remain per the spec.
 
 ---
 
