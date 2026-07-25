@@ -17,8 +17,25 @@
  *     then select that mode's cipher for the session. Falls through to v1 on V2_MODE_NONE.
  *   - Create (Core/VolumeCreator, when the data-area size is known): call SplitDataArea(totalDataBytes,
  *     sectorSize) to reserve the tail MAC table and shrink the usable data area.
- * BLOCKED ON: the wide-block cipher mode classes (HCTR2/Adiantum as an EncryptionMode) + a per-sector
- * MAC I/O layer — T2-3 (constant-time AES) / T2-4. This header is the seam they plug into.
+ * STATUS (was: "BLOCKED ON the wide-block cipher mode classes + a per-sector MAC I/O layer").
+ *   - The MODE CLASSES NOW EXIST and that blocker is gone: EncryptionModeAdiantum (PR #35) and
+ *     EncryptionModeHctr2 (PR #38), over the shippable Crypto/Adiantum and Crypto/Hctr2.
+ *   - DISCOVERY IS PROVEN AGAINST BOTH OF THEM: verification/realbuild/v2_mode_discovery.sh drives the
+ *     two real EncryptionMode classes to produce two real sector-0 ciphertexts and requires
+ *     DiscoverMode to name the one that actually encrypted each — plus NONE for a wrong master key, a
+ *     cross-mode tag, a 1-bit ciphertext change and a 1-bit tag change. Until a SECOND wide-block mode
+ *     existed this was untestable: with one mode you can only ever demonstrate the NONE negative, never
+ *     that discovery *discriminates*.
+ *   - STILL OUTSTANDING, and deliberately not built here: the per-sector MAC I/O layer (every
+ *     Volume::ReadSectors/WriteSectors verifying and updating tags, and populating the reserved table),
+ *     plus backup-header mirroring of the slot table.
+ *
+ * THE OPEN DESIGN QUESTION THE I/O LAYER MUST ANSWER FIRST — it is a policy call, not an implementation
+ * detail: on a per-sector tag MISMATCH at read time, does the volume FAIL CLOSED (refuse the read, so
+ * one corrupt sector can make a volume unreadable) or FAIL WARN (surface the tamper, return the data)?
+ * docs/ROLLBACK-COUNTER-SPEC.md set a fail-warn precedent for a different check. Either choice changes
+ * what docs/THREAT-MODEL.md may claim about tamper-evidence, so it should be decided and written down
+ * before the I/O layer is written, not discovered afterwards from whatever the code happened to do.
  */
 
 #ifndef TC_HEADER_Volume_V2FormatBinding

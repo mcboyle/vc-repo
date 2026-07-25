@@ -80,7 +80,7 @@ classify_mount_log() {
 # and honest while silently testing nothing. Both ADIANTUM_MODE=1 and NETSHARE=1 were in exactly that
 # state. Conversely, if the build carries a flag this list omits, Tier 2b's stamp comparison fails.
 # Rule: a step's gate and this list must agree, in both directions.
-FLAGS="NOGUI=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 ARGON2PARAMS=1 BALLOON=1 SHAMIRMAC=1 SHARECODE=1 HKF_SIMULATOR=1 ADIANTUM_MODE=1 NETSHARE=1 HCTR2_MODE=1"
+FLAGS="NOGUI=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 ARGON2PARAMS=1 BALLOON=1 SHAMIRMAC=1 SHARECODE=1 HKF_SIMULATOR=1 ADIANTUM_MODE=1 NETSHARE=1 HCTR2_MODE=1 V2FORMAT=1"
 
 echo "=== Tier 0: build the fork with the feature flags ==="
 # A default build must stay byte-for-byte stock; the flags are all opt-in.
@@ -412,6 +412,18 @@ else
     fi
   else
     skip "HCTR2 EncryptionMode shim — product not built with HCTR2_MODE=1"
+  fi
+
+  # V2 mode DISCOVERY needs BOTH wide-block classes present, hence the two-object gate.
+  if ar t "$SRC/Volume/Volume.a" 2>/dev/null | grep -q EncryptionModeHctr2 \
+     && ar t "$SRC/Volume/Volume.a" 2>/dev/null | grep -q EncryptionModeAdiantum; then
+    if VC_V2_SKIP_BUILD=1 bash "$HERE/v2_mode_discovery.sh" >/"$WORK/v2d.log" 2>&1; then
+      ok "V2 mode discovery discriminates between the two real wide-block EncryptionMode classes"
+    else
+      bad "V2 mode discovery failed"; sed 's/^/      /' "$WORK/v2d.log"
+    fi
+  else
+    skip "V2 mode discovery — needs BOTH HCTR2_MODE=1 and ADIANTUM_MODE=1"
   fi
 
   pend "duress-dismount of ACTUALLY-MOUNTED volumes (dismount-all + scrub needs mounted volumes = kernel dm-crypt; the routing + registration above is proven)"
