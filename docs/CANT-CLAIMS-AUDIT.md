@@ -192,7 +192,7 @@ Tier-2 run did or did not reach; a claim only leaves this table when a *direct* 
 | C-path (Windows driver) header round-trip | `docs/REAL-BUILD-VALIDATION.md:294` | UNTESTED — not this env (no Windows driver build here) |
 | SSD/FTL remnant behaviour | `docs/DECOY-FRAGMENTS-SPEC.md:58,72` | UNTESTED — likely genuinely not-this-env (vSAN-backed virtual disk, no raw FTL) |
 | ~~true power-loss (vs torn-write, which is proven)~~ | `docs/TIER5-FORMAT-DESIGN.md:106` | **VERIFIED (2026-07-25)** — see below; moved OUT of this table |
-| flash-media warning firing on a live mounted session | `docs/ROI-TOP-50.md:115` | IN PROGRESS — built with `FLASH_WARN=1`; probe reads `/sys/block/<dev>/queue/rotational` and warns unless "1". All disks here read "1" (warning correctly silent); firing needs the scratch disk presented as SSD via VMX `scsi0:1.virtualSSD=1` (pending a shutdown) |
+| ~~flash-media warning firing on a live session~~ | `docs/ROI-TOP-50.md:115` | **VERIFIED (2026-07-25)** — see below; moved OUT of this table |
 | ORAM wiring into VeraCrypt | `docs/ORAM-SPEC.md:105` | UNTESTED — code task, not an environment limit |
 | Adiantum `EncryptionMode` shim on non-AES-NI hardware | `docs/ADIANTUM-SPEC.md:68,98` | UNTESTED — box has AES-NI; would need `-DVC_*` / a masked CPU flag |
 | HKF v2 wiring / different-volume-salt behaviour | `docs/HKF-MIX-V2-SPEC.md:71,172` | UNTESTED — code task; binary is built with `-DVC_ENABLE_HKF_MIX_V2`, behaviour not isolated |
@@ -222,6 +222,20 @@ Moved OUT of this table by direct test (see FALSE — NOW TESTABLE above / `veri
   values were recorded on the persistent root disk (`/home/mboyle/powerloss/expected.txt`) so the check is
   reproducible across the reboot. Also establishes the **device-hosted (raw block device) volume** path
   works end to end, which file-container tests never exercise.
+- **`flash-media warning firing on a live session`** — VERIFIED (2026-07-25). The warning is a
+  **hidden-volume-creation** code path (`src/Main/TextUserInterface.cpp:719`, `if Type == Hidden`), not a
+  mount-time one. Fires two ways, both observed live: (1) **file-hosted** hidden volume → `!IsDevice()` →
+  `FlashProbe` fails closed (`ROTATIONAL|UNKNOWN`) → the full "NOT safe for a deniable hidden/decoy volume …"
+  text printed; (2) **device-hosted** hidden volume on `/dev/sdb` → also warned.
+  **Correction to an in-progress prediction, logged per this document's own rule:** it was first predicted
+  that a device reading `rotational=1` would stay *silent* (reading only `FlashProbeRotationalSysfs`). The
+  direct test warned anyway. `FlashProbeDevice` (`src/Common/FlashProbe.c:212`) hardcodes the third
+  (thin/dedup/SMR) axis to `VC_FLASH_WARN_UNKNOWN` — deliberate fail-closed, since that property is
+  invisible under device-mapper — and `FlashProbeAggregate` OR's the axes, so **a Linux device-hosted
+  hidden volume never reads clean and always warns**, independent of `rotational`. Here two axes fired:
+  `discard_granularity=512` (TRIM) and the always-`UNKNOWN` thin axis. Consequence: the planned
+  `scsi0:1.virtualSSD=1` (present as SSD, `rotational=0`) experiment is **moot** — the outcome is identical
+  — so it was not run. The rotational branch is only decisive at the sysfs layer, not in the aggregate.
 
 Several remaining are *probably* true — but "probably true" is what the four falsified claims also looked
 like, so each still gets tested before it is written down as fact.
