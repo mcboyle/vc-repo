@@ -2712,6 +2712,43 @@ else
 fi
 
 echo ""
+echo "[99] Keyslot parallel auto-search — constant-time scan gate (KeyslotOpenParallel)"
+# The property [46]'s dudect does NOT cover: the parallel labeled-table scan must derive EVERY slot with no
+# early exit, so wall-clock depends only on the slot COUNT and the machine, never on WHICH slot matched, and
+# the reduce selects the first match in index order. Direct in-memory microbenchmark (no kernel/mount noise);
+# KDF cost tuned so per-slot work dominates thread-spawn; runs the threaded executor plus the all-inline and
+# partial-spawn executor-failure fallbacks (the EAGAIN recovery shape volKeyslotParallelFor produces).
+# Asserts: byte-identical VMK at slot 0 AND the last slot (an i*ct indexing regression is invisible at slot 0),
+# correct VMK under both fallbacks, and a match@0-vs-match@last position delta within the measured noise.
+# The harness is C++ (it calls the real C++ executor VolumeKeyslotParallelFor directly, via the
+# VC_KS_PAR_TEST_HOOK spawn-boundary hook) linked against the C keyslot objects. C sources -> clang;
+# the .cpp -> clang++; link -> clang++ (-lpthread for std::thread).
+KP_CC=""; for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then KP_CC="$c"; break; fi; done
+KP_CXX=""; for c in clang++ g++ c++; do if command -v "$c" >/dev/null 2>&1; then KP_CXX="$c"; break; fi; done
+KP_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+KP_INCC="$INC -I$SRCROOT/Crypto"
+KP_INCPP="$INC -I$SRCROOT/Crypto -I$SRCROOT/Volume"
+KP_OK=1
+if [ -n "$KP_CC" ] && [ -n "$KP_CXX" ]; then
+	for s in Common/KeyslotStore Common/Keyslot Common/AfSplit Crypto/Sha2 Crypto/chacha256; do
+		"$KP_CC" -O2 -Wno-implicit-function-declaration -DVC_ENABLE_KEYSLOTS $KP_NOASM $KP_INCC \
+			-c "$SRCROOT/$s.c" -o "/tmp/kp_$(basename $s).o" 2>>/tmp/kp.log || KP_OK=0
+	done
+	"$KP_CXX" -O2 -std=c++17 -DVC_ENABLE_KEYSLOTS -DVC_KS_PAR_TEST_HOOK $KP_NOASM $KP_INCPP \
+		-c "$HERE/keyslot_parallel_timing_test.cpp" -o /tmp/kp_main.o 2>>/tmp/kp.log || KP_OK=0
+	[ "$KP_OK" = 1 ] && "$KP_CXX" -O2 /tmp/kp_main.o /tmp/kp_KeyslotStore.o /tmp/kp_Keyslot.o /tmp/kp_AfSplit.o \
+		/tmp/kp_Sha2.o /tmp/kp_chacha256.o -lpthread -lm -o /tmp/keyslot_parallel_timing 2>>/tmp/kp.log || KP_OK=0
+fi
+if [ "$KP_OK" = 1 ] && [ -x /tmp/keyslot_parallel_timing ]; then
+	if /tmp/keyslot_parallel_timing > /tmp/kp_out.txt 2>&1; then
+		grep -E 'byte-identical|fallback|match@slot|mean.?[0-9]|GATE' /tmp/kp_out.txt | sed 's/^/    /'
+		grep -q '^  KEYSLOT PARALLEL TIMING GATE PASSED' /tmp/kp_out.txt || { echo "    KEYSLOT PARALLEL TIMING GATE FAILED"; cat /tmp/kp_out.txt; exit 1; }
+	else echo "    KEYSLOT PARALLEL TIMING RUN FAILED"; cat /tmp/kp_out.txt; exit 1; fi
+else
+	skip_step " no C/C++ compiler built the keyslot parallel timing gate (see /tmp/kp.log)"
+fi
+
+echo ""
 echo "[100] Keyslot cfg builder policy-field init (latent-bug regression; -DVC_ENABLE_KEYSLOT_POLICY)"
 # KeyslotHeaderCfg/SidecarCfg/DeniableCfg left the gated `policy` field uninitialised (stack garbage);
 # policy selects the record layout, so a nonzero garbage value corrupts plen. Fix value-initialises the

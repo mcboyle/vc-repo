@@ -27,6 +27,7 @@ extern "C" {
 #include "Common/KeyslotStore.h"   // KeyslotArea, KeyslotStoreCfg, KeyslotOpen (mount-time slot search)
 #include "Common/Keyslot.h"        // KeyslotKdfSha512, KEYSLOT_FLAG_DURESS
 }
+#include "KeyslotParallelExecutor.h"  // VolumeKeyslotParallelFor (C++ header: <thread>; declares its own C linkage)
 #include "Pkcs5Kdf.h"
 #endif
 #include "Common/Crypto.h"
@@ -50,6 +51,8 @@ namespace VeraCrypt
 		int volKeyslotWriteStub (void *, uint64, const unsigned char *, size_t) { return -1; }
 		uint64 volKeyslotSize (void *ctx) { return ((VolKeyslotCtx *) ctx)->len; }
 	}
+	// The parallel-for executor (VolumeKeyslotParallelFor) lives in KeyslotParallelExecutor.h so the
+	// actual product executor is directly testable (verification/keyslot_parallel_timing_test).
 #endif
 
 	Volume::Volume ()
@@ -323,7 +326,7 @@ namespace VeraCrypt
 
 				SecureBuffer vmk (cfg.vmkLen);
 				int slotFlags = 0;
-				if (KeyslotOpen (&cfg, &area, passwordKey->DataPtr(), (int) passwordKey->Size(), vmk.Ptr(), &slotFlags))
+				if (KeyslotOpenParallel (&cfg, &area, passwordKey->DataPtr(), (int) passwordKey->Size(), vmk.Ptr(), &slotFlags, VolumeKeyslotParallelFor))
 				{
 					if (slotFlags & KEYSLOT_FLAG_DURESS)
 						throw KeyslotDuress (SRC_POS);      // UI runs the safe duress action
