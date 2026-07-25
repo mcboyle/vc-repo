@@ -139,7 +139,61 @@ commissioning.
 
 ### D-8. Replacing the bespoke ristretto255/Ed25519
 
-> **Answer: Split — confirmed final.** libsodium **≥ 1.0.21** for ristretto255; HACL\* for Ed25519.
+> **Answer (2026-07-23): Split — confirmed final.** libsodium **≥ 1.0.21** for ristretto255; HACL\* for Ed25519.
+>
+> **REFINED 2026-07-25 — single provider: libsodium for BOTH groups.** HACL\* is dropped as the Ed25519
+> source; libsodium supplies ristretto255 *and* Ed25519. The direction (delete the bespoke group
+> arithmetic, adopt vetted libraries) is unchanged and was already final; what changed is the provider
+> count, from two libraries to one.
+
+**The actual discriminator, stated honestly.** Only ONE thing separates these two options:
+
+> **machine-checked assurance for Ed25519 (HACL\*) vs. a single dependency (libsodium only).**
+
+Everything else is common to both. In particular, **two arguments that look like reasons are not**:
+
+- **The `__int128` / MSVC blocker is NOT a discriminator.** `src/Common/NetShare.c` (PR #34) carries a
+  from-scratch Ed25519 with ~10 `unsigned __int128` sites MSVC cannot compile — but *both* options
+  delete that code, one replacing it with HACL\*, the other with libsodium. The blocker resolves either
+  way. (It does cancel register item **A10**, the port-to-MSVC-intrinsics task — but under either
+  option, so it argues for D-8 in general, which was already decided.) This was mistakenly offered as a
+  reason for single-provider and is recorded here so it is not re-used as one.
+- **Conformance is NOT a discriminator either.** NetShare's Ed25519 point decompression *is* anchored to
+  the official RFC 8032 §7.1 vectors and passes (31/31). The proven non-conformance from step `[94]` is
+  in the **ristretto255 hash-to-group**, a different construction, which libsodium replaces under both
+  options. What justifies replacing the *Ed25519* at all is **side-channel hardening**: neither bespoke
+  group is constant-time, and hand-hardening one is exactly the "new unverified C" this entry's own
+  research rejected.
+
+**Which is more secure: the split (HACL\*).** HACL\*'s Ed25519 is formally verified — machine-checked
+functional correctness, memory safety, and secret-independence, extracted from F\*. libsodium's is
+hand-written C/asm: exceptionally well reviewed and constant-time by careful construction, but not
+machine-checked. Where a verified implementation exists in C, taking it is a real assurance gain. Note
+this cuts against **D-5** ("maximum security and robustness for the most sensitive risk profiles",
+refined by D-13 to a select few high-risk individuals) — and `D-5` is recorded above as the very answer
+that *reversed D-8 to the split in the first place*.
+
+**Why single-provider was nevertheless chosen (2026-07-25).** The owner selected it with the assurance
+trade-off above stated explicitly. The countervailing risk is operational and specific to this project:
+two verified-crypto dependencies means two MSVC build stories, and a Windows build that silently
+diverges from Linux is the **mixed-build hazard whose failure mode is wrong behaviour, not a build
+error** — it has already cost a session here (`CLAUDE.md`, `docs/REAL-BUILD-VALIDATION.md`). A verified
+library that cannot be built correctly on a target platform is not, in practice, more secure than a
+well-reviewed one that can.
+
+**The checkpoint that would justify revisiting.** Whether HACL\* actually builds cleanly under MSVC is
+an empirical question, not an assumption. Test it at **W1** on the Windows box. If it builds without
+friction, the assurance argument for the split is strong enough that this refinement should be
+reconsidered on the evidence.
+
+**What does NOT change.** The ≥ 1.0.21 pin still applies to *shipping* (CVE-2025-69277); any
+RFC-9496-A.1/A.2-conformant version suffices for libsodium's existing role as a verification oracle.
+The step `[94]` finding remains resolved-by-deletion rather than root-caused, as recorded below.
+
+**Consequences for the backlog.** Supersedes the "constant-time group for shipping" remaining-work in
+**both** the network-share and OPRF ROADMAP entries. Register item A10 (port `__int128` to MSVC
+intrinsics) is **cancelled as wasted work**. Item A12 (OPRF product-path RFC 9497 vectors) should be
+written against the libsodium-backed path, not the bespoke one.
 
 Answered C first under D-5 = personal use, reversed once D-5 became a release, then confirmed final
 after dedicated research (2026-07-23) closed the open caveat.
@@ -307,7 +361,7 @@ than a repo fix.
 | D-5 | A + posture, refined by D-13 | C → A |
 | D-6 | A — counsel brief | B → A |
 | D-7 | R22, R20, R03, R06, R28, R05, R04, R07; none killed | — |
-| D-8 | Split, final — libsodium ≥ 1.0.21 + HACL\* Ed25519 | C → Split → confirmed |
+| D-8 | libsodium ≥ 1.0.21 for BOTH groups (single provider) | C → Split → confirmed → refined 2026-07-25 |
 | D-9 | A — Linux/macOS | C → A |
 | D-10 | B — v2, deniability-preserving | — |
 | D-11 | C — skip, flags must be visible | — |

@@ -340,8 +340,28 @@ brief:
   (real-build): a constant-time group (the validation group is not side-channel-hardened), the
   rate-limited servers + transport, and RFC 9497 e2e vectors. `docs/OPRF-SPEC.md`.
 - **Replace bespoke ristretto255 / Ed25519 with vetted libraries [D-8]** — adopt **libsodium ≥ 1.0.21**
-  for ristretto255 and **HACL\*** for Ed25519, deleting the hand-rolled group arithmetic that the
-  network-share and OPRF DESIGN entries above still list as "a constant-time group remains." Research
+  for **both groups**, deleting the hand-rolled group arithmetic that the
+  network-share and OPRF DESIGN entries above still list as "a constant-time group remains."
+  **[REFINED 2026-07-25 — single provider.]** The earlier answer was a *split*: libsodium for
+  ristretto255, HACL\* for Ed25519. HACL\* is now dropped and libsodium supplies both. The direction is
+  unchanged; the provider count drops from two to one.
+  **The only real discriminator is assurance vs. dependency count** — and on assurance the *split* is
+  stronger: HACL\*'s Ed25519 is **formally verified** (machine-checked correctness, memory safety, and
+  secret-independence), while libsodium's is hand-written C/asm that is exceptionally well reviewed but
+  not machine-checked. That cuts against D-5's "maximum security for the most sensitive risk profiles",
+  which is itself what reversed D-8 to the split originally. Single-provider was chosen anyway, with
+  that trade stated: two verified-crypto dependencies means two MSVC build stories, and a Windows build
+  that silently diverges from Linux is the **mixed-build hazard whose failure mode is wrong behaviour,
+  not a build error** — one this project has already paid for. **Revisit at W1** if HACL\* turns out to
+  build cleanly under MSVC; that is an empirical question, not an assumption.
+  Two things that are **NOT** discriminators, recorded so they are not re-used as such: the
+  `unsigned __int128`/MSVC blocker in `src/Common/NetShare.c` (both options *delete* that code, so it
+  resolves either way — it cancels register item A10 under either), and conformance (NetShare's
+  decompression is anchored to the official RFC 8032 §7.1 vectors and passes; the step `[94]`
+  non-conformance is in the *ristretto255 hash-to-group*, which libsodium replaces under both options).
+  What justifies replacing the Ed25519 at all is **side-channel hardening**: neither bespoke group is
+  constant-time, and hand-hardening one is exactly the "new unverified C" this entry's own research
+  rejected. See `handoff/DECISIONS-ANSWERED.md` D-8. Research
   (2026-07-23) confirmed no verified ristretto255 exists in C anywhere and HACL\* has none; libsodium must
   be **≥ 1.0.21** (CVE-2025-69277 fix — ristretto255 was not the affected surface and is the maintainer's
   recommended mitigation for that bug class). Do **not** hand-build ristretto on HACL\*'s exposed
