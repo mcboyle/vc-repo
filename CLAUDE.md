@@ -94,7 +94,14 @@ simulator secret, `rawSecret` (Shamir reconstruction), and `applyPolicy`.
 ## Build (Linux)
 
 ```sh
-sudo apt-get update && sudo apt-get install -y libykpers-1-dev libfido2-dev libwxgtk3.2-dev
+# COMPLETE dep set, learned from an actual build (scripts/build-product.sh DEPS is authoritative).
+# build-essential/yasm/libpcsclite-dev are STOCK VeraCrypt deps: without them the build fails inside
+# UPSTREAM code, which reads like the fork is broken. Do not trim this list.
+sudo apt-get update && sudo apt-get install -y \
+  build-essential pkg-config yasm libwxgtk3.2-dev libpcsclite-dev \
+  libfuse-dev libfido2-dev libykpers-1-dev
+# libwxgtk3.2-dev is named differently on older releases — fall back to libwxgtk3.0-gtk3-dev.
+# No yasm? add NOASM=1 to the make/build-product line (drops the x86-64 AES assembler, not the fork).
 # feature flags (opt-in; a build with none is behaviourally stock):
 #   -DVC_ENABLE_HKF            derivation hooks + CLI options
 #   -DVC_ENABLE_YUBIKEY_HMAC   YubiKey backend   (link -lykpers-1)
@@ -115,6 +122,33 @@ flags** — make does not rebuild objects on `-D` changes, and a mixed binary si
 `scripts/build-product.sh` now stamps the resolved `-D` set into `src/.build-flags` and
 `verification/realbuild/open_roundtrip.sh` refuses to run against archives whose stamp disagrees with its
 own flags. Prefer `scripts/build-product.sh` (true clean) over bare `make`. Windows: add the sources to `Common.vcxproj` manually.
+
+## Which environment are you in? (this changes what is testable)
+
+**Check before inheriting any "not testable here" claim.** Much of this repo's language was written from a
+container, where `/dev/mapper/control` is absent so nothing can ever kernel-mount. On a real VM that is
+false, and several claims in `docs/CANT-CLAIMS-AUDIT.md` flip. One probe:
+
+```sh
+[ -e /dev/mapper/control ] && echo "dm-crypt available — Tier 2+ is testable" || echo "container — Tier 0/1 only"
+```
+
+| | container (Claude Code web) | real VM with sudo |
+|---|---|---|
+| verification suite, product build, `open_roundtrip.sh` | yes | yes |
+| `acceptance.sh` Tier 2 — **loopback create/mount/dismount** | SKIPs (no dm) | **yes — run it** |
+| kernel dm-crypt mount, keyslot mount-time auto-search on real media, duress end-to-end, live flash-media warning | no | **yes — these are the open UNTESTED claims** |
+| YubiKey / FIDO2 hardware backends | no | only with USB passthrough (Tier 3) |
+
+On a VM: `sudo bash verification/realbuild/acceptance.sh` after a build. It is self-gating and prints
+SKIP rather than FAIL for anything the box cannot do, and it is non-destructive — every volume is a file
+container inside a `mktemp -d`; nothing in the tree writes to a real block device (the `/dev/sd*` strings
+in `verification/flash_probe_test.c` are string-parsing unit tests, not device access).
+
+**The session-start hook does not provision a non-container box.** `.claude/hooks/session-start.sh` gates
+its dep install on `CLAUDE_CODE_REMOTE=true` so it never mutates someone's own machine uninvited. On a
+dedicated/disposable VM, opt in with `VC_PROVISION=1` in the environment, or just run the apt line above
+by hand.
 
 ## Verification methodology (the project's convention — keep it)
 

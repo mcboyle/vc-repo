@@ -48,7 +48,10 @@ command -v python3 >/dev/null 2>&1 && log "python3: $(python3 --version)" || log
 #   wxWidgets 3.2 (GUI/CLI), libpcsclite-dev + yasm (STOCK VeraCrypt deps — smartcard headers and the
 #   x86-64 AES assembler; without them the build stops in stock code, not the fork's), libfido2 +
 #   libfuse (mount), and libykpers-1 for YubiKey. Some base images already ship several of these.
-if [ "${CLAUDE_CODE_REMOTE:-}" = "true" ]; then
+# Gated so this never mutates someone's own workstation uninvited. Two ways in: the platform's
+# CLAUDE_CODE_REMOTE (ephemeral container), or an explicit VC_PROVISION=1 for a dedicated/disposable
+# VM where installing build deps is the whole point.
+if [ "${CLAUDE_CODE_REMOTE:-}" = "true" ] || [ "${VC_PROVISION:-}" = "1" ]; then
   if command -v apt-get >/dev/null 2>&1; then
     # A broken third-party PPA (e.g. deadsnakes/ondrej) can make `apt-get update` fail for the WHOLE
     # archive, blocking even main-archive packages. Disable any such PPA best-effort so the main
@@ -91,7 +94,23 @@ if [ "${CLAUDE_CODE_REMOTE:-}" = "true" ]; then
     fi
   fi
 else
-  log "local session — skipping real-build dep install (set CLAUDE_CODE_REMOTE=true to force)"
+  log "local session — not installing build deps (this box may be your own machine)."
+  log "  On a dedicated/disposable VM, opt in with VC_PROVISION=1, or install by hand:"
+  log "  sudo apt-get install -y build-essential pkg-config yasm libwxgtk3.2-dev libpcsclite-dev libfuse-dev libfido2-dev libykpers-1-dev"
+fi
+
+# --- 3. Report what THIS box can test that a container cannot ----------------------------------------
+# Environment capability is not a constant, and this repo has repeatedly inherited container-shaped
+# "can't" claims as if it were (docs/CANT-CLAIMS-AUDIT.md). Say plainly which tier is reachable here.
+if [ -e /dev/mapper/control ]; then
+  log "kernel device-mapper PRESENT — dm-crypt mount is testable on this box (a container cannot do this)."
+  if [ "$(id -u)" = 0 ] || command -v sudo >/dev/null 2>&1; then
+    log "  run the Tier-2 acceptance harness:  sudo bash verification/realbuild/acceptance.sh"
+    log "  it is self-gating (SKIP, not FAIL) and non-destructive — file containers in a mktemp dir only."
+    log "  claims in docs/CANT-CLAIMS-AUDIT.md marked UNTESTED for lack of a kernel are now TESTABLE: retest, don't inherit."
+  fi
+else
+  log "no /dev/mapper/control — container-class box: Tier 0/1 only (build + verification + open_roundtrip)."
 fi
 
 log "ready. Verify:  cd verification && ./build_and_verify.sh   |  Build: see docs/SESSION-STARTUP.md"
