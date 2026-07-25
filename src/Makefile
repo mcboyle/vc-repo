@@ -153,6 +153,7 @@ export VC_ENABLE_KEYSLOTS ?= 0
 export VC_ENABLE_ARGON2_PARAMS ?= 0
 export VC_ENABLE_SHAMIR_MAC ?= 0
 export VC_ENABLE_SHARECODE ?= 0
+export VC_ENABLE_ADIANTUM_MODE ?= 0
 export VC_ENABLE_FLASH_WARN ?= 0
 export VC_ENABLE_V2FORMAT ?= 0
 export VC_ENABLE_CTAES ?= 0
@@ -326,6 +327,15 @@ endif
 ifeq "$(origin SHARECODE)" "command line"
 	VC_ENABLE_SHARECODE := 1
 	C_CXX_FLAGS += -DVC_ENABLE_SHARECODE
+endif
+
+# Adiantum wide-block EncryptionMode (opt-in). `make ADIANTUM_MODE=1` adds Volume/EncryptionModeAdiantum.o
+# and the Crypto objects it needs. Adiantum is a SELF-CONTAINED construction: it bundles its own
+# AES-256/XChaCha12/NH-Poly1305 and ignores the CipherList, so it does NOT compose into cascades — see
+# the header comment and docs/ADIANTUM-SPEC.md before offering it in any UI.
+ifeq "$(origin ADIANTUM_MODE)" "command line"
+	VC_ENABLE_ADIANTUM_MODE := 1
+	C_CXX_FLAGS += -DVC_ENABLE_ADIANTUM_MODE -DVC_ENABLE_ADIANTUM -DVC_ENABLE_CTAES -DVC_ENABLE_POLY1305
 endif
 
 # Flash-media deniability warning at hidden/decoy-volume creation (opt-in). `make FLASH_WARN=1` links

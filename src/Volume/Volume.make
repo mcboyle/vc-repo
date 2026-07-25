@@ -35,6 +35,13 @@ OBJS += VolumePasswordCache.o
 
 ifeq "$(ENABLE_WOLFCRYPT)" "0"
 OBJS += EncryptionModeXTS.o
+
+# Adiantum wide-block EncryptionMode shim (opt-in via `make ADIANTUM_MODE=1`). The Adiantum ALGORITHM is
+# proven at step [91]; this is the EncryptionMode subclass that gives it a volume path at all
+# (V2FormatBinding.h recorded itself as "BLOCKED ON the wide-block cipher mode classes").
+ifeq "$(VC_ENABLE_ADIANTUM_MODE)" "1"
+OBJS += EncryptionModeAdiantum.o
+endif
 else
 OBJS += EncryptionModeWolfCryptXTS.o
 endif

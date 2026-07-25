@@ -117,3 +117,9 @@ The PoC proves the mechanism; wiring it into VeraCrypt is a major effort and is 
 This is a research-grade feature; the value delivered here is the **proven core property** and a
 concrete construction to build it from. It should be scheduled as its own project, not folded into a
 routine change.
+
+> **PARKED — see `docs/FRONTIER-FEATURES.md`.** This integration is now on the frontier list: parked on
+> purpose, not blocked and not abandoned, so it stops reading as "next up" in the roadmap. It comes off
+> that list only when someone deliberately schedules it as its own project. The **mandatory public-write
+> cloak** (line 8 above) is the one bounded piece that can be built and anchored first, independently —
+> it is not parked, merely unscheduled.
