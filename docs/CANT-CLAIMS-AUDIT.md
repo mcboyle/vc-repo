@@ -191,7 +191,7 @@ Tier-2 run did or did not reach; a claim only leaves this table when a *direct* 
 |---|---|---|
 | C-path (Windows driver) header round-trip | `docs/REAL-BUILD-VALIDATION.md:294` | UNTESTED — not this env (no Windows driver build here) |
 | SSD/FTL remnant behaviour | `docs/DECOY-FRAGMENTS-SPEC.md:58,72` | UNTESTED — likely genuinely not-this-env (vSAN-backed virtual disk, no raw FTL) |
-| true power-loss (vs torn-write, which is proven) | `docs/TIER5-FORMAT-DESIGN.md:106` | IN PROGRESS — this VM *can* be hard-destroyed (a container cannot); device-hosted volume on `/dev/sdb` verified, abrupt-poweroff verification pending a coordinated hard Power Off |
+| ~~true power-loss (vs torn-write, which is proven)~~ | `docs/TIER5-FORMAT-DESIGN.md:106` | **VERIFIED (2026-07-25)** — see below; moved OUT of this table |
 | flash-media warning firing on a live mounted session | `docs/ROI-TOP-50.md:115` | IN PROGRESS — built with `FLASH_WARN=1`; probe reads `/sys/block/<dev>/queue/rotational` and warns unless "1". All disks here read "1" (warning correctly silent); firing needs the scratch disk presented as SSD via VMX `scsi0:1.virtualSSD=1` (pending a shutdown) |
 | ORAM wiring into VeraCrypt | `docs/ORAM-SPEC.md:105` | UNTESTED — code task, not an environment limit |
 | Adiantum `EncryptionMode` shim on non-AES-NI hardware | `docs/ADIANTUM-SPEC.md:68,98` | UNTESTED — box has AES-NI; would need `-DVC_*` / a masked CPU flag |
@@ -212,6 +212,16 @@ Moved OUT of this table by direct test (see FALSE — NOW TESTABLE above / `veri
   off-network and wrong-server fail). The remaining gap is **not environmental**: the veracrypt product
   CLI has no `--ns-*` enroll/unlock options, so product integration is a **code task** (PENDING-INTEGRATION),
   like ORAM/HKF-v2 — a remote endpoint is the same code with a different socket address.
+- **`true power-loss`** — VERIFIED (2026-07-25), on a dedicated disposable scratch disk (`/dev/sdb`)
+  a container cannot provide. Created a **device-hosted** VeraCrypt volume directly on the raw block
+  device (distinct from the file-container path the harness uses), mounted it via kernel dm-crypt, wrote a
+  marker + a 4 MiB random file, `fsync`+`sync`, and left it **mounted**. Then the VM was hard-powered-off
+  in vSphere (Power Off, not guest shutdown) — a real abrupt power loss, not the torn-write simulation
+  (which was already proven). On reboot, `--mount /dev/sdb` re-opened the volume (rc=0, header intact) and
+  both the marker and the 4 MiB file's SHA-256 matched byte-for-byte, with no fs-repair needed. Expected
+  values were recorded on the persistent root disk (`/home/mboyle/powerloss/expected.txt`) so the check is
+  reproducible across the reboot. Also establishes the **device-hosted (raw block device) volume** path
+  works end to end, which file-container tests never exercise.
 
 Several remaining are *probably* true — but "probably true" is what the four falsified claims also looked
 like, so each still gets tested before it is written down as fact.
