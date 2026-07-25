@@ -136,8 +136,13 @@ jobs:
             build-essential clang yasm libwxgtk3.2-dev libpcsclite-dev libfuse-dev libfido2-dev libykpers-1-dev pkg-config
       - name: Build stock console product (NOGUI)
         run: ./scripts/build-product.sh NOGUI=1
+      # NB: this flag set and the open_roundtrip.sh invocation further down MUST match exactly.
+      # open_roundtrip.sh resolves its args to a -D set and compares it against the src/.build-flags
+      # stamp this script writes, refusing on any mismatch. Adding a knob to one line and not the other
+      # is a CI failure that reads like a crypto failure — it has already happened twice (ADIANTUM_MODE,
+      # then BALLOON). Change both lines together.
       - name: Build full-featured console product (all fork knobs)
-        run: ./scripts/build-product.sh NOGUI=1 HKF=1 HKF_SIMULATOR=1 HKF_MIX_V2_SALTBIND=1 KEYSCRUB=1 DURESS=1 KEYSLOTS=1 SHARECODE=1 SHAMIRMAC=1 FLASH_WARN=1 ARGON2PARAMS=1 ADIANTUM_MODE=1
+        run: ./scripts/build-product.sh NOGUI=1 HKF=1 HKF_SIMULATOR=1 HKF_MIX_V2_SALTBIND=1 KEYSCRUB=1 DURESS=1 KEYSLOTS=1 SHARECODE=1 SHAMIRMAC=1 FLASH_WARN=1 ARGON2PARAMS=1 ADIANTUM_MODE=1 BALLOON=1
       # In-process Volume::Open round-trip against the just-built full-featured archives (Core/Volume/
       # Platform.a). Exercises the real C++ create->open path directly — correct password opens + recovers
       # a non-trivial master key; wrong password rejects; and with the simulator factor: correct factor
@@ -151,4 +156,4 @@ jobs:
         run: VC_AM_SKIP_BUILD=1 bash verification/realbuild/adiantum_mode.sh
 
       - name: In-process Volume::Open round-trip (real product objects)
-        run: VC_OR_SKIP_BUILD=1 ./verification/realbuild/open_roundtrip.sh NOGUI=1 HKF=1 HKF_SIMULATOR=1 HKF_MIX_V2_SALTBIND=1 KEYSCRUB=1 DURESS=1 KEYSLOTS=1 SHARECODE=1 SHAMIRMAC=1 FLASH_WARN=1 ARGON2PARAMS=1 ADIANTUM_MODE=1
+        run: VC_OR_SKIP_BUILD=1 ./verification/realbuild/open_roundtrip.sh NOGUI=1 HKF=1 HKF_SIMULATOR=1 HKF_MIX_V2_SALTBIND=1 KEYSCRUB=1 DURESS=1 KEYSLOTS=1 SHARECODE=1 SHAMIRMAC=1 FLASH_WARN=1 ARGON2PARAMS=1 ADIANTUM_MODE=1 BALLOON=1
