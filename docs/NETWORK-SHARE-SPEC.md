@@ -1,7 +1,9 @@
 # Network-bound share source (Tang/Clevis-style) — design spec
 
-**Status: DESIGN — specced; the McCallum–Relyea exchange proven, network client + wire format not yet
-built.** A share for the split-key factor whose recovery **requires a network server's participation**,
+**Status: MODULE BUILT — the McCallum–Relyea exchange is proven at production parameters and cross-host
+over real TCP, and `src/Common/NetShare.{c,h}` is the shippable module (compressed wire format, RFC 8032
+§5.1.3 decompression, step `[102]`). Remaining: the `--ns-*` CLI and a constant-time group.**
+A share for the split-key factor whose recovery **requires a network server's participation**,
 where the **server never sees the key** and a **stolen, off-network machine stays locked**. It composes
 as a Shamir share source, so it drops into the threshold/split-key factor already built
 (`docs/SPLIT-KEY-SPEC.md`) with no new seam in the derivation path.
@@ -111,10 +113,53 @@ child), with a persisted `C`-blob `{ S, C }`:
 - **off-network** (no server answering) the share is **unrecoverable**; a **wrong server** (different
   `s`) yields a different share. So the machine unlocks only *with* the network party, as designed.
 
-Remaining, real-build only (needs a live external server, not sandbox-testable): swap the socket for
-**HTTP(S) to a real Tang server** (or a custom endpoint) and wire the recovered share into the
-split-key factor / a keyslot via the CLI. Serialization is a detail the PoC simplifies — it moves
-points in extended-coordinate wire form and stores `C` the same way, where a production build sends
-**compressed** points (32 B); and a production build swaps the from-scratch group for a constant-time,
-side-channel-hardened implementation (or delegates to `jose`/`clevis`) — the from-scratch group here is
-proven correct against RFC 8032 but is **not** constant-time and is for validation, not shipping.
+**Two-host TCP — proven (step `[101]`, `verification/netshare_tcp_poc.c`).** The same MR crypto driven
+over `AF_INET`, run for real across two lab machines (server on 10.0.70.81, client on .82): the same
+anchor share `edf4bd73…` recovered over the wire, fresh blinding per unlock, off-network and
+wrong-server both failing.
+
+## Shippable module — `src/Common/NetShare.{c,h}` (step `[102]`)
+
+**"Serialization is a detail" was the wrong framing, and it hid the last piece of real crypto.** Every
+PoC above moves the raw extended-coordinate `pt` struct on the wire. A shipping build sends **compressed
+32-byte points**, and a compressed point must be **decompressed** on receipt — recovering `x` from `y`
+via a modular square root (RFC 8032 §5.1.3). Nothing in this tree had ever done that. So the gap after
+`[101]` was not "just the CLI": it was a missing wire format, and the wire format needed new, unanchored
+crypto. See `docs/CANT-CLAIMS-AUDIT.md` for the correction in full.
+
+`NetShare.{c,h}` closes it, gated `-DVC_ENABLE_NETSHARE`:
+
+- **compressed-point wire format** with `pt_decompress` per RFC 8032 §5.1.3, rejecting non-canonical
+  `y ≥ p`, off-curve `y`, and the invalid `x = 0`-with-sign-bit encoding. `sqrt(-1)` is *computed*
+  (`2^((p−1)/4) mod p`) rather than hardcoded — a mistyped 256-bit constant would be a silent
+  wrong-branch bug on a path that only some inputs take.
+- **transport is injected** (`NetShareTransportFn`), so `Common/` contains no sockets and the crypto is
+  testable with no network — the same seam pattern as `KeyslotArea` and the keyslot parallel-for.
+- **versioned credential blob** `NSC‖ver‖S‖C‖cksum`, carrying no secret: `c` and `K` are wiped at
+  enrolment, so a stolen disk holds only public values.
+- **off-network is `NETSHARE_ERR_TRANSPORT`, never a bad share** — the caller can say "server
+  unreachable" instead of "wrong password".
+
+Anchored **OFFICIAL** (`verification/netshare_module_test.c`, 31/31): all five RFC 8032 §7.1 Ed25519
+public keys — compressed points from an implementation we did not write — decompress and re-compress
+byte-identically. That is not a tautology: compression recomputes `x` from the decompressed
+coordinates, so an `x` recovered on the wrong branch re-encodes with the wrong sign bit and fails.
+
+**Why the credential carries a checksum.** The first version validated both stored points and claimed
+in its own comment that corruption "is reported as a credential problem and never as a failed unlock."
+The module test disproved it: point encodings are dense, so a flipped bit usually yields *another valid
+point* — parse returned OK and recovery silently produced a different share, i.e. "wrong password" for a
+corrupt credential. The test sweeps eight bit positions and separately asserts at least one still parses
+as a valid point, so the checksum is demonstrably load-bearing. It detects corruption, not tampering:
+an attacker who can rewrite the blob can rewrite the checksum, and gains nothing by it — the credential
+is public and useless without the server.
+
+## What remains
+
+- the **`--ns-*` enrol/unlock CLI options** and a TCP/HTTPS implementation of `NetShareTransportFn`
+  (now genuinely just wiring — the module and its proof are in place);
+- HTTP(S) to a real **Tang** endpoint rather than the bare framing used here;
+- a **constant-time** group implementation before shipping. The from-scratch group is proven correct
+  against RFC 8032 but is **not** side-channel hardened. This matters less than for a password KDF —
+  the scalars here are ephemeral blinding factors and a per-credential `c` that is destroyed at
+  enrolment — but it is not a claim to skip. It is stated here as an open item, not as done.

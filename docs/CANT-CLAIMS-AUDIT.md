@@ -213,11 +213,42 @@ Moved OUT of this table by direct test (see FALSE — NOW TESTABLE above / `veri
   (10.0.70.81) and the client (`--client`) on host 82 — the **same anchor share `edf4bd73…`** was
   recovered over the wire, each unlock re-blinds (the server never sees `C`), and **off-network** (dead
   port) and **wrong-server** (different secret) both fail. So the transport works end-to-end host-to-host,
-  not just on loopback. The remaining gap is **not environmental**: the veracrypt product CLI has no
-  `--ns-*` enroll/unlock options, so product integration is a **code task** (PENDING-INTEGRATION), like
-  ORAM/HKF-v2. (Method note: the first cross-host attempt failed because `nohup … &` in a one-shot ssh
-  command is torn down on session close; holding the server in a foreground process under a live ssh
-  fixed it — the failure was the apparatus, not the protocol.)
+  not just on loopback. The remaining gap is **not environmental**: it is a **code task**
+  (PENDING-INTEGRATION), like ORAM/HKF-v2. (Method note: the first cross-host attempt failed because
+  `nohup … &` in a one-shot ssh command is torn down on session close; holding the server in a foreground
+  process under a live ssh fixed it — the failure was the apparatus, not the protocol.)
+
+  > **CORRECTION (2026-07-25, later) — "the remaining gap is only the `--ns-*` CLI wiring" was an
+  > understatement, and this document's own rule caught it.** Every MR proof to that point — [10], [39],
+  > [49], [101] — put the **raw extended-coordinate `pt` struct** on the wire, and each said so in its
+  > header: *"a production build would send compressed 32-byte points … a serialization detail"*. That
+  > detail is not free. A compressed point has to be **decompressed** on receipt, which needs a modular
+  > square root (RFC 8032 §5.1.3), and **no decompression existed anywhere in this tree** — `grep` for it
+  > returns only ML-KEM's unrelated coefficient decompression and zlib. So the honest statement was not
+  > "only CLI wiring remains" but *"a wire format is missing, and a wire format needs new crypto that has
+  > never been written or anchored here."*
+  >
+  > Now closed: `src/Common/NetShare.{c,h}` (gated `-DVC_ENABLE_NETSHARE`) is the shippable module —
+  > compressed-point serialisation with RFC 8032 §5.1.3 decompression, MR enrol/recover over an injected
+  > transport seam (no sockets in `Common/`, the same pattern as `KeyslotArea`), and a versioned
+  > credential blob. Step **`[102]`** anchors it: **ANCHOR CLASS OFFICIAL** — all five RFC 8032 §7.1
+  > Ed25519 public keys decompress and re-compress byte-identically (compression recomputes `x`, so a
+  > wrong `sqrt(-1)` branch changes the sign bit and the round-trip fails), plus property checks for the
+  > MR flow over the compressed format, blinding/unlinkability, and off-network reported as
+  > `ERR_TRANSPORT` rather than as a bad key. 31/31.
+  >
+  > **A second finding from building it, of the kind this document exists for.** The first version of
+  > `NetShareCredParse` validated both stored points and its own comment claimed corruption *"is reported
+  > as a credential problem and never as a failed unlock."* The module test disproved that: Ed25519 point
+  > encodings are dense, so flipping a bit in the stored `S` usually lands on **another valid point** —
+  > parse returned OK and recovery would have silently produced a *different share*, surfacing to the user
+  > as "wrong password" with no hint the credential was at fault. Point validation alone cannot deliver
+  > that property; the credential now carries a checksum. The test sweeps eight bit positions and
+  > separately asserts that at least one of them still yields a valid point, so the checksum is provably
+  > load-bearing rather than decorative. *A comment asserting a property is not the property.*
+  >
+  > Still open, and now genuinely just wiring: the `--ns-*` enrol/unlock CLI options and a TCP transport
+  > implementation of `NetShareTransportFn`.
 - **`true power-loss`** — VERIFIED (2026-07-25), on a dedicated disposable scratch disk (`/dev/sdb`)
   a container cannot provide. Created a **device-hosted** VeraCrypt volume directly on the raw block
   device (distinct from the file-container path the harness uses), mounted it via kernel dm-crypt, wrote a
