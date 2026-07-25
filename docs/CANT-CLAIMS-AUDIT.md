@@ -129,32 +129,82 @@ re-examine it. The conclusion happened to be right; the method was the same one 
 answers. A correct guess reached by inheritance is not evidence, and it is not distinguishable from the
 failures until someone runs the command.
 
+### FALSE — NOW TESTABLE (VM Tier-2 run, 2026-07-25)
+
+First execution on a box with a real kernel device-mapper (`/dev/mapper/control` present, `/dev/loop-control`
+present, 16 cores, 62 GB, Ubuntu 24.04.4, AES-NI). Full run record + exact commands:
+`verification/realbuild/VM-TIER2-RUN.md`. Environment fact worth its own line: **`sudo` was
+password-gated by default** (`sudo -n true` → "a password is required"); a non-interactive session cannot
+use it until a NOPASSWD drop-in exists. "The VM has sudo" was itself a partially-true inherited claim; the
+direct test settled it.
+
+**`kernel dm-crypt mount` — VERIFIED WORKING (was UNTESTED).** Positive control, run before any negative:
+
+```sh
+VC=src/Main/veracrypt; W=$(mktemp -d)
+sudo $VC --text --create $W/v.hc --size=10M --password=P --pim=0 --keyfiles="" \
+     --encryption=AES --hash=SHA-512 --filesystem=fat --volume-type=normal --random-source=/dev/urandom
+sudo $VC --text --mount  $W/v.hc $W/mnt --password=P --pim=0 --keyfiles="" --protect-hidden=no --slot=1 --non-interactive
+# -> dm mapping veracrypt1 (252:1); /dev/loop0 bound to v.hc; vfat mounted at $W/mnt;
+#    wrote+read a file through the encrypted mount; --dismount exit 0; dmsetup/losetup clean after.
+```
+Repeated twice, identical. The claim that this needs "a VM the container does not provide" was correct
+about *why* it was untestable, and it flips cleanly now that a VM exists.
+
+**`keyslot mount-time auto-search on real media` — VERIFIED WORKING (was UNTESTED).** A plain `--mount`
+with a *keyslot* passphrase (not the native one) recovered the VMK and mounted through kernel dm-crypt:
+
+```sh
+$VC --text --keyslot-add $W/k.hc --password=NATIVE --new-password=SLOT --pim=0 --keyfiles=""
+sudo $VC --text --mount  $W/k.hc $W/km --password=SLOT --pim=0 --keyfiles="" --protect-hidden=no --non-interactive
+# -> mounted via the keyslot (87s: the constant-time 63-slot auto-search; see below), then dismount.
+```
+Also verified in the same run: keyslot enroll opens & recovers the exact master key; wrong passphrase
+rejected; HKF-simulator 2FA positive mount through the kernel (correct factor, 1s); `--duress-register`
+prints a well-formed 16-byte salt + 32-byte tag; argon2 wrong-memory/wrong-iterations rejected.
+
+**Not a defect, but recorded so the next reader does not misread it as one — the 46–87s "hang".** Every
+wrong-native-key mount pays a **deliberate constant-time** cost: the mount-time keyslot auto-search
+(`src/Volume/Volume.cpp:309-345` → `KeyslotOpen` in `src/Common/KeyslotStore.c:228-268`) runs a
+500,000-iteration PBKDF2-SHA512 on **all 63 slots, no early return**, to avoid leaking how many slots
+exist or which matched (KeyslotStore.c:230-236). 63 × ~0.7s ≈ 46s, single-threaded, negligible RAM
+(measured: one core at 99.8%, 15 idle, ~60 GB free). Correct-key mounts are ~1s. Consequence:
+`acceptance.sh` times out at 5 min on a real-dm box because its negative mounts each pay this. This is a
+performance/harness characteristic, **not** a crypto bug; the only *safe* speedup is to parallelize the
+63 derivations while still computing all of them (owner directive this session: change nothing that could
+harm security, so left as-is and documented). Two harness miscalibrations also surfaced — see
+`VM-TIER2-RUN.md` findings #1 (`--filesystem=none` makes positive round-trips FAIL on a real-dm box while
+they PASS in a container) and #3 (`balloon` needs a `BALLOON=1` binary that STEP 2's flag line omits).
+
 ### VERIFIED-TRUE
 
 *(none yet — the genuinely-impossible claims below have not been individually tested, and are listed as
-UNTESTED rather than assumed true. Kernel dm-crypt mount is the most likely to survive testing: it needs
-a VM, which this container does not provide.)*
+UNTESTED rather than assumed true. `kernel dm-crypt mount`, previously listed here as the most likely to
+survive, was instead tested and moved to FALSE — NOW TESTABLE above.)*
 
 ### UNTESTED
 
-Not yet checked; **do not treat as either true or false**:
+Not yet checked; **do not treat as either true or false**. Status column records what the 2026-07-25 VM
+Tier-2 run did or did not reach; a claim only leaves this table when a *direct* test settles it.
 
-| Claim | Location |
-|---|---|
-| C-path (Windows driver) header round-trip | `docs/REAL-BUILD-VALIDATION.md:294` |
-| kernel dm-crypt mount | `docs/KEYSLOTS-SPEC.md:272`, CLAUDE.md |
-| duress end-to-end (wx orchestration) | `CLAUDE.md:211` |
-| keyslot mount-time auto-search on real media | `docs/KEYSLOTS-SPEC.md:272` |
-| network-share against a live external server | `docs/NETWORK-SHARE-SPEC.md:114` |
-| SSD/FTL remnant behaviour | `docs/DECOY-FRAGMENTS-SPEC.md:58,72` |
-| true power-loss (vs torn-write, which is proven) | `docs/TIER5-FORMAT-DESIGN.md:106` |
-| flash-media warning firing on a live mounted session | `docs/ROI-TOP-50.md:115` |
-| ORAM wiring into VeraCrypt | `docs/ORAM-SPEC.md:105` |
-| Adiantum `EncryptionMode` shim on non-AES-NI hardware | `docs/ADIANTUM-SPEC.md:68,98` |
-| HKF v2 wiring / different-volume-salt behaviour | `docs/HKF-MIX-V2-SPEC.md:71,172` |
+| Claim | Location | Status after 2026-07-25 VM run |
+|---|---|---|
+| C-path (Windows driver) header round-trip | `docs/REAL-BUILD-VALIDATION.md:294` | UNTESTED — not this env (no Windows driver build here) |
+| duress end-to-end (wx orchestration) | `CLAUDE.md:211` | PARTIAL — `--duress-register` (salt+tag) VERIFIED; the full dismount-all-mounted-volumes + scrub orchestration NOT run (needs mounted volumes + the wx path). Testable here; ran out of session. |
+| network-share against a live external server | `docs/NETWORK-SHARE-SPEC.md:114` | UNTESTED — a live server + enroll/unlock CLI not stood up this session; box has a network, so testable next |
+| SSD/FTL remnant behaviour | `docs/DECOY-FRAGMENTS-SPEC.md:58,72` | UNTESTED — likely genuinely not-this-env (vSAN-backed virtual disk, no raw FTL) |
+| true power-loss (vs torn-write, which is proven) | `docs/TIER5-FORMAT-DESIGN.md:106` | UNTESTED — this VM *can* be hard-destroyed (a container cannot); not exercised yet |
+| flash-media warning firing on a live mounted session | `docs/ROI-TOP-50.md:115` | UNTESTED — built with `FLASH_WARN=1`; live-session firing not exercised |
+| ORAM wiring into VeraCrypt | `docs/ORAM-SPEC.md:105` | UNTESTED — code task, not an environment limit |
+| Adiantum `EncryptionMode` shim on non-AES-NI hardware | `docs/ADIANTUM-SPEC.md:68,98` | UNTESTED — box has AES-NI; would need `-DVC_*` / a masked CPU flag |
+| HKF v2 wiring / different-volume-salt behaviour | `docs/HKF-MIX-V2-SPEC.md:71,172` | UNTESTED — code task; binary is built with `-DVC_ENABLE_HKF_MIX_V2`, behaviour not isolated |
 
-Several of these are *probably* true — a VM genuinely is absent. The point is that "probably true" is
-what the four falsified claims also looked like, so each gets tested before it is written down as fact.
+Moved OUT of this table by direct test on 2026-07-25 (see FALSE — NOW TESTABLE above):
+`kernel dm-crypt mount` (VERIFIED working) and `keyslot mount-time auto-search on real media` (VERIFIED
+working).
+
+Several remaining are *probably* true — but "probably true" is what the four falsified claims also looked
+like, so each still gets tested before it is written down as fact.
 
 ## A claim of mine that expired: "the stop hook is fixed"
 
