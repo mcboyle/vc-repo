@@ -32,7 +32,19 @@ HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(cd "$HERE/.." && pwd)"
 #                              local so this Crypto module has no Common dependency; the copy is
 #                              independently proven CORRECT (FIPS-197 KAT) and constant-time (ctgrind CLEAN)
 #                              at suite step [88] (constant-time AES-256 S-box = affine(gf_inv)).
-GF_BLESSED="src/Common/Shamir.c verification/hctr2_poc.c src/Crypto/AesCt.c"
+#   src/Crypto/Hctr2.c       — gf_dot: POLYVAL GF(2^128) multiply, the SHIPPING counterpart of the
+#                              already-blessed verification/hctr2_poc.c definition. THIS GUARD CAUGHT IT
+#                              ON INTRODUCTION, which is exactly what it exists to do — the entry is added
+#                              deliberately, not to silence the alarm. Rationale: the arithmetic is
+#                              transcribed unchanged from the blessed PoC (masked, fixed 128 iterations,
+#                              table-free; the only `? :` guards are on the PUBLIC loop index s = i & 63,
+#                              never on secret data), both operands ARE secret (the POLYVAL key
+#                              h = E_K(0^128) and the message-derived accumulator), and correctness is
+#                              anchored to the 35 OFFICIAL google/hctr2 vectors at suite step [105].
+#                              Timing is screened by verification/hctr2_dudect_test.c.
+#                              IF A SECOND src/ CONSUMER OF POLYVAL APPEARS (e.g. AES-GCM-SIV), factor
+#                              this into one blessed module rather than adding a fourth copy here.
+GF_BLESSED="src/Common/Shamir.c verification/hctr2_poc.c src/Crypto/AesCt.c src/Crypto/Hctr2.c"
 # Constant-time compare/equal (OR-accumulate `d |= a[i]^b[i]`, no early-out). Blessed:
 #   src/Common/Keyslot.c         — KeyslotConstTimeEqual: the SHIPPING compare (dudect step [46] + ctgrind).
 #   verification/keyslot_poc.c   — ct_equal: reviewed OR-accumulate in the standalone keyslot PoC.
