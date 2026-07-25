@@ -30,12 +30,29 @@
  *     Volume::ReadSectors/WriteSectors verifying and updating tags, and populating the reserved table),
  *     plus backup-header mirroring of the slot table.
  *
- * THE OPEN DESIGN QUESTION THE I/O LAYER MUST ANSWER FIRST — it is a policy call, not an implementation
- * detail: on a per-sector tag MISMATCH at read time, does the volume FAIL CLOSED (refuse the read, so
- * one corrupt sector can make a volume unreadable) or FAIL WARN (surface the tamper, return the data)?
- * docs/ROLLBACK-COUNTER-SPEC.md set a fail-warn precedent for a different check. Either choice changes
- * what docs/THREAT-MODEL.md may claim about tamper-evidence, so it should be decided and written down
- * before the I/O layer is written, not discovered afterwards from whatever the code happened to do.
+ * TAG-MISMATCH POLICY — DECIDED (owner, 2026-07-25): FAIL CLOSED.
+ * On a per-sector tag mismatch at read time the read is REFUSED and no data is returned. This header
+ * previously carried the question open, precisely so it would be settled deliberately rather than
+ * inferred later from whatever the I/O layer happened to do. Fail-warn (the policy
+ * docs/ROLLBACK-COUNTER-SPEC.md chose for the rollback counter) was rejected: a warning that can be
+ * ignored reduces per-sector authentication to advice, and the adversary this format answers is one who
+ * EDITS CIPHERTEXT — under fail-warn the edited plaintext still reaches the filesystem.
+ *
+ * THE I/O LAYER MUST THEREFORE SHIP A RECOVERY PATH. This is a requirement, not a nicety: without one,
+ * fail-closed turns a single bad sector into a lost volume, which for a disk encryptor is worse than the
+ * tampering it defends against. Flash wear-levelling, an interrupted write, or an ordinary bad sector
+ * can all reach this state with no adversary involved. Required shape:
+ *   (1) a DELIBERATE operator override to read past a failing tag — not a config default, not a silent
+ *       fallback; (2) LOGGED, and the fact of its use surfaced to the user, or it is fail-warn with
+ *       extra steps; (3) per-invocation and scoped — NEVER a persistent volume property, or an adversary
+ *       who can write the header can disable detection; (4) the reserved MAC table is separable, so this
+ *       costs nothing structurally.
+ * Full rationale and the accepted cost: docs/V2-FORMAT-SPEC.md §"Tag-mismatch policy — FAIL CLOSED".
+ *
+ * WHAT THIS LETS THE PROJECT CLAIM: tamper-EVIDENCE (modified ciphertext is detected and refused, not
+ * silently returned) — NOT tamper-resistance. Nothing here stops an adversary with write access from
+ * destroying data; a wide-block mode plus a MAC detects and amplifies tampering rather than preventing
+ * it. Key-commitment remains a separate, unestablished question (docs/V2-FORMAT-SPEC.md, layer 3).
  */
 
 #ifndef TC_HEADER_Volume_V2FormatBinding
