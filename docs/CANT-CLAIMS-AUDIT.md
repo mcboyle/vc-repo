@@ -194,8 +194,7 @@ Tier-2 run did or did not reach; a claim only leaves this table when a *direct* 
 | ~~true power-loss (vs torn-write, which is proven)~~ | `docs/TIER5-FORMAT-DESIGN.md:106` | **VERIFIED (2026-07-25)** — see below; moved OUT of this table |
 | ~~flash-media warning firing on a live session~~ | `docs/ROI-TOP-50.md:115` | **VERIFIED (2026-07-25)** — see below; moved OUT of this table |
 | ORAM wiring into VeraCrypt | `docs/ORAM-SPEC.md:105` | UNTESTED — code task, not an environment limit |
-| Adiantum `EncryptionMode` shim on non-AES-NI hardware | `docs/ADIANTUM-SPEC.md:68,98` | UNTESTED — box has AES-NI; would need `-DVC_*` / a masked CPU flag |
-| HKF v2 wiring / different-volume-salt behaviour | `docs/HKF-MIX-V2-SPEC.md:71,172` | UNTESTED — code task; binary is built with `-DVC_ENABLE_HKF_MIX_V2`, behaviour not isolated |
+| Adiantum `EncryptionMode` shim on non-AES-NI hardware | `docs/ADIANTUM-SPEC.md:68,98` | **CODE TASK, not an environment limit (2026-07-25)** — the `EncryptionModeAdiantum` shim is unbuilt (no such class; `V2FormatBinding.h` is "BLOCKED ON the wide-block cipher mode classes"), so there is no volume path to exercise and masking the CPU `aes` flag would test nothing. The Adiantum *algorithm* is VERIFIED here — see below. |
 
 Moved OUT of this table by direct test (see FALSE — NOW TESTABLE above / `verification/realbuild/VM-TIER2-RUN.md`):
 
@@ -236,6 +235,20 @@ Moved OUT of this table by direct test (see FALSE — NOW TESTABLE above / `veri
   `discard_granularity=512` (TRIM) and the always-`UNKNOWN` thin axis. Consequence: the planned
   `scsi0:1.virtualSSD=1` (present as SSD, `rotational=0`) experiment is **moot** — the outcome is identical
   — so it was not run. The rotational branch is only decisive at the sysfs layer, not in the aggregate.
+- **`HKF v2 wiring / different-volume-salt behaviour`** — VERIFIED (2026-07-25); the "UNTESTED" tag was
+  stale (two CI-gated harnesses already cover it, both re-run here and matching their independent Python
+  twin). `[81]` wiring: create enrolls under v2, mount is compute-once / v2-first / v1-fallback, the C
+  create-path key == the C++-overload key byte-for-byte, and a wrong factor opens neither version.
+  `[93]` salt-binding (the "different-volume-salt" property): **different salts → different keys
+  (cross-volume binding)**, bound ≠ unbound, NULL salt falls back; the salt-bound mix `57ba783d…` ==
+  `python HKDF(extract-salt = the volume salt)`. Code confirms it: `VolumeCreator.cpp:401` enrolls with
+  `HKFMixPasswordVer(…, salt, HKF_MIX_V2)` and the salt-bound v2 feeds the volume salt into HKDF-Extract
+  (`HardwareKeyFactor.c:174`). Rebuild: `cd verification && ./build_and_verify.sh` (steps [81]/[93]).
+- **`Adiantum` algorithm** (distinct from the unbuilt EncryptionMode shim above) — VERIFIED here: the
+  `[91]` module harness links the real `src/Crypto/Adiantum.o` (+ `AesCt.o` + `chacha256.o` + `Poly1305.o`)
+  and reproduces all **18 official google/adiantum KATs** both directions, plus whole-sector diffusion,
+  wrong-key/wrong-tweak separation, `in==out` aliasing and the bounds guard, matching `adiantum_reference.py`.
+  What remains (the claim in the table above) is only the C++ `EncryptionMode` integration — unbuilt code.
 
 Several remaining are *probably* true — but "probably true" is what the four falsified claims also looked
 like, so each still gets tested before it is written down as fact.
