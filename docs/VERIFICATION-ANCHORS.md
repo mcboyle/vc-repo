@@ -83,7 +83,8 @@ class and worth a `[97]`-style check:
 |---|---|---|
 | In-tree ChaCha20 (20-round) | `[6]` KeyScrub RAM transform, `[8]` keyslot wrap | **CLOSED — step `[98]`**, vs libsodium |
 | ~~ChaCha20-Poly1305 AEAD composition~~ | ~~`[20]` keyslot-area MAC~~ | **WITHDRAWN — the construction does not exist** |
-| HKDF-SHA256 (RFC 5869) | HKF v2 mix, `[20]` keyslot-area MAC key | **CLOSED — step `[103]`**, vs RFC 5869 A.1–A.3 |
+| HKDF-SHA256 (RFC 5869) — `[20]` keyslot-area MAC key | `KeyslotAreaMacDeriveKey` | **CLOSED — step `[103]`**, vs RFC 5869 A.1–A.3 |
+| HKDF-SHA256 (RFC 5869) — **HKF v2 mix** (separate inlined copy) | `hkf_v2_mix`, every v2 factored volume | **CLOSED — step `[104]`**, vs RFC 5869 A.1–A.3 |
 
 **A withdrawn row, and why it is left visible.** This table used to list *"ChaCha20-Poly1305 AEAD
 composition — `[20]` keyslot-area MAC — still open"*. **No such construction exists in the tree.**
@@ -110,12 +111,24 @@ reproduce the vectors. Negative controls confirm the comparison is not vacuous �
 change does not reproduce `K_area`, and a different VMK yields a different key. **Result: correct** — no
 defect. 10/10. Anchor class: OFFICIAL.
 
-> **Still uncovered by `[103]`, stated plainly:** the harness anchors the *keyslot-area* specialisation.
-> The **HKF v2 mix** shares the same HKDF shape but has its own inlined copy in `HardwareKeyFactor.c`
-> (`hkf_v2_hmac` + `hkf_v2_mix`, `info = "VeraCrypt/HKF/mix/v2"`, multi-block expand to `HKF_POOL_SIZE`).
-> It is anchored to its own TWIN at `[80]`/`[93]` but has **not** been shown equal to RFC-5869 HKDF the
-> way `K_area` now has. That is the next `[103]`-style step, and it matters more than the one just
-> closed — it is on the mount path of every v2 volume.
+**Closed by this audit (4): the HKF v2 mix's OWN HKDF, step `[104]`.** `[103]` deliberately left this
+open and said so; it is now closed. `HardwareKeyFactor.c` does **not** call any shared helper — it
+inlines its own Extract and its own multi-block Expand (`hkf_v2_hmac` + `hkf_v2_mix`,
+`info = "VeraCrypt/HKF/mix/v2"`, expand to `HKF_POOL_SIZE`). Two independent copies of a standard means
+two chances to get it wrong, and `[103]` passing said nothing about this one. It is also the more
+consequential copy: `K_area` protects a keyslot table, whereas this derives the **mixed password of
+every v2 factored volume** and sits on that volume's mount path. Same chain shape — generic HKDF
+anchored to RFC 5869 A.1/A.2/A.3, then the shipping entry points `HKFMixResponseIntoPasswordV2` and
+`HKFMixResponseIntoPasswordV2Salt` required to equal it byte for byte at the product's real parameters.
+**Result: correct** — no defect; the twin was right. 19/19. Anchor class: OFFICIAL.
+
+> **The specific gap `[104]` closes that no official vector could.** `L = HKF_POOL_SIZE = 128` over
+> SHA-256 is **four** expand blocks. RFC 5869's longest official vector, A.2, reaches only **three**
+> (`L = 82`). So the fourth iteration — and the `T(i-1)` feedback into it — is covered by no published
+> vector anywhere. `[104]` attacks that region directly: a *3-blocks-then-zero-pad* variant and a
+> *non-empty `T(0)`* variant must both **differ**, and bytes 96–127 must be real key material rather
+> than padding. A mix that quietly emitted 96 key bytes and 32 zero bytes would still open every volume
+> it created, and no vector in this tree or in the RFC would have noticed.
 
 **Correction — the ChaCha20 anchor was initially mis-specified, and the mistake is worth keeping.** This
 table first named *RFC 8439 §2.4.2* as ChaCha20's available anchor. That was **wrong**. ChaCha20 has two
