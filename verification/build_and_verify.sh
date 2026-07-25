@@ -2747,3 +2747,21 @@ if [ "$KP_OK" = 1 ] && [ -x /tmp/keyslot_parallel_timing ]; then
 else
 	skip_step " no C/C++ compiler built the keyslot parallel timing gate (see /tmp/kp.log)"
 fi
+
+echo ""
+echo "[100] Keyslot cfg builder policy-field init (latent-bug regression; -DVC_ENABLE_KEYSLOT_POLICY)"
+# KeyslotHeaderCfg/SidecarCfg/DeniableCfg left the gated `policy` field uninitialised (stack garbage);
+# policy selects the record layout, so a nonzero garbage value corrupts plen. Fix value-initialises the
+# struct. This guards the fix's mechanism (value-init + set-7-fields leaves policy 0); the literal builders
+# can't be unit-tested standalone (KeyslotVolumeBinding.h pulls the app's Windows-typed Volumes.h).
+KPOL_CXX=""; for c in clang++ g++ c++; do if command -v "$c" >/dev/null 2>&1; then KPOL_CXX="$c"; break; fi; done
+if [ -n "$KPOL_CXX" ] \
+   && "$KPOL_CXX" -O2 -std=c++17 -DVC_ENABLE_KEYSLOTS -DVC_ENABLE_KEYSLOT_POLICY \
+        $INC -I"$SRCROOT/Crypto" "$HERE/keyslot_policy_cfg_init_test.cpp" -o /tmp/keyslot_policy_cfg_init 2>/tmp/kpol.log; then
+	if /tmp/keyslot_policy_cfg_init > /tmp/kpol_out.txt 2>&1; then
+		sed 's/^/    /' /tmp/kpol_out.txt
+		grep -q 'KEYSLOT CFG POLICY-INIT TEST PASSED' /tmp/kpol_out.txt || { echo "    KEYSLOT CFG POLICY-INIT TEST FAILED"; exit 1; }
+	else echo "    KEYSLOT CFG POLICY-INIT RUN FAILED"; cat /tmp/kpol_out.txt; exit 1; fi
+else
+	skip_step " no C++ compiler built the keyslot policy-init test (see /tmp/kpol.log)"
+fi
