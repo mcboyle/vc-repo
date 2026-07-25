@@ -30,7 +30,7 @@ ok()   { echo "  PASS: $1"; PASS=$((PASS+1)); }
 bad()  { echo "  FAIL: $1"; FAIL=$((FAIL+1)); }
 skip() { echo "  SKIP: $1"; SKIP=$((SKIP+1)); }
 pend() { echo "  PENDING-INTEGRATION: $1"; PEND=$((PEND+1)); }
-keyok(){ echo "  PASS (key OK, no kernel dm-crypt): $1"; PASS=$((PASS+1)); }
+keyok(){ echo "  PASS (key re-derived + dm-crypt reached; fs step n/a for --filesystem=none): $1"; PASS=$((PASS+1)); }
 cleanup() { rm -rf "$WORK" 2>/dev/null; }
 trap cleanup EXIT
 
@@ -46,7 +46,15 @@ PW="acceptance-pass-1234"
 # was wrong. Returns: 0 = mounted, 2 = key-correct-but-no-dm, 3 = wrong key, 1 = other.
 classify_mount_log() {
 	local log="$1"
-	grep -qiE "device-mapper|dmsetup|/dev/mapper/control" "$log" && return 2
+	# return 2 = "derived key was CORRECT and the mount reached dm-crypt". Two signatures, same meaning:
+	#   * container (no kernel dm): the table load fails with a device-mapper/dmsetup error.
+	#   * real dm box + --filesystem=none: the dm mapping IS created (/dev/mapper/veracryptN) and the
+	#     mount then fails at the FILESYSTEM step ("wrong fs type ... on /dev/mapper/veracryptN"), because
+	#     a --filesystem=none volume carries no filesystem. A /dev/mapper/veracrypt* node only ever
+	#     appears for a CORRECT key — a wrong key stops at the header (Incorrect password) and never loads
+	#     a mapping — so this is a genuine key-level PASS, and a stronger one than the container case.
+	#     (Without this arm, the harness's positive round-trips PASS in a container but FAIL on a VM.)
+	grep -qiE "device-mapper|dmsetup|/dev/mapper/control|/dev/mapper/veracrypt" "$log" && return 2
 	grep -qiE "Incorrect password|Incorrect PRF" "$log" && return 3
 	return 1
 }
@@ -119,7 +127,15 @@ if ! have_loop; then
 else
   # --- WIRED features (should pass on a real build) ---
   roundtrip "stock"   "" ""                                          # baseline (no fork feature)
-  roundtrip "balloon" "--hash=Balloon" "--hash=Balloon"             # step 38: --hash Balloon
+  # Balloon needs a BALLOON=1 binary. When a prebuilt binary is supplied, its resolved -D set is stamped
+  # in src/.build-flags; only run this if that stamp carries VC_ENABLE_BALLOON_KDF. A stamp that omits it
+  # (e.g. a STEP-2 build without BALLOON=1) would fail create as a flag-set MISMATCH, not a Balloon bug.
+  # No stamp at all = the harness self-built above with BALLOON=1 in FLAGS, so run it.
+  if [ ! -f "$SRC/.build-flags" ] || grep -q VC_ENABLE_BALLOON_KDF "$SRC/.build-flags"; then
+    roundtrip "balloon" "--hash=Balloon" "--hash=Balloon"           # step 38: --hash Balloon
+  else
+    skip "balloon round-trip — supplied binary's stamp lacks VC_ENABLE_BALLOON_KDF (rebuild with BALLOON=1 to test)"
+  fi
   roundtrip "argon2"  "--hash=Argon2 --argon2-memory=64 --argon2-iterations=3" \
                       "--hash=Argon2 --argon2-memory=64 --argon2-iterations=3"   # step 17/11
 

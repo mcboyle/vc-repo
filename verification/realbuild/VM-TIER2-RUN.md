@@ -82,9 +82,15 @@ real and repeatable on this box.**
 
 \* "slow" = the fallback path characterised below.
 
-## Two real findings the harness surfaced (neither is a crypto defect)
+## Two real findings the harness surfaced (neither is a crypto defect) — both now FIXED in this branch
 
-### 1. acceptance.sh is calibrated to the *container* failure mode, so its positive round-trips FAIL on a real-dm box
+After the fixes below, a full `sudo bash verification/realbuild/acceptance.sh` on this box runs green:
+**`SUMMARY: pass=27 fail=0 skip=4 pending=2`** (the 4 SKIP are the Tier-3 hardware items + balloon;
+the 2 PENDING are the documented duress-dismount-of-mounted-volumes and network-share integrations).
+Every check that previously false-FAILed on a real-dm box now PASSes, including Tier 2b (in-process
+`Volume::Open`: plain open/reject + factor 2FA).
+
+### 1. acceptance.sh was calibrated to the *container* failure mode, so its positive round-trips FAILed on a real-dm box
 
 `roundtrip()` creates volumes with `--filesystem=none` and mounts them. On a box with **no**
 device-mapper (container), the mount fails *at* the dm-crypt step with a device-mapper error;
@@ -99,9 +105,11 @@ That signature matches none of `classify_mount_log`'s patterns → returns 1 →
 
 **Net: the harness's `stock` / `argon2` / `hkf-simulator` positive round-trips PASS in a
 container and FAIL on a real VM — exactly inverted.** The harness's success criterion *is* the
-container failure mode. The volumes are fine (proven by the FAT round-trip above). Fix: create
-Tier-2 volumes with `--filesystem=fat` on a dm-capable box, or add a "fs-mount error after a
-dm mapping was created" case to `classify_mount_log` that scores as a full mount PASS.
+container failure mode. The volumes are fine (proven by the FAT round-trip above). **Fixed in this
+branch:** `classify_mount_log` now also returns 2 (key-correct, dm reached) when the log shows a
+`/dev/mapper/veracrypt` mapping — a node that only ever appears for a *correct* key — so the
+`--filesystem=none` mount is recognised as a key-level PASS on both a container and a real-dm box.
+(No product change; harness only.)
 
 ### 2. Wrong-key mounts cost ~46–87s — and the cause is a DELIBERATE constant-time security feature
 
@@ -157,7 +165,10 @@ acceptance.sh line 122 runs `roundtrip "balloon" "--hash=Balloon"`, but STEP 2's
 omitted `BALLOON=1`, so the supplied binary has no Balloon PRF → create fails
 ("balloon: create failed"). acceptance.sh's *own* Tier-0 self-build sets `BALLOON=1`, so this
 only bites when a pre-built binary (STEP 2's flags) is passed in — which is the task's flow.
-Either add `BALLOON=1` to STEP 2, or have the harness skip Balloon when the stamp lacks it.
+**Fixed in this branch:** the balloon round-trip is now gated on the `src/.build-flags` stamp —
+it runs when the stamp carries `VC_ENABLE_BALLOON_KDF` (or when no stamp exists, i.e. the harness
+self-built with `BALLOON=1`), and prints `SKIP` with an explanatory note otherwise instead of a
+misleading FAIL. (No product change; harness only.)
 
 ## Cleanup / safety
 
