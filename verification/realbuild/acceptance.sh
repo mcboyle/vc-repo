@@ -72,11 +72,15 @@ classify_mount_log() {
 # like a crypto failure. Same class as the mixed-build hazard the stamp exists to catch, one level up:
 # the guard was fine, the thing being handed to it was wrong.
 #
-# ADIANTUM_MODE=1 is likewise not optional even though the Adiantum step self-gates on the object
-# being in Volume.a: if the build carries it but this list omits it, the stamp comparison fails; if
-# this list carries it but the gate is never satisfied, the step can only ever skip. The gate
-# (`ar t Volume.a | grep EncryptionModeAdiantum`) and this list must agree.
-FLAGS="NOGUI=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 ARGON2PARAMS=1 BALLOON=1 SHAMIRMAC=1 SHARECODE=1 HKF_SIMULATOR=1 ADIANTUM_MODE=1"
+# EVERY SELF-GATING STEP'S FLAG MUST BE IN THIS LIST. Several steps below gate themselves on evidence
+# that the feature was actually compiled in — `ar t Volume.a | grep EncryptionModeAdiantum` for
+# Adiantum, `$VC --help | grep -- --ns-server` for network-share — so that a build without the flag
+# SKIPs instead of reporting a false failure. That is the right behaviour, but it has a trap: if the
+# flag is missing HERE, the gate is never satisfied and the step can ONLY ever skip. It looks self-gating
+# and honest while silently testing nothing. Both ADIANTUM_MODE=1 and NETSHARE=1 were in exactly that
+# state. Conversely, if the build carries a flag this list omits, Tier 2b's stamp comparison fails.
+# Rule: a step's gate and this list must agree, in both directions.
+FLAGS="NOGUI=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 ARGON2PARAMS=1 BALLOON=1 SHAMIRMAC=1 SHARECODE=1 HKF_SIMULATOR=1 ADIANTUM_MODE=1 NETSHARE=1"
 
 echo "=== Tier 0: build the fork with the feature flags ==="
 # A default build must stay byte-for-byte stock; the flags are all opt-in.

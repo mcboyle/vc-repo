@@ -60,6 +60,13 @@ src/Common/ShamirMac.{c,h}           keyed per-share MAC (gated -DVC_ENABLE_SHAM
 src/Common/ShareCode.{c,h}           transcribable recovery encoding (gated -DVC_ENABLE_SHARECODE):
    bech32/BIP-173 checksummed "vcs1..." string for a share (+optional MAC), typo-detecting [42]
 src/Volume/HardwareKeyFactorMix.h    C++ glue: HKFMixPassword(VolumePassword, salt) for Volume/Core
+src/Volume/EncryptionModeAdiantum.{h,cpp}  wide-block EncryptionMode over Crypto/Adiantum (gated
+   -DVC_ENABLE_ADIANTUM_MODE / make ADIANTUM_MODE=1). Tweak = data-unit number as 8 LE bytes + SectorOffset;
+   refuses partial units and oversized sectors. Proven by verification/realbuild/adiantum_mode.sh (17/17;
+   a 1-bit plaintext flip changed 509 of 512 ciphertext bytes — XTS would change 16).
+   NOT registered in EncryptionMode::GetAvailableModes() — deliberate: it bundles its own AES-256/
+   XChaCha12/NH-Poly1305, IGNORES the CipherList, and does NOT compose into cascades, so it must never be
+   offered in a cascade UI. GetKeySize() is its own 32 bytes, not a sum over Ciphers.
 src/Main/HardwareKeyFactorCli.h      wx-free option-string -> HKFConfig parser (BuildHKFConfig)
 src/Crypto/Sha3.{c,h}                from-scratch FIPS-202 (for the SHA3-512 PRF)
 src/Common/KeyScrub.{c,h}            cross-platform RAM key hygiene (gated -DVC_ENABLE_KEYSCRUB)
@@ -133,19 +140,34 @@ own flags. Prefer `scripts/build-product.sh` (true clean) over bare `make`. Wind
 ## Which environment are you in? (this changes what is testable)
 
 **Check before inheriting any "not testable here" claim.** Much of this repo's language was written from a
-container, where `/dev/mapper/control` is absent so nothing can ever kernel-mount. On a real VM that is
-false, and several claims in `docs/CANT-CLAIMS-AUDIT.md` flip. One probe:
+container where `/dev/mapper/control` is absent, so nothing could ever kernel-mount. Several of those
+claims have since been **tested and settled** (2026-07-25) — do not re-inherit them as open.
+
+**Probe the box, not one capability.** "Has dm-crypt" does not mean "is a full VM": one environment used
+here had a kernel device-mapper but **no systemd/logind seat, no udev, and no USB**, so it could mount
+volumes but could not test the KeyScrub OS triggers at all. Check each axis you actually need:
 
 ```sh
-[ -e /dev/mapper/control ] && echo "dm-crypt available — Tier 2+ is testable" || echo "container — Tier 0/1 only"
+[ -e /dev/mapper/control ] && echo "dm-crypt: yes (Tier 2 mounts testable)" || echo "dm-crypt: no"
+loginctl list-seats >/dev/null 2>&1 && echo "logind seat: yes" || echo "logind seat: no (KeyScrub screen-lock untestable)"
+udevadm control --ping >/dev/null 2>&1 && echo "udev: yes" || echo "udev: no (KeyScrub device-connect untestable)"
+[ -d /dev/bus/usb ] && echo "USB: yes (Tier 3 possible)" || echo "USB: no (YubiKey/FIDO2 untestable)"
 ```
 
-| | container (Claude Code web) | real VM with sudo |
-|---|---|---|
-| verification suite, product build, `open_roundtrip.sh` | yes | yes |
-| `acceptance.sh` Tier 2 — **loopback create/mount/dismount** | SKIPs (no dm) | **yes — run it** |
-| kernel dm-crypt mount, keyslot mount-time auto-search on real media, duress end-to-end, live flash-media warning | no | **yes — these are the open UNTESTED claims** |
-| YubiKey / FIDO2 hardware backends | no | only with USB passthrough (Tier 3) |
+| | container, no dm | dm-crypt but no seat | full desktop VM + USB |
+|---|---|---|---|
+| verification suite, product build, `open_roundtrip.sh` | yes | yes | yes |
+| `acceptance.sh` Tier 2 — **loopback create/mount/dismount** | SKIPs (no dm) | **yes — run it** | yes |
+| kernel dm-crypt mount · keyslot auto-search · duress e2e · live flash warning | no | **yes** | yes |
+| KeyScrub logind screen-lock / udev device-connect triggers | no | **no — needs a real seat** | **yes — still open** |
+| YubiKey / FIDO2 hardware backends | no | no | **only with USB passthrough (Tier 3) — still open** |
+
+**Already settled — do NOT list these as untested** (`docs/CANT-CLAIMS-AUDIT.md`, 2026-07-25):
+**kernel dm-crypt mount** · **keyslot mount-time auto-search on real media** (normal slot mounts, duress
+slot fires the duress action and mounts nothing) · **duress end-to-end** (dismount-all on real mounted
+volumes) · **live flash-media warning** · **true power-loss recovery on a raw block device** ·
+**network-share over a genuine two-host TCP link**. The genuinely open items are the last two table rows
+plus **SSD/FTL remnant behaviour** (needs raw flash) and the **Windows C-path header round-trip**.
 
 On a VM: `sudo bash verification/realbuild/acceptance.sh` after a build. It is self-gating and prints
 SKIP rather than FAIL for anything the box cannot do, and it is non-destructive — every volume is a file
@@ -235,14 +257,14 @@ enroll share `edf4bd73…` == python; off-network + wrong-server fail).
 
 ## Good next tasks (see ROADMAP.md)
 
-1. **Multiple keyslots — CLI + header-backend integration DONE** (`docs/KEYSLOTS-SPEC.md §9`,
-   `docs/REAL-BUILD-VALIDATION.md #6`). The `--keyslot-add/open/rotate/kill/list` CLI, the C++
-   mount-path binding (`Volume/KeyslotVolumeBinding.h`), and VMK recovery via native-header-or-keyslot
-   are built and proven on a real volume (enroll→open with exact master-key match→revoke→rotate→duress
-   flag, slot 0 + body byte-untouched; harness `pass=15`). Remaining, kernel/real-media only: the
-   mount-time auto-search (plain `--mount` tries slots + fires duress on a duress slot), backup-header
-   table mirroring, `--keyslot-backend` for the deniable/sidecar placements, and multi-snapshot
-   validation of the deniable backend.
+1. ~~**Multiple keyslots — CLI + header-backend integration**~~ — **DONE, including the mount-time
+   auto-search.** The `--keyslot-add/open/rotate/kill/list` CLI, the C++ mount-path binding
+   (`Volume/KeyslotVolumeBinding.h`), and VMK recovery via native-header-or-keyslot are proven on real
+   volumes; **all three backends** (header / sidecar / deniable) open, revoke and rotate with slot 0 and
+   the data region byte-untouched. The auto-search is **verified on real dm-crypt** (2026-07-25): a
+   plain `--mount` with a normal slot passphrase mounts via the slot, and with a **duress** slot
+   passphrase fires the duress action and mounts nothing. Remaining: backup-header table mirroring, and
+   multi-snapshot validation of the deniable backend (needs real media over two images).
 2. ~~**Network-bound share source — finish the integration**~~ — **DONE.** MR proven at production
    Ed25519 params [39], cross-host over real TCP [101], shippable `Common/NetShare.{c,h}` with RFC 8032
    §5.1.3 compressed-point decompression [102], and the `--ns-*` CLI proven end to end against a live
@@ -254,11 +276,30 @@ enroll share `edf4bd73…` == python; off-network + wrong-server fail).
    `Volume::Open` in-process via `verification/realbuild/open_roundtrip.sh`: same params open (positive
    control), and wrong memory / wrong iterations / wrong parallelism / no override / wrong password all
    reject. 11/11, CI-gated. The "not sandbox-testable" claim was inherited, never tested — see
-   `docs/CANT-CLAIMS-AUDIT.md`. Only the *kernel dm-crypt* mount remains out of reach.
-3. **Validate the KeyScrub OS triggers on real hardware** (logind screen-lock, udev device-connect)
-   and, separately, the kernel-side dm-crypt master-key scrub the user-space scrub can't reach.
-4. **End-to-end duress-dismount test on a real build** (mounted volumes → `--duress-dismount` and the
-   duress passphrase → everything dismounts + scrubs); the crypto core is proven, the wx orchestration
-   is not sandbox-testable.
+   `docs/CANT-CLAIMS-AUDIT.md`. The kernel dm-crypt mount has since been verified too.
+4. ~~**End-to-end duress-dismount test on a real build**~~ — **DONE (2026-07-25).** Two volumes mounted
+   via kernel dm-crypt, then `--duress-dismount` → all dismounted (`--list` empty, 0 dm mappings); and
+   separately, entering the *registered duress passphrase* at `--mount` dismounted everything and
+   mounted nothing. The coupled `KeyScrub ScrubNow()` runs in the same path but the RAM scrub is not
+   independently observable from userspace — that part remains unverified, not proven.
+
+**Actually open now, in rough priority order:**
+
+5. **V2-format mount side** — `DiscoverMode` call site, populating the reserved MAC table, backup-header
+   mirroring. ROADMAP T1-1 named the missing wide-block `EncryptionMode` as its blocker; that blocker is
+   gone (`Volume/EncryptionModeAdiantum`). **Do #6 first**: `V2Mode` is `{HCTR2, ADIANTUM, NONE}` and
+   `V2FormatDiscoverMode` picks by trying each mode's MAC key, so with only one mode implemented you
+   cannot prove discovery *discriminates* — only the `NONE` negative.
+6. **HCTR2 `EncryptionMode` class** — the other half of T2-4; algorithm already KAT-proven [28]. Same
+   shape as `EncryptionModeAdiantum`, and the prerequisite for testing #5 properly.
+7. **Register Adiantum in `EncryptionMode::GetAvailableModes()`** — deliberately NOT done. It bundles
+   its own primitives and does not compose into cascades, so "AES-Adiantum" and "Serpent-Adiantum" would
+   be the same construction; offering it in a cascade UI would lie. This is a format/UI decision, not an
+   oversight.
+8. **Validate the KeyScrub OS triggers** (logind screen-lock, udev device-connect) — needs a real
+   desktop seat, which a dm-crypt-only box does *not* provide. Separately, the kernel-side dm-crypt
+   master-key scrub the user-space scrub cannot reach.
+9. **YubiKey / FIDO2 on real hardware** — two of the four HKF backends have only ever been shown to link
+   and fail safe with no device. Needs USB passthrough. This is the largest untested surface in the fork.
 ```
 ```

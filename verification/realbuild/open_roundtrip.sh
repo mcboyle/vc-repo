@@ -77,6 +77,7 @@ fi
 
 case " $DEFS " in *" -DVC_ENABLE_HKF_SIMULATOR "*) HAVE_SIM=1;; *) HAVE_SIM=0;; esac
 case " $DEFS " in *" -DVC_ENABLE_ARGON2_PARAMS "*) HAVE_A2P=1;; *) HAVE_A2P=0;; esac
+case " $DEFS " in *" -DVC_ENABLE_BALLOON_KDF "*) HAVE_BALLOON=1;; *) HAVE_BALLOON=0;; esac
 
 # --- 3. compile + link the harness against the real archives ----------------------------------------
 INC="-I$SRC -I$SRC/Crypto -I$SRC/Crypto/Argon2/include -I$SRC/PKCS11"
@@ -161,6 +162,42 @@ if [ "$HAVE_A2P" = 1 ]; then
 	unset VC_OPEN_ARGON2
 else
 	log "=== Argon2-param probes skipped (built without ARGON2PARAMS) ==="
+fi
+
+if [ "$HAVE_BALLOON" = 1 ]; then
+	# ROADMAP listed "mount/create round-trip with --hash Balloon on a real volume" as remaining
+	# real-build work. It is not: this is the same class of claim as the Argon2 one that turned out to
+	# have been sandbox-testable all along (docs/CANT-CLAIMS-AUDIT.md). Volume::Open needs no kernel.
+	#
+	# THE LOAD-BEARING NEGATIVE IS THE WRONG-KDF ONE. Balloon is built ON SHA-256, and
+	# Pkcs5Kdf::GetAlgorithm(const Hash&) deliberately skips Balloon so it never shadows Pkcs5HmacSha256
+	# in hash->KDF matching. So "opens with Balloon" alone would not distinguish a genuinely
+	# Balloon-derived volume from one that quietly fell back to plain HMAC-SHA-256 — both would open.
+	# Pinning the open to HMAC-SHA-256 and requiring a REJECT is what proves the Balloon construction
+	# actually shaped the key.
+	log "=== Balloon memory-hard KDF (create with --hash=Balloon -> open) ==="
+	"$VC" --text --create "$WORK/balloon.hc" --size=10M --password="$PW" --pim=0 --keyfiles="" \
+		--encryption=AES --hash=Balloon --filesystem=none --volume-type=normal \
+		--random-source=/dev/urandom >"$WORK/create.log" 2>&1 \
+		|| fail "balloon create failed ($(tail -1 "$WORK/create.log"))"
+
+	bcheck() { # $1=label $2=mode $3=VC_OPEN_KDF $4=password
+		export VC_OPEN_KDF="$3"
+		check "$1" 0 "$2" "$WORK/balloon.hc" "${4:-$PW}"
+		export VC_OPEN_KDF="HMAC-SHA-512"
+	}
+	# Positive control FIRST — if this fails every negative below rejects for free and proves nothing.
+	bcheck "balloon: correct password opens, KDF pinned to Balloon (positive control)" must_open   "Balloon"
+	bcheck "balloon: wrong password rejected"                                          must_reject "Balloon" "wrong-$PW"
+	bcheck "balloon: pinned to HMAC-SHA-256 REJECTS (not a silent SHA-256 fallback)"   must_reject "HMAC-SHA-256"
+	bcheck "balloon: pinned to HMAC-SHA-512 rejects"                                   must_reject "HMAC-SHA-512"
+
+	# ...and unpinned: Balloon is in GetAvailableAlgorithms(), so plain auto-detection must find it.
+	unset VC_OPEN_KDF
+	check "balloon: opens with NO KDF pin (auto-detection reaches Balloon)" 0 must_open "$WORK/balloon.hc" "$PW"
+	export VC_OPEN_KDF="HMAC-SHA-512"
+else
+	log "=== Balloon probes skipped (built without BALLOON) ==="
 fi
 
 echo ""
