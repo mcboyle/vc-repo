@@ -205,12 +205,19 @@ Moved OUT of this table by direct test (see FALSE — NOW TESTABLE above / `veri
   entering the *registered duress passphrase* at `--mount` while two volumes were mounted dismounted them
   all and mounted nothing. (The coupled `KeyScrub ScrubNow()` runs in the same `DuressDismount` path;
   dismount-all is directly observed, the RAM scrub is not independently observable from userspace.)
-- **`network-share against a live server`** — the McCallum–Relyea socket transport is VERIFIED here:
-  `verification/netshare_transport_poc.c` [49] builds and its forked-server round-trip passes
-  (`NETSHARE TRANSPORT ROUND-TRIP PASSED`, enrolled share `edf4bd73…` == the CLAUDE.md anchor;
-  off-network and wrong-server fail). The remaining gap is **not environmental**: the veracrypt product
-  CLI has no `--ns-*` enroll/unlock options, so product integration is a **code task** (PENDING-INTEGRATION),
-  like ORAM/HKF-v2 — a remote endpoint is the same code with a different socket address.
+- **`network-share against a live server`** — VERIFIED over a genuine TWO-HOST network (2026-07-25).
+  First the McCallum–Relyea socket transport passed same-host (`verification/netshare_transport_poc.c`
+  [49], AF_UNIX socketpair, `NETSHARE TRANSPORT ROUND-TRIP PASSED`). Then, on the lab, it was run
+  **across two machines over real TCP**: `verification/netshare_tcp_poc.c` (same MR crypto + real Sha2.c;
+  step [101] runs the localhost round-trip in CI) with the MR server (`--server`) on host 81
+  (10.0.70.81) and the client (`--client`) on host 82 — the **same anchor share `edf4bd73…`** was
+  recovered over the wire, each unlock re-blinds (the server never sees `C`), and **off-network** (dead
+  port) and **wrong-server** (different secret) both fail. So the transport works end-to-end host-to-host,
+  not just on loopback. The remaining gap is **not environmental**: the veracrypt product CLI has no
+  `--ns-*` enroll/unlock options, so product integration is a **code task** (PENDING-INTEGRATION), like
+  ORAM/HKF-v2. (Method note: the first cross-host attempt failed because `nohup … &` in a one-shot ssh
+  command is torn down on session close; holding the server in a foreground process under a live ssh
+  fixed it — the failure was the apparatus, not the protocol.)
 - **`true power-loss`** — VERIFIED (2026-07-25), on a dedicated disposable scratch disk (`/dev/sdb`)
   a container cannot provide. Created a **device-hosted** VeraCrypt volume directly on the raw block
   device (distinct from the file-container path the harness uses), mounted it via kernel dm-crypt, wrote a

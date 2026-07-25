@@ -2765,3 +2765,29 @@ if [ -n "$KPOL_CXX" ] \
 else
 	skip_step " no C++ compiler built the keyslot policy-init test (see /tmp/kpol.log)"
 fi
+
+echo ""
+echo "[101] Network-share McCallum-Relyea over TCP (netshare_tcp_poc) — localhost round-trip"
+# The MR exchange (same math + real Sha2.c as [49]) driven over an AF_INET TCP transport instead of the
+# [49] AF_UNIX socketpair. This step runs client + server on TCP loopback (CI-runnable): enrolled share ==
+# socket-recovered share (anchor edf4bd73...), each unlock re-blinds, off-network + wrong-server fail. The
+# SAME binary drives a genuine TWO-HOST run (--server on another box, --client pointed at its IP) — that
+# cross-machine test is manual, needs a second host, and was executed 82<->81 (see the file header); like
+# acceptance.sh Tier 2/3 it is not run here.
+NS_CC=""; for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then NS_CC="$c"; break; fi; done
+NS_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+if [ -n "$NS_CC" ] && "$NS_CC" -O2 -Wno-implicit-function-declaration $NS_NOASM $INC -I"$SRCROOT/Crypto" \
+      "$HERE/netshare_tcp_poc.c" "$SRCROOT/Crypto/Sha2.c" -o /tmp/netshare_tcp 2>/tmp/ns.log; then
+	/tmp/netshare_tcp --server 47100 >/tmp/ns_s.log 2>&1 & NS_S=$!
+	/tmp/netshare_tcp --server-wrong 47101 >/tmp/ns_w.log 2>&1 & NS_W=$!
+	sleep 1
+	/tmp/netshare_tcp --client 127.0.0.1 47100 47101 47199 > /tmp/ns_c.txt 2>&1; nsrc=$?
+	kill $NS_S $NS_W 2>/dev/null
+	grep -E 'enrolled share|unlock share|= (YES|NO)|ROUND-TRIP' /tmp/ns_c.txt | sed 's/^/    /'
+	if [ "$nsrc" = 0 ] && grep -q '^NETSHARE TCP ROUND-TRIP PASSED' /tmp/ns_c.txt \
+	   && grep -q 'edf4bd73c5ee68ff86bdcf8f0531ba29df698a84aecdeb4f1c1e2d1fd946a9d4' /tmp/ns_c.txt; then
+		echo "    MATCH: enrolled share == socket-recovered share (anchor edf4bd73...) over TCP"
+	else echo "    NETSHARE TCP LOCALHOST ROUND-TRIP FAILED"; cat /tmp/ns_c.txt; exit 1; fi
+else
+	skip_step " no compiler built the netshare TCP harness (see /tmp/ns.log)"
+fi
