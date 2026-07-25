@@ -153,6 +153,7 @@ export VC_ENABLE_KEYSLOTS ?= 0
 export VC_ENABLE_ARGON2_PARAMS ?= 0
 export VC_ENABLE_SHAMIR_MAC ?= 0
 export VC_ENABLE_SHARECODE ?= 0
+export VC_ENABLE_NETSHARE ?= 0
 export VC_ENABLE_FLASH_WARN ?= 0
 export VC_ENABLE_V2FORMAT ?= 0
 export VC_ENABLE_CTAES ?= 0
@@ -326,6 +327,15 @@ endif
 ifeq "$(origin SHARECODE)" "command line"
 	VC_ENABLE_SHARECODE := 1
 	C_CXX_FLAGS += -DVC_ENABLE_SHARECODE
+endif
+
+# Network-bound share source, McCallum-Relyea (opt-in). `make NETSHARE=1` adds Common/NetShare.o (the
+# Ed25519 group + RFC 8032 s5.1.3 compressed-point wire format) and exposes the --ns-* CLI. The transport
+# is injected, so the socket code lives in Main/NetShareTransport.h, not in Common/.
+# docs/NETWORK-SHARE-SPEC.md; verification step [102].
+ifeq "$(origin NETSHARE)" "command line"
+	VC_ENABLE_NETSHARE := 1
+	C_CXX_FLAGS += -DVC_ENABLE_NETSHARE
 endif
 
 # Flash-media deniability warning at hidden/decoy-volume creation (opt-in). `make FLASH_WARN=1` links

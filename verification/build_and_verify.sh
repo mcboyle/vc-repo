@@ -2791,3 +2791,28 @@ if [ -n "$NS_CC" ] && "$NS_CC" -O2 -Wno-implicit-function-declaration $NS_NOASM 
 else
 	skip_step " no compiler built the netshare TCP harness (see /tmp/ns.log)"
 fi
+
+echo ""
+echo "[102] NetShare SHIPPABLE module (src/Common/NetShare.c) — RFC 8032 point decompression + MR wire format"
+# Steps [10]/[39]/[49]/[101] prove the McCallum-Relyea exchange, but EVERY one of them puts the raw
+# extended-coordinate struct on the wire and says so ("a production build would send compressed 32-byte
+# points ... a serialization detail"). Nothing in this tree ever decompressed a point, so the shippable
+# module needed NEW crypto: RFC 8032 s5.1.3 recovery of x from a compressed y (a modular square root).
+# ANCHOR: OFFICIAL — the five RFC 8032 s7.1 Ed25519 public keys are compressed points produced by an
+# implementation we did not write; each must decompress and re-compress byte-identically (compression
+# recomputes x, so a wrong sqrt branch changes the sign bit and the round-trip fails). Plus PROPERTY
+# checks: MR end-to-end over the compressed format, blinding/unlinkability, off-network reported as
+# ERR_TRANSPORT (never as a bad key), and credential-corruption reported as ERR_CRED.
+NM_CC=""; for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then NM_CC="$c"; break; fi; done
+NM_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+if [ -n "$NM_CC" ] && "$NM_CC" -O2 -DVC_ENABLE_NETSHARE $NM_NOASM $INC -I"$SRCROOT/Crypto" \
+      "$HERE/netshare_module_test.c" "$SRCROOT/Common/NetShare.c" "$SRCROOT/Crypto/Sha2.c" \
+      -o /tmp/netshare_module 2>/tmp/nm.log; then
+	/tmp/netshare_module > /tmp/nm_out.txt 2>&1; nmrc=$?
+	sed 's/^/  /' /tmp/nm_out.txt
+	if [ "$nmrc" = 0 ] && grep -q 'NETSHARE MODULE TEST PASSED' /tmp/nm_out.txt; then
+		echo "    MATCH: RFC 8032 s7.1 points round-trip through the shippable decompression"
+	else echo "    NETSHARE MODULE TEST FAILED"; exit 1; fi
+else
+	skip_step " no compiler built the netshare module test (see /tmp/nm.log)"
+fi

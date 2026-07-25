@@ -28,6 +28,29 @@
 #include "LanguageStrings.h"
 #include "UserInterfaceException.h"
 #include "Volume/Pkcs5Kdf.h"
+#if defined(VC_ENABLE_NETSHARE)
+#include "NetShareTransport.h"
+
+namespace
+{
+	/* CSPRNG adapter for NetShare's injected NetShareRandFn. Lives here rather than in
+	   NetShareTransport.h so that header stays wx/Core-free and unit-testable on its own. */
+	void NetShareCliRand (void *ctx, unsigned char *buf, size_t len)
+	{
+		(void) ctx;
+		if (!VeraCrypt::RandomNumberGenerator::IsRunning())
+			VeraCrypt::RandomNumberGenerator::Start();
+		VeraCrypt::BufferPtr b (buf, len);
+		VeraCrypt::RandomNumberGenerator::GetData (b);
+	}
+
+	void NetShareBurn (void *p, size_t n)
+	{
+		volatile unsigned char *q = (volatile unsigned char *) p;
+		while (n--) *q++ = 0;
+	}
+}
+#endif
 
 namespace VeraCrypt
 {
@@ -141,6 +164,13 @@ namespace VeraCrypt
 #if defined(VC_ENABLE_HKF_SALT_BIND)
 		parser.AddSwitch (L"",	L"hkf-bind-salt",		_("RAW_SECRET: use HMAC-SHA256(secret, volume salt) instead of the raw secret (binds a reconstructed/threshold secret to the volume)"));
 #endif
+#endif
+#if defined(VC_ENABLE_NETSHARE)
+		parser.AddOption (L"",	L"ns-server",			_("Network-bound share server as host:port (docs/NETWORK-SHARE-SPEC.md)"));
+		parser.AddOption (L"",	L"ns-cred",				_("Network-share credential file (written by --ns-enroll, read to unlock)"));
+		parser.AddSwitch (L"",	L"ns-enroll",			_("Enrol a new network-bound share against --ns-server and write --ns-cred (needs --ns-server-key)"));
+		parser.AddOption (L"",	L"ns-server-key",		_("Server public key S (64 hex chars), pinned out of band; required by --ns-enroll"));
+		parser.AddOption (L"",	L"ns-timeout",			_("Network-share connect/read timeout in seconds (default 10)"));
 #endif
 #if defined(VC_ENABLE_KEYSCRUB)
 		parser.AddSwitch (L"",	L"keyscrub",			_("Enable in-RAM key hygiene: scrub user-space secrets on unmount/idle/screen-lock/new-device"));
@@ -645,6 +675,76 @@ namespace VeraCrypt
 #if defined(VC_ENABLE_HKF_SALT_BIND)
 			if (parser.Found (L"hkf-bind-salt"))
 				ArgHKFConfig.rawSecretBindSalt = 1;   // RAW_SECRET -> HMAC-SHA256(secret, salt)
+#endif
+
+#if defined(VC_ENABLE_NETSHARE)
+			/*
+			 * Network-bound share: recover 32 bytes from the MR server and feed them to RAW_SECRET, so
+			 * the volume opens only WITH the network party. No new derivation seam — this is the same
+			 * rawSecret path a Shamir reconstruction uses (docs/NETWORK-SHARE-SPEC.md).
+			 *
+			 * Errors here are deliberately NOT swallowed into a failed unlock. An unreachable server, a
+			 * corrupt credential and a wrong answer are three different messages; collapsing them into
+			 * "incorrect password" is the failure this feature is shaped to avoid, and it would leave a
+			 * user with a correct passphrase unable to tell that the network was the problem.
+			 */
+			{
+				wxString nsServer, nsCred, nsKey, nsTimeout;
+				bool haveServer = parser.Found (L"ns-server", &nsServer);
+				bool haveCred   = parser.Found (L"ns-cred",   &nsCred);
+				bool enroll     = parser.Found (L"ns-enroll");
+
+				if (haveServer || haveCred || enroll)
+				{
+					if (!haveServer) throw_err (L"--ns-cred/--ns-enroll require --ns-server host:port");
+					if (!haveCred)   throw_err (L"--ns-server requires --ns-cred <file>");
+
+					NetShareEndpoint ep;
+					string nsErr;
+					if (!NetShareParseEndpoint (string (nsServer.mb_str()), ep, nsErr))
+						throw_err (wxString (L"--ns-server: ") + wxString (nsErr.c_str(), wxConvUTF8));
+					if (parser.Found (L"ns-timeout", &nsTimeout))
+						ep.TimeoutSec = StringConverter::ToInt32 (wstring (nsTimeout));
+
+					unsigned char cred[NETSHARE_CRED_LEN], share[NETSHARE_SHARE_LEN];
+					const string credPath (nsCred.mb_str());
+
+					if (enroll)
+					{
+						/* S is pinned by the user, never fetched: an active attacker at enrol time who
+						   substituted their own S would silently own the share from then on. */
+						unsigned char S[NETSHARE_POINT_LEN];
+						if (!parser.Found (L"ns-server-key", &nsKey))
+							throw_err (L"--ns-enroll requires --ns-server-key (the server's public S, pinned out of band)");
+						if (!NetShareHexToBytes (string (nsKey.mb_str()), S, NETSHARE_POINT_LEN, nsErr))
+							throw_err (wxString (L"--ns-server-key: ") + wxString (nsErr.c_str(), wxConvUTF8));
+
+						int rc = NetShareEnroll (S, NetShareCliRand, NULL, cred, share);
+						if (rc != NETSHARE_OK)
+							throw_err (wxString (L"network-share enrol failed: ")
+							           + wxString (NetShareStrError (rc).c_str(), wxConvUTF8));
+						if (!NetShareWriteCred (credPath, cred, nsErr))
+							throw_err (wxString (nsErr.c_str(), wxConvUTF8));
+					}
+					else
+					{
+						size_t credLen = 0;
+						if (!NetShareReadCred (credPath, cred, sizeof cred, credLen, nsErr))
+							throw_err (wxString (nsErr.c_str(), wxConvUTF8));
+
+						int rc = NetShareRecover (cred, credLen, NetShareTcpTransport, &ep,
+						                          NetShareCliRand, NULL, share);
+						if (rc != NETSHARE_OK)
+							throw_err (wxString (L"network-share unlock failed: ")
+							           + wxString (NetShareStrError (rc).c_str(), wxConvUTF8));
+					}
+
+					ArgHKFConfig.backend = HKF_BACKEND_RAW_SECRET;
+					memcpy (ArgHKFConfig.rawSecret, share, NETSHARE_SHARE_LEN);
+					ArgHKFConfig.rawSecretLen = NETSHARE_SHARE_LEN;
+					NetShareBurn (share, sizeof share);
+				}
+			}
 #endif
 
 			if (ArgHKFConfig.backend != HKF_BACKEND_NONE)

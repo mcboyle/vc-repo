@@ -84,6 +84,13 @@ Keyslots model: one master key (VMK), many independent wrappings. Slot 0 = untou
 slots 1..N wrap the same VMK, so add/rotate/revoke never re-encrypts the body. Payload = flags[1]||vmk
 (duress bit encrypted). CLI + mount-time slot search remain (docs/KEYSLOTS-SPEC.md §9).
 
+src/Common/NetShare.{c,h}            network-bound share, McCallum-Relyea (gated -DVC_ENABLE_NETSHARE;
+   `make NETSHARE=1`) -> Ed25519 group + RFC 8032 s5.1.3 COMPRESSED-POINT DECOMPRESSION (the wire format
+   every PoC deferred); transport is INJECTED (NetShareTransportFn) so Common/ has no sockets — the POSIX
+   TCP client lives in Main/NetShareTransport.h. Credential blob NSC||ver||S||C||cksum holds no secret.
+   Off-network returns NETSHARE_ERR_TRANSPORT, never a share, so "unreachable" != "wrong password".
+   CLI --ns-server/--ns-cred/--ns-enroll/--ns-server-key/--ns-timeout; steps [102] + netshare_cli.sh
+
 src/Common/Pkcs5.c (gated -DVC_ENABLE_ARGON2_PARAMS) — explicit Argon2id memory/iterations/parallelism
    Argon2SetParamsOverride()/Argon2GetResolvedParams()/Argon2GetParallelism(); CLI --argon2-memory/
    -iterations/-parallelism. Not stored (supplied like PIM at create+mount). docs/ARGON2-PARAMS-SPEC.md
@@ -236,9 +243,12 @@ enroll share `edf4bd73…` == python; off-network + wrong-server fail).
    mount-time auto-search (plain `--mount` tries slots + fires duress on a duress slot), backup-header
    table mirroring, `--keyslot-backend` for the deniable/sidecar placements, and multi-snapshot
    validation of the deniable backend.
-2. **Network-bound share source — finish the integration** (`docs/NETWORK-SHARE-SPEC.md`). The
-   McCallum–Relyea exchange is proven (step `[10]`). Remaining, real-build only: EC/bignum at
-   production parameters (P-256/Ed25519 or 2048-bit MODP), the client transport, and enroll/unlock CLI.
+2. ~~**Network-bound share source — finish the integration**~~ — **DONE.** MR proven at production
+   Ed25519 params [39], cross-host over real TCP [101], shippable `Common/NetShare.{c,h}` with RFC 8032
+   §5.1.3 compressed-point decompression [102], and the `--ns-*` CLI proven end to end against a live
+   server (`verification/realbuild/netshare_cli.sh`, 8/8; `make NETSHARE=1`). Note the scope lesson:
+   "only the CLI remains" was wrong — every PoC put raw coordinates on the wire, so the real gap was a
+   missing wire format needing new crypto. Remaining: a Tang/HTTPS endpoint and a constant-time group.
 3. ~~**End-to-end validate the explicit Argon2id params on a real build**~~ — **DONE, and it was always
    sandbox-testable.** Create with `--hash=Argon2id --argon2-memory/-iterations/-parallelism`, then
    `Volume::Open` in-process via `verification/realbuild/open_roundtrip.sh`: same params open (positive
