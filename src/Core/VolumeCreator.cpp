@@ -353,12 +353,19 @@ namespace VeraCrypt
 
 #if defined(VC_ENABLE_V2FORMAT)
 			// v2 on-disk format (T1-1): reserve a tail full-volume per-sector MAC table out of the data
-			// area, so the usable data the filesystem sees shrinks by the table size. The table itself is
-			// written/populated by the wide-block + per-sector-MAC I/O layer (T2-4), which is not built
-			// yet; here we only reserve the split so create-time sizing is correct. Nothing stored marks
-			// the volume as v2 — mount discovers the mode by trial (V2FormatDiscoverMode).
+			// area, so the usable data the filesystem sees shrinks by the table size. Nothing stored marks
+			// the volume as v2 — mount discovers the mode by trial (V2FormatDiscoverMode), which only
+			// succeeds once the table is POPULATED at the end of creation (see CreateVolume's format pass).
 			if (options->V2Format)
 			{
+				// A v2 volume CANNOT be quick-formatted. --quick never writes the data area, so its
+				// contents are whatever was on the disk before; per-sector authentication requires knowing
+				// what is actually there. Tagging pre-existing garbage would either need the same full
+				// read pass quick format exists to avoid, or leave every sector failing closed on first
+				// read. Refuse the combination rather than silently producing an unreadable volume.
+				if (options->Quick)
+					throw ParameterIncorrect (SRC_POS);
+
 				V2Format::DataAreaSplit v2 = V2Format::SplitDataArea (
 					(uint64_t) headerOptions.VolumeDataSize, (uint32_t) options->SectorSize);
 				if (!v2.ok)

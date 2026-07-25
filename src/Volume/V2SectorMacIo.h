@@ -163,6 +163,49 @@ namespace VeraCrypt
 			WriteTags (file, firstSector, count, tags);
 		}
 
+		/*
+		 * CREATE-TIME POPULATION — the step that ARMS this feature.
+		 *
+		 * Reads the freshly-formatted ciphertext back from disk and writes a tag for every data sector.
+		 * Until this runs, the table is all zeroes, V2FormatDiscoverMode returns NONE, and the whole
+		 * layer is inert; afterwards, every read is authenticated and a mismatch refuses data.
+		 *
+		 * WHY A SECOND PASS RATHER THAN TAGGING DURING THE FORMAT WRITE. Tagging inline would mean either
+		 * holding every tag in RAM until the end — 16 bytes per sector, so ~32 GB for a 1 TB volume, which
+		 * is not viable — or interleaving table writes into a loop that relies on sequential file
+		 * position, where a stray seek silently corrupts the data area. A separate read-back pass costs
+		 * one extra I/O pass at creation time only, and is obviously correct by inspection. For a
+		 * one-time operation on a path where a mistake destroys the volume, that trade is the right one.
+		 *
+		 * REQUIRES A FULL FORMAT. The caller must refuse --quick for v2 volumes: quick format never writes
+		 * the data area, so its contents are pre-existing disk garbage. Tagging that would either demand
+		 * this same read pass anyway or leave every sector failing closed on first read.
+		 *
+		 * `dataStartOffset` is the HOST offset of data sector 0.
+		 */
+		void PopulateTable (const File &file, uint64 dataStartOffset) const
+		{
+			if (!IsActive())
+				throw ParameterIncorrect (SRC_POS);
+
+			/* Chunk the read-back so memory stays bounded regardless of volume size. */
+			const uint64 sectorsPerChunk = 256;
+			SecureBuffer chunk ((size_t) (sectorsPerChunk * SectorSize));
+
+			uint64 done = 0;
+			while (done < DataSectors)
+			{
+				const uint64 n = (DataSectors - done < sectorsPerChunk) ? (DataSectors - done) : sectorsPerChunk;
+
+				BufferPtr chunkRange = chunk.GetRange (0, (size_t) (n * SectorSize));
+				if (file.ReadAt (chunkRange, dataStartOffset + done * SectorSize) != n * SectorSize)
+					throw MissingVolumeData (SRC_POS);
+
+				UpdateRange (file, chunk.Ptr(), done, n);
+				done += n;
+			}
+		}
+
 	protected:
 		/* Slots are contiguous and fixed-width, so a sector RANGE is a single contiguous table range —
 		   one read/write, not one per sector. That matters: the naive per-sector version would turn every
