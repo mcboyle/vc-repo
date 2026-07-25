@@ -322,7 +322,16 @@ brief:
   REF-diffing dk32/dk64/dk192 + the resolver; benchmarked vs the real Argon2id (informational —
   ~0.4 s at 1 MiB/t=3 vs Argon2id's ~4.5 s at its 416 MiB default; hash-bound vs memory-bound,
   so equal-time comparisons must be done on target hardware before recommending either).
-  Remaining (real-build): mount/create round-trip with `--hash Balloon` on a real volume.
+  ~~Remaining (real-build): mount/create round-trip with `--hash Balloon` on a real volume.~~
+  **DONE — and it was sandbox-testable all along** (same inherited-claim pattern as the Argon2 item).
+  Two levels now: `acceptance.sh` creates and mounts a `--hash Balloon` volume through kernel dm-crypt,
+  and `open_roundtrip.sh` proves it **in-process against the real `Volume::Open`** with no kernel at all
+  (16/16, CI-gated via `BALLOON=1`). The load-bearing assertion is a NEGATIVE: Balloon is built on
+  SHA-256 and `Pkcs5Kdf::GetAlgorithm(const Hash&)` deliberately skips it so it never shadows
+  `Pkcs5HmacSha256` — so "opens when pinned to Balloon" would NOT distinguish a genuinely
+  Balloon-derived volume from one that silently fell back to plain HMAC-SHA-256, since both would open.
+  Pinning the open to `HMAC-SHA-256` and requiring a **reject** is what proves the construction actually
+  shaped the key. Also asserted: opens with no KDF pin at all (auto-detection reaches Balloon).
   `docs/BALLOON-SPEC.md`.
 - **OPRF password hardening** (2HashDH / CFRG DH-OPRF, `IDEAS-BACKLOG.md` §C) — **protocol proven,
   AND now proven at production parameters over the full ristretto255 group; server + threshold remain.**

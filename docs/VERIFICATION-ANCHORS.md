@@ -82,7 +82,40 @@ class and worth a `[97]`-style check:
 | Primitive | Used by | Status |
 |---|---|---|
 | In-tree ChaCha20 (20-round) | `[6]` KeyScrub RAM transform, `[8]` keyslot wrap | **CLOSED — step `[98]`**, vs libsodium |
-| ChaCha20-Poly1305 AEAD composition | `[20]` keyslot-area MAC | still open |
+| ~~ChaCha20-Poly1305 AEAD composition~~ | ~~`[20]` keyslot-area MAC~~ | **WITHDRAWN — the construction does not exist** |
+| HKDF-SHA256 (RFC 5869) | HKF v2 mix, `[20]` keyslot-area MAC key | **CLOSED — step `[103]`**, vs RFC 5869 A.1–A.3 |
+
+**A withdrawn row, and why it is left visible.** This table used to list *"ChaCha20-Poly1305 AEAD
+composition — `[20]` keyslot-area MAC — still open"*. **No such construction exists in the tree.**
+`Poly1305` in `src/` is used by Adiantum and nothing else; it is never composed with ChaCha20 into an
+AEAD. The thing `[20]` actually computes is `HMAC-SHA256(K_area, …)` with
+`K_area = HKDF-SHA256(VMK, …)`, and the "keyslot AEAD" referred to elsewhere is `KeyslotWrap/UnwrapCT`
+= **ChaCha20 + HMAC-SHA256** — both already anchored (`[98]`, `[69]`). So the last open row was chasing a
+primitive the project does not have, while the primitive it *does* have there — HKDF — sat unanchored
+directly beneath it. Recorded rather than deleted, because "the anchor table named the wrong
+construction" is the same failure mode as the ChaCha20 variant mix-up below: **an anchor is only as good
+as the identification of what it is anchoring.**
+
+**Closed by this audit (3): HKDF-SHA256, step `[103]`.** RFC 5869 appeared nowhere in the tree, yet
+HKDF-SHA256 is load-bearing in two shipping places — `HardwareKeyFactor.c`'s Rank-1 **v2 mix** (which
+derives the mixed password for *every* v2 factored volume) and `KeyslotAreaMac.c`'s `K_area`. Same class
+as `[97]`. Because both in-tree HKDFs are **specialised** (fixed `info`, fixed output length, static
+linkage), the RFC's generic `(salt, info, L)` vectors cannot be fed to them directly, so the anchor is a
+**chain**: generic HKDF built on the real in-tree HMAC-SHA256 (itself OFFICIAL-anchored at `[69]`) is
+matched to RFC 5869 **A.1/A.2/A.3** — PRK *and* OKM, including the 3-block `L=82` case and the
+zero-length salt/info case — and then `KeyslotAreaMacDeriveKey` is required to equal that anchored HKDF
+byte for byte. The second half is the load-bearing one: it is what rules out a lookalike (counter
+starting at 0, `info`/counter transposed, `T(0)` not empty, salt and IKM swapped), none of which
+reproduce the vectors. Negative controls confirm the comparison is not vacuous — a one-character `info`
+change does not reproduce `K_area`, and a different VMK yields a different key. **Result: correct** — no
+defect. 10/10. Anchor class: OFFICIAL.
+
+> **Still uncovered by `[103]`, stated plainly:** the harness anchors the *keyslot-area* specialisation.
+> The **HKF v2 mix** shares the same HKDF shape but has its own inlined copy in `HardwareKeyFactor.c`
+> (`hkf_v2_hmac` + `hkf_v2_mix`, `info = "VeraCrypt/HKF/mix/v2"`, multi-block expand to `HKF_POOL_SIZE`).
+> It is anchored to its own TWIN at `[80]`/`[93]` but has **not** been shown equal to RFC-5869 HKDF the
+> way `K_area` now has. That is the next `[103]`-style step, and it matters more than the one just
+> closed — it is on the mount path of every v2 volume.
 
 **Correction — the ChaCha20 anchor was initially mis-specified, and the mistake is worth keeping.** This
 table first named *RFC 8439 §2.4.2* as ChaCha20's available anchor. That was **wrong**. ChaCha20 has two

@@ -2816,3 +2816,32 @@ if [ -n "$NM_CC" ] && "$NM_CC" -O2 -DVC_ENABLE_NETSHARE $NM_NOASM $INC -I"$SRCRO
 else
 	skip_step " no compiler built the netshare module test (see /tmp/nm.log)"
 fi
+
+echo ""
+echo "[103] HKDF-SHA256 vs the OFFICIAL RFC 5869 Appendix A vectors -> and the SHIPPING specialisation"
+# WHY: HKDF-SHA256 is load-bearing in TWO shipping places -- HardwareKeyFactor.c's Rank-1 v2 mix (the
+# derivation of EVERY v2 factored volume's mixed password) and KeyslotAreaMac.c's K_area -- and RFC 5869
+# appeared NOWHERE in this tree. That is the same gap class step [97] closed for PBKDF2-HMAC-SHA512: a
+# load-bearing primitive implementing a published standard, carried on a TWIN alone.
+# ANCHOR: OFFICIAL (RFC 5869 A.1/A.2/A.3 -- PRK and OKM, byte for byte), then a chain step. The in-tree
+# HKDFs are SPECIALISED (fixed info, fixed L, static), so the generic vectors cannot be fed to them
+# directly; instead generic HKDF is built on the real in-tree HMAC-SHA256 (itself OFFICIAL-anchored at
+# [69]) and anchored to the RFC, and THEN KeyslotAreaMacDeriveKey is required to equal it byte for byte.
+# That second half is what rules out a lookalike (counter starting at 0, info/counter transposed, T(0)
+# not empty, salt and IKM swapped) -- each of which passes no vector here.
+HK_CC=""; for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then HK_CC="$c"; break; fi; done
+HK_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
+HK_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+if [ -n "$HK_CC" ] && "$HK_CC" -O2 $HK_WNO $HK_NOASM \
+      -DVC_ENABLE_KEYSLOTS -DVC_ENABLE_KEYSLOT_AREA_MAC $INC -I"$SRCROOT/Crypto" \
+      "$HERE/hkdf_rfc5869_test.c" "$SRCROOT/Common/KeyslotAreaMac.c" "$SRCROOT/Common/KeyslotStore.c" \
+      "$SRCROOT/Common/Keyslot.c" "$SRCROOT/Common/AfSplit.c" "$SRCROOT/Crypto/Sha2.c" \
+      "$SRCROOT/Crypto/chacha256.c" -o /tmp/hkdf_rfc5869 2>/tmp/hk.log; then
+	/tmp/hkdf_rfc5869 > /tmp/hk_out.txt 2>&1; hkrc=$?
+	sed 's/^/  /' /tmp/hk_out.txt
+	if [ "$hkrc" = 0 ] && grep -q 'HKDF RFC 5869 TEST PASSED' /tmp/hk_out.txt; then
+		echo "    MATCH: RFC 5869 A.1/A.2/A.3 reproduced, and the shipping K_area derivation IS that HKDF"
+	else echo "    HKDF RFC 5869 TEST FAILED"; exit 1; fi
+else
+	skip_step " no compiler built the HKDF RFC 5869 test (see /tmp/hk.log)"
+fi
