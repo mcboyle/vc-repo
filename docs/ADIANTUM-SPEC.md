@@ -178,3 +178,20 @@ passes `ADIANTUM_MODE=1`. The self-contained suite is back to 100/100 with 0 ski
 The harness also compiles `EncryptionModeAdiantum.cpp` itself rather than relying on the copy inside
 `Volume.a` — otherwise it could silently link a stale object, or fail confusingly when the product had
 been built without the flag.
+
+### The flag stamp caught this change's own mistake
+
+Adding `ADIANTUM_MODE=1` to the CI product build without adding it to `open_roundtrip.sh`'s invocation
+made the two disagree, and `src/.build-flags` refused the run:
+
+```
+archive flag stamp: ... -DVC_ENABLE_ADIANTUM -DVC_ENABLE_ADIANTUM_MODE -DVC_ENABLE_CTAES -DVC_ENABLE_POLY1305 ...
+harness flag set  : ... (no Adiantum defines)
+FAIL: archives were built with a DIFFERENT feature set than requested
+```
+
+That guard exists because a mixed-flag build does **not** fail loudly — it fails as a volume that will
+not open, which is indistinguishable from a crypto bug and once cost a whole session on the Argon2
+round-trip. Here it turned a would-be phantom failure into a one-line diff. Worth recording as the
+mechanism working on its author, not just in principle: **every consumer of the archives must carry the
+same flag set, and adding a build flag means updating every invocation that links against it.**

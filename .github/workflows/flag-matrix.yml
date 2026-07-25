@@ -151,4 +151,4 @@ jobs:
         run: VC_AM_SKIP_BUILD=1 bash verification/realbuild/adiantum_mode.sh
 
       - name: In-process Volume::Open round-trip (real product objects)
-        run: VC_OR_SKIP_BUILD=1 ./verification/realbuild/open_roundtrip.sh NOGUI=1 HKF=1 HKF_SIMULATOR=1 HKF_MIX_V2_SALTBIND=1 KEYSCRUB=1 DURESS=1 KEYSLOTS=1 SHARECODE=1 SHAMIRMAC=1 FLASH_WARN=1 ARGON2PARAMS=1
+        run: VC_OR_SKIP_BUILD=1 ./verification/realbuild/open_roundtrip.sh NOGUI=1 HKF=1 HKF_SIMULATOR=1 HKF_MIX_V2_SALTBIND=1 KEYSCRUB=1 DURESS=1 KEYSLOTS=1 SHARECODE=1 SHAMIRMAC=1 FLASH_WARN=1 ARGON2PARAMS=1 ADIANTUM_MODE=1
