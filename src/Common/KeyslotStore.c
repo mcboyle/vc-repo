@@ -24,6 +24,7 @@
 #if defined(VC_ENABLE_KEYSLOTS)
 
 #include <string.h>
+#include <assert.h>   /* debug-only contract tripwire in the parallel scan */
 #include "AfSplit.h"
 #include "Crypto/Sha2.h"
 
@@ -215,9 +216,113 @@ int KeyslotAdd (const KeyslotStoreCfg *cfg, KeyslotArea *area,
 /* ---- open ---- */
 
 
-int KeyslotOpen (const KeyslotStoreCfg *cfg, KeyslotArea *area,
-                 const unsigned char *pass, int passLen,
-                 unsigned char *vmkOut, int *flagsOut)
+/* --- Optional parallelisation of the labeled-table scan (used only by KeyslotOpenParallel) --------
+   The per-slot work is the pure KeyslotUnwrapCT (stack + caller buffers only, no shared state), so N
+   slots can be derived concurrently. ONLY the derive/unwrap is parallelised: the record I/O
+   (area->read, whose handle is not assumed thread-safe) runs serially first, and the constant-time
+   first-match mask-select runs serially after. The executor must run every index in [0, n) with no
+   early exit, so "derive every slot regardless of match" — the security property — is preserved; the
+   count n is the public config-bounded slot count, so concurrency changes only wall-clock. */
+typedef struct {
+	const KeyslotStoreCfg *cfg;
+	const unsigned char   *pass;   int passLen;
+	int                    ct;
+	const unsigned char   *recs;   /* n * KEYSLOT_TABLE_STRIDE (read-only) */
+	const unsigned char   *okread; /* n : 1 if that record was read successfully */
+	unsigned char         *tmps;   /* n * ct : per-slot unwrap output */
+	int                   *mret;   /* n : per-slot match bit */
+} KsParScan;
+
+static void ks_par_scan_body (void *vctx, int i)
+{
+	KsParScan *c = (KsParScan *) vctx;
+	const unsigned char *rec = c->recs + (size_t) i * KEYSLOT_TABLE_STRIDE;
+	unsigned char aad[L_AAD_LEN];
+	if (!c->okread[i]) { c->mret[i] = 0; return; }   /* read failure = no match (I/O, not secret) */
+	memcpy (aad, rec, L_AAD_LEN);
+	c->mret[i] = KeyslotUnwrapCT (c->cfg->kdf, c->cfg->cost, c->pass, c->passLen,
+	                              rec + L_SALT, KEYSLOT_SALT_SIZE, aad, L_AAD_LEN,
+	                              rec + L_CT, c->ct, rec + L_CT + c->ct,
+	                              c->tmps + (size_t) i * (size_t) c->ct);
+}
+
+/* Slots processed per parallel round. A FIXED compile-time constant (not derived from the runtime core
+   count — that would make the frame a VLA). Two independent constraints fix the value, neither tied to
+   any particular machine: (1) it bounds peak automatic memory at KS_PARALLEL_BATCH * 2 *
+   KEYSLOT_TABLE_STRIDE (= 32 KiB here), so even musl's 128 KiB default thread stack cannot overflow —
+   measured at ~34 KiB for the whole ks_open_impl frame with -fstack-usage; (2) it is wide enough that
+   the per-batch thread-spawn cost amortizes over ~16 KDFs. On a machine with fewer cores the batch just
+   oversubscribes (harmless); with more cores it caps parallelism width at 16 per round (a latency, not a
+   correctness, trade-off). Larger tables simply take more rounds. */
+#define KS_PARALLEL_BATCH 16
+
+/* Kept OUT OF LINE on purpose: if the compiler inlined this into ks_open_impl, the ~32 KiB of batch
+   buffers would enlarge the frame of EVERY ks_open_impl call — including the serial pf==NULL path used
+   by the CLI, which must stay frame-unchanged. noinline confines the 32 KiB to this helper's frame, on
+   the parallel call path only. */
+#if defined(__GNUC__)
+#  define KS_NOINLINE __attribute__ ((noinline))
+#else
+#  define KS_NOINLINE
+#endif
+
+/* Parallel labeled-table scan. Fills 'selp' (ct bytes) with the constant-time first-match selection
+   over ALL ns slots and returns 'found'. NO dynamic allocation: fixed automatic buffers keep this
+   module's zero-allocation, always-wiped property and the same swappable-stack posture as the serial
+   scratch (no new heap surface for VMK candidate material). Processed in batches of KS_PARALLEL_BATCH:
+   each batch is read serially (area->read is not assumed thread-safe), its per-slot pure KeyslotUnwrapCT
+   run concurrently through 'pf' (which must run every index in [0, bn) with no early exit), then folded
+   into 'selp' IN INDEX ORDER by the same mask-select the serial loop uses — so every slot is derived and
+   the first match in index order wins, batch boundaries included. Caller guarantees pf != NULL, ns > 1. */
+static KS_NOINLINE int ks_scan_labeled_parallel (const KeyslotStoreCfg *cfg, KeyslotArea *area,
+                                     const unsigned char *pass, int passLen, int ct,
+                                     uint64 ns, unsigned char *selp, KeyslotParallelFor pf)
+{
+	unsigned char recs[KS_PARALLEL_BATCH * KEYSLOT_TABLE_STRIDE];  /* one batch of raw records */
+	unsigned char tmps[KS_PARALLEL_BATCH * KEYSLOT_TABLE_STRIDE];  /* one batch of unwrap outputs (ct each) */
+	unsigned char okread[KS_PARALLEL_BATCH];
+	int           mret[KS_PARALLEL_BATCH];
+	KsParScan sc;
+	uint64 base;
+	int b, found = 0;
+
+	sc.cfg = cfg; sc.pass = pass; sc.passLen = passLen; sc.ct = ct;
+	sc.recs = recs; sc.okread = okread; sc.tmps = tmps; sc.mret = mret;   /* batch-local buffers, indices 0..bn */
+
+	for (base = 0; base < ns; base += KS_PARALLEL_BATCH)
+	{
+		int bn = (int) ((ns - base < (uint64) KS_PARALLEL_BATCH) ? (ns - base) : (uint64) KS_PARALLEL_BATCH);
+		int j;
+		for (j = 0; j < bn; j++)   /* phase 1 (batch): read serially */
+			okread[j] = (unsigned char) (area->read (area->ctx, (base + (uint64) j) * KEYSLOT_TABLE_STRIDE,
+			                             recs + (size_t) j * KEYSLOT_TABLE_STRIDE, KEYSLOT_TABLE_STRIDE) == 0);
+		/* Contract fail-safe: KeyslotUnwrapCT only ever writes 0/1, so a slot left at -1 was NOT run by
+		   'pf' (a broken/failed executor). Masking m<0 to 0 below degrades that to "this slot did not
+		   match" — never a wrong-key selection or a data-loss "wrong password". The assert makes the same
+		   violation a LOUD failure in debug builds instead of a silent one. */
+		for (j = 0; j < bn; j++) mret[j] = -1;
+		pf (bn, ks_par_scan_body, &sc);   /* phase 2: derive+unwrap the whole batch concurrently, no early exit */
+		for (j = 0; j < bn; j++)          /* phase 3: fold into selp IN INDEX ORDER (first-match preserved) */
+		{
+			int m = mret[j], sel; unsigned char mask;
+			assert (m >= 0);                              /* debug tripwire: pf must run every body */
+			if (m < 0) m = 0;                             /* release fail-safe: unran slot => no match */
+			sel  = m & (found ^ 1);                       /* take the first match only */
+			mask = (unsigned char) (0u - (unsigned) sel);
+			for (b = 0; b < ct; b++)
+				selp[b] = (unsigned char) ((selp[b] & ~mask) | (tmps[(size_t) j * (size_t) ct + b] & mask));
+			found |= m;
+		}
+	}
+	/* Wipe the (reused) batch buffers — every unwrapped stripe passed through them, not just the match. */
+	ks_wipe (tmps, (int) sizeof (tmps));
+	ks_wipe (recs, (int) sizeof (recs));
+	return found;
+}
+
+static int ks_open_impl (const KeyslotStoreCfg *cfg, KeyslotArea *area,
+                         const unsigned char *pass, int passLen,
+                         unsigned char *vmkOut, int *flagsOut, KeyslotParallelFor pf)
 {
 	unsigned char rec[KEYSLOT_TABLE_STRIDE];
 	int plen = plen_of (cfg), s = af_of (cfg), ct = ct_of (cfg);
@@ -233,7 +338,9 @@ int KeyslotOpen (const KeyslotStoreCfg *cfg, KeyslotArea *area,
 		   many are populated. The KDF cost, payload length and AF stripe count come from the config
 		   (public), never from the possibly-random slot bytes, so the per-slot work is fixed and a
 		   garbage slot cannot force a huge iteration count. Cost: one KDF per table slot per open (the
-		   LUKS trade-off). The AF merge runs once on the selected stripe blob, after the scan. */
+		   LUKS trade-off). The AF merge runs once on the selected stripe blob, after the scan.
+		   When 'pf' is supplied the per-slot KDFs run concurrently — still all N, still no early exit,
+		   with the mask-select below unchanged; pf == NULL is the original single-threaded loop. */
 		unsigned char aad[L_AAD_LEN];
 		unsigned char tmp[KEYSLOT_TABLE_STRIDE], selp[KEYSLOT_TABLE_STRIDE];
 		unsigned char payload[KS_PAYLOAD_MAX];
@@ -241,20 +348,23 @@ int KeyslotOpen (const KeyslotStoreCfg *cfg, KeyslotArea *area,
 		int found = 0, b;
 
 		memset (selp, 0, sizeof (selp));
-		for (i = 0; i < ns; i++)
-		{
-			int m, sel; unsigned char mask;
-			if (area->read (area->ctx, i * KEYSLOT_TABLE_STRIDE, rec, sizeof (rec)) != 0)
-				continue;
-			memcpy (aad, rec, L_AAD_LEN);
-			m = KeyslotUnwrapCT (cfg->kdf, cfg->cost, pass, passLen, rec + L_SALT, KEYSLOT_SALT_SIZE,
-			                     aad, L_AAD_LEN, rec + L_CT, ct, rec + L_CT + ct, tmp);
-			sel  = m & (found ^ 1);                       /* take the first match only */
-			mask = (unsigned char) (0u - (unsigned) sel);
-			for (b = 0; b < ct; b++)
-				selp[b] = (unsigned char) ((selp[b] & ~mask) | (tmp[b] & mask));
-			found |= m;
-		}
+		if (pf && ns > 1)
+			found = ks_scan_labeled_parallel (cfg, area, pass, passLen, ct, ns, selp, pf);
+		else
+			for (i = 0; i < ns; i++)   /* serial path: the original loop, byte-for-byte (pf == NULL default) */
+			{
+				int m, sel; unsigned char mask;
+				if (area->read (area->ctx, i * KEYSLOT_TABLE_STRIDE, rec, sizeof (rec)) != 0)
+					continue;
+				memcpy (aad, rec, L_AAD_LEN);
+				m = KeyslotUnwrapCT (cfg->kdf, cfg->cost, pass, passLen, rec + L_SALT, KEYSLOT_SALT_SIZE,
+				                     aad, L_AAD_LEN, rec + L_CT, ct, rec + L_CT + ct, tmp);
+				sel  = m & (found ^ 1);                       /* take the first match only */
+				mask = (unsigned char) (0u - (unsigned) sel);
+				for (b = 0; b < ct; b++)
+					selp[b] = (unsigned char) ((selp[b] & ~mask) | (tmp[b] & mask));
+				found |= m;
+			}
 		if (found)
 		{
 			AfMerge (selp, plen, s, payload);
@@ -290,6 +400,20 @@ int KeyslotOpen (const KeyslotStoreCfg *cfg, KeyslotArea *area,
 		ks_wipe (rec, sizeof (rec));
 		return ok;
 	}
+}
+
+int KeyslotOpen (const KeyslotStoreCfg *cfg, KeyslotArea *area,
+                 const unsigned char *pass, int passLen,
+                 unsigned char *vmkOut, int *flagsOut)
+{
+	return ks_open_impl (cfg, area, pass, passLen, vmkOut, flagsOut, (KeyslotParallelFor) 0);
+}
+
+int KeyslotOpenParallel (const KeyslotStoreCfg *cfg, KeyslotArea *area,
+                         const unsigned char *pass, int passLen,
+                         unsigned char *vmkOut, int *flagsOut, KeyslotParallelFor pf)
+{
+	return ks_open_impl (cfg, area, pass, passLen, vmkOut, flagsOut, pf);
 }
 
 /* ---- indexed open (admin-side; rotate/list-owned) ---- */
