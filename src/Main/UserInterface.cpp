@@ -32,8 +32,14 @@
 #include "Application.h"
 #include "FavoriteVolume.h"
 #include "UserInterface.h"
+// NB: these three feature includes must be INDEPENDENT of one another. They were previously nested
+// inside the VC_ENABLE_KEYSCRUB block while the code they serve (KeyslotCommand, the duress path) is
+// guarded only by VC_ENABLE_KEYSLOTS / VC_ENABLE_DURESS — so `make KEYSLOTS=1` without KEYSCRUB=1
+// compiled the keyslot command body with none of its headers ("unknown type name 'KeyslotArea'").
+// The full CI flag set always sets KEYSCRUB=1, which hid it. Keep one guard per include.
 #if defined(VC_ENABLE_KEYSCRUB)
 #include "Core/KeyScrubEvents.h"
+#endif
 #if defined(VC_ENABLE_KEYSLOTS)
 #include "Volume/KeyslotVolumeBinding.h"
 #include "Volume/EncryptionAlgorithm.h"
@@ -41,7 +47,6 @@
 #endif
 #if defined(VC_ENABLE_DURESS)
 #include "Common/DuressToken.h"
-#endif
 #endif
 
 namespace VeraCrypt

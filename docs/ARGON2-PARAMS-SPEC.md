@@ -78,8 +78,29 @@ Self-contained (`verification/argon2_params_test.c` + `argon2_params_reference.p
 The stock (no-flag) `Pkcs5.o` is additionally shown byte-for-byte identical to the baseline object, so
 the default build is provably unchanged.
 
-### Not sandbox-testable
+### Create → open round-trip: verified in-sandbox
 
-The CLI option layer is gated and compiles, but driving an actual `veracrypt` create/mount with these
-flags needs the wx application and a real volume — validate the round-trip (create with explicit
-params → mount with the same params → opens; mount without → fails) on a real build.
+This section previously read *"Not sandbox-testable"*. That was inherited, never tested, and wrong — see
+`docs/CANT-CLAIMS-AUDIT.md`. The round-trip runs here and is CI-gated.
+
+A volume is created with the real CLI (`--hash=Argon2id --argon2-memory 16 --argon2-iterations 3
+--argon2-parallelism 4`) and then opened **in-process** through the real `Volume::Open` by
+`verification/realbuild/open_roundtrip.sh` — no kernel dm-crypt needed, because the parameters are
+exercised by header-key derivation, not by mounting. Since the parameters are *not stored in the header*,
+the round-trip is the only thing that can distinguish "the parameters shape the volume key" from "the
+parameters are silently ignored":
+
+| probe | expected | result |
+|---|---|---|
+| same params — **positive control** | opens, non-trivial master key | opens (256-byte master key) |
+| wrong memory (32768 vs 16384 KiB) | reject | PasswordIncorrect |
+| wrong iterations (4 vs 3) | reject | PasswordIncorrect |
+| wrong parallelism (1 vs 4) | reject | PasswordIncorrect |
+| no override at all (PIM default) | reject | PasswordIncorrect |
+| right params, wrong password | reject | PasswordIncorrect |
+
+The positive control runs first on purpose: if it fails, every negative below it rejects for free and
+proves nothing. (That ordering is what caught a mixed-feature-flag build masquerading as a crypto failure
+— the harness now refuses to run against archives whose `src/.build-flags` stamp disagrees with its own.)
+
+Still out of reach here: the **kernel dm-crypt mount** itself, which needs a VM.

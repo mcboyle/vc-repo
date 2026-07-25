@@ -38,6 +38,12 @@
 #include "Volume/Volume.h"
 #include "Volume/VolumePassword.h"
 
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+extern "C" {
+#include "Common/Pkcs5.h"               // Argon2SetParamsOverride (explicit Argon2id params at mount)
+}
+#endif
+
 #if defined(VC_ENABLE_HKF)
 #include "Main/HardwareKeyFactorCli.h"   // BuildHKFConfig (wx-free); pulls in Common/HardwareKeyFactor.h
 #endif
@@ -80,6 +86,21 @@ static int DoOpen (const string &path, const string &password, bool reportMaster
 			kdf = Pkcs5Kdf::GetAlgorithm (wstring (n.begin (), n.end ()));
 		}
 	}
+
+#if defined(VC_ENABLE_ARGON2_PARAMS)
+	// Explicit Argon2id parameters (env VC_OPEN_ARGON2="memKiB,iterations,parallelism"), supplied at
+	// mount exactly as the CLI's --argon2-memory/-iterations/-parallelism do. They are NOT stored in the
+	// volume, so opening an Argon2 volume requires re-supplying the same values the creator used — which
+	// makes this both the positive probe (same params open) and the negative one (different params must
+	// NOT open, proving the params genuinely participate in the derivation rather than being ignored).
+	// Unset => no override, i.e. the PIM-derived default, exactly as a normal mount.
+	if (const char *a2 = getenv ("VC_OPEN_ARGON2"))
+	{
+		unsigned mem = 0, iters = 0, par = 0;
+		if (a2[0] && sscanf (a2, "%u,%u,%u", &mem, &iters, &par) == 3)
+			Argon2SetParamsOverride (1, (uint32) mem, (uint32) iters, (uint32) par);
+	}
+#endif
 
 	make_shared_auto (Volume, volume);
 	try

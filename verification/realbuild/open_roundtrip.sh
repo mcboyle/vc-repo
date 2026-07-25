@@ -25,7 +25,7 @@ SRC="$ROOT/src"
 
 MAKE_ARGS=("$@")
 if [ "${#MAKE_ARGS[@]}" -eq 0 ]; then
-	MAKE_ARGS=(NOGUI=1 HKF=1 HKF_SIMULATOR=1 KEYSCRUB=1 DURESS=1 KEYSLOTS=1 SHARECODE=1 SHAMIRMAC=1 FLASH_WARN=1)
+	MAKE_ARGS=(NOGUI=1 HKF=1 HKF_SIMULATOR=1 KEYSCRUB=1 DURESS=1 KEYSLOTS=1 SHARECODE=1 SHAMIRMAC=1 FLASH_WARN=1 ARGON2PARAMS=1)
 fi
 
 log()  { echo "[open-roundtrip] $*"; }
@@ -54,7 +54,29 @@ DEFS="$(make -C "$SRC" -pn "${MAKE_ARGS[@]}" 2>/dev/null \
 [ -n "$DEFS" ] || log "note: no VC_ENABLE/TC defs resolved (stock build?) — harness will build without factor support"
 log "feature defs: $DEFS"
 
+# The archives must have been built from the SAME flag set, or this harness links a mixed binary: it
+# compiles with one feature set while Core.a/Volume.a carry another. That mismatch does not announce
+# itself as a build error — it shows up as a *behavioural* failure (a volume that will not open), which
+# reads exactly like a crypto bug. It cost a session's worth of misdiagnosis on the Argon2 round-trip.
+# scripts/build-product.sh writes src/.build-flags; compare and refuse to proceed on a mismatch.
+STAMP="$SRC/.build-flags"
+if [ -f "$STAMP" ]; then
+	STAMPED="$(cat "$STAMP")"
+	if [ "$(echo "$STAMPED" | tr -s ' ')" != "$(echo "$DEFS" | tr -s ' ')" ]; then
+		log "archive flag stamp: $STAMPED"
+		log "harness flag set  : $DEFS"
+		if [ "${VC_OR_SKIP_BUILD:-0}" = 1 ]; then
+			fail "archives were built with a DIFFERENT feature set than requested (see above). Rebuild: scripts/build-product.sh ${MAKE_ARGS[*]}"
+		fi
+		log "flag-set mismatch — rebuilding the product to match"
+		"$ROOT/scripts/build-product.sh" "${MAKE_ARGS[@]}" || fail "product rebuild failed"
+	fi
+else
+	log "note: no $STAMP (archives predate flag stamping) — cannot verify the archives match these defs"
+fi
+
 case " $DEFS " in *" -DVC_ENABLE_HKF_SIMULATOR "*) HAVE_SIM=1;; *) HAVE_SIM=0;; esac
+case " $DEFS " in *" -DVC_ENABLE_ARGON2_PARAMS "*) HAVE_A2P=1;; *) HAVE_A2P=0;; esac
 
 # --- 3. compile + link the harness against the real archives ----------------------------------------
 INC="-I$SRC -I$SRC/Crypto -I$SRC/Crypto/Argon2/include -I$SRC/PKCS11"
@@ -104,6 +126,41 @@ if [ "$HAVE_SIM" = 1 ]; then
 	check "factor: password ALONE rejected (2FA property)"    0 must_reject "$WORK/factored.hc" "$PW"
 else
 	log "=== factor probes skipped (built without HKF_SIMULATOR) ==="
+fi
+
+if [ "$HAVE_A2P" = 1 ]; then
+	# Explicit Argon2id parameters are NOT stored in the header — like PIM, the same values must be
+	# supplied at mount as at create. So the create->mount round-trip is the only thing that proves the
+	# parameters genuinely shape the volume key rather than being silently ignored. The positive control
+	# comes first on purpose: if it fails, every negative below rejects for free and proves nothing.
+	log "=== explicit Argon2id params (create with -> open with) ==="
+	A2MEM=16; A2IT=3; A2PAR=4                # CLI takes MiB; the library override takes KiB
+	A2KIB=$((A2MEM * 1024))
+	mkvol_a2() {
+		"$VC" --text --create "$1" --size=10M --password="$PW" --pim=0 --keyfiles="" \
+			--encryption=AES --hash=Argon2id --filesystem=none --volume-type=normal \
+			--random-source=/dev/urandom \
+			--argon2-memory "$A2MEM" --argon2-iterations "$A2IT" --argon2-parallelism "$A2PAR" \
+			>"$WORK/create.log" 2>&1
+	}
+	mkvol_a2 "$WORK/argon2.hc" || fail "argon2 create failed ($(tail -1 "$WORK/create.log"))"
+
+	a2check() { # $1=label $2=mode $3=VC_OPEN_ARGON2 value ("" => no override) $4=password
+		local label="$1" mode="$2" a2="$3" pw="${4:-$PW}"
+		if [ -z "$a2" ]; then unset VC_OPEN_ARGON2; else export VC_OPEN_ARGON2="$a2"; fi
+		export VC_OPEN_KDF="Argon2id"
+		check "$label" 0 "$mode" "$WORK/argon2.hc" "$pw"
+		export VC_OPEN_KDF="HMAC-SHA-512"
+	}
+	a2check "argon2: SAME params open (positive control)"  must_open   "$A2KIB,$A2IT,$A2PAR"
+	a2check "argon2: wrong memory rejected"                must_reject "$((A2KIB * 2)),$A2IT,$A2PAR"
+	a2check "argon2: wrong iterations rejected"            must_reject "$A2KIB,$((A2IT + 1)),$A2PAR"
+	a2check "argon2: wrong parallelism rejected"           must_reject "$A2KIB,$A2IT,1"
+	a2check "argon2: no override (PIM default) rejected"   must_reject ""
+	a2check "argon2: right params + wrong password"        must_reject "$A2KIB,$A2IT,$A2PAR" "wrong-$PW"
+	unset VC_OPEN_ARGON2
+else
+	log "=== Argon2-param probes skipped (built without ARGON2PARAMS) ==="
 fi
 
 echo ""
