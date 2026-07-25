@@ -80,7 +80,16 @@ namespace VeraCrypt
 	// 63KiB slack at the 1KiB table stride; afStripes 0 keeps byte-identical legacy records.
 	inline KeyslotStoreCfg KeyslotHeaderCfg (int vmkLen)
 	{
-		KeyslotStoreCfg cfg;
+		KeyslotStoreCfg cfg = KeyslotStoreCfg();   // zero-init ALL fields first, so any member not set
+		                                           // explicitly below is 0, not stack garbage. This
+		                                           // matters for the gated `policy` field (present under
+		                                           // VC_ENABLE_KEYSLOT_POLICY): it was never assigned here,
+		                                           // so it was uninitialised — and `policy` selects the
+		                                           // record LAYOUT (plen), so a garbage-nonzero value picks
+		                                           // the v2 payload and corrupts the record length. Value-
+		                                           // initialising also inoculates any FUTURE field against
+		                                           // the same trap. KeyslotSidecarCfg/DeniableCfg copy this
+		                                           // struct, so fixing it here fixes all three builders.
 		cfg.backend   = KSB_HEADER;
 		cfg.kdf       = &KeyslotKdfSha512;
 		cfg.cost      = KeyslotKdfCost;
