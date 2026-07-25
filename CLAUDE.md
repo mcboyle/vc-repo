@@ -60,6 +60,17 @@ src/Common/ShamirMac.{c,h}           keyed per-share MAC (gated -DVC_ENABLE_SHAM
 src/Common/ShareCode.{c,h}           transcribable recovery encoding (gated -DVC_ENABLE_SHARECODE):
    bech32/BIP-173 checksummed "vcs1..." string for a share (+optional MAC), typo-detecting [42]
 src/Volume/HardwareKeyFactorMix.h    C++ glue: HKFMixPassword(VolumePassword, salt) for Volume/Core
+src/Crypto/Hctr2.{c,h}               HCTR2 wide-block mode (gated -DVC_ENABLE_HCTR2 / make HCTR2=1).
+   Promoted from the PoC at step [105]: all 35 OFFICIAL google/hctr2 AES-256 vectors reproduce through the
+   real object with the CONSTANT-TIME AesCt substituted for the table-driven AES. POLYVAL is self-contained
+   (branch-free GF(2^128), same masked pattern as Shamir's GF(2^8)) — depends only on AesCt, unlike Adiantum.
+   D-4: HCTR2 where AES-NI is present, Adiantum where it is not; over software AesCt it is SLOWER than
+   Adiantum because its block cipher runs over the whole sector, not once per sector.
+src/Volume/EncryptionModeHctr2.{h,cpp}  the HCTR2 EncryptionMode shim (gated -DVC_ENABLE_HCTR2_MODE /
+   make HCTR2_MODE=1); verification/realbuild/hctr2_mode.sh 17/17, a 1-bit plaintext flip changed 509 of 512
+   ciphertext bytes. Same no-cascades caveat as Adiantum, and likewise NOT in GetAvailableModes().
+   Together with Adiantum this completes T2-4 and makes V2FormatDiscoverMode's mode DISCRIMINATION testable
+   — V2Mode is {HCTR2=0, ADIANTUM=1, NONE=-1}, so one mode alone could only ever prove the NONE negative.
 src/Volume/EncryptionModeAdiantum.{h,cpp}  wide-block EncryptionMode over Crypto/Adiantum (gated
    -DVC_ENABLE_ADIANTUM_MODE / make ADIANTUM_MODE=1). Tweak = data-unit number as 8 LE bytes + SectorOffset;
    refuses partial units and oversized sectors. Proven by verification/realbuild/adiantum_mode.sh (17/17;

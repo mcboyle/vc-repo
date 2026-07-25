@@ -77,3 +77,38 @@ wrong key and wrong tweak each change the output.
   job (per-sector MAC `[21]`, Merkle `[19]`). They compose: HCTR2 for the data, MAC for detection.
 - **Scope.** A stronger confidentiality mode for the user's own storage — inside the project's
   access-control boundary.
+
+## Shippable module + EncryptionMode (steps `[105]` / `hctr2_mode.sh`) — T2-4 complete
+
+HCTR2 is no longer PoC-only. It had been the **last** of the wide-block pieces still living solely in
+`verification/` — `AesCt` `[88]`, `Poly1305` `[90]` and `Adiantum` `[91]` were all promoted into `src/`
+while HCTR2 was not, so the mode D-4 selects for AES-NI hardware had no shippable implementation at all.
+That gap is closed in two pieces:
+
+- **`src/Crypto/Hctr2.{c,h}`** (gated `-DVC_ENABLE_HCTR2` / `make HCTR2=1`). Step `[105]` runs all **35
+  official google/hctr2 AES-256 vectors** through the real compiled object, in **both directions**, with
+  one cryptographically material change from the PoC: the block cipher is the **constant-time
+  `src/Crypto/AesCt`**, not the table-driven in-tree AES. That substitution is exactly what can silently
+  break a mode — wrong key schedule, wrong direction on the inverse cipher, an endianness slip in the
+  XCTR counter — while still yielding ciphertext that round-trips convincingly. Reproducing the official
+  vectors byte-for-byte is what rules it out. (The HCTR2 analogue of `[89]`.) Anchor class: **OFFICIAL**.
+- **`src/Volume/EncryptionModeHctr2.{h,cpp}`** (gated `-DVC_ENABLE_HCTR2_MODE` / `make HCTR2_MODE=1`),
+  proven by `verification/realbuild/hctr2_mode.sh` at 17/17 against the real `EncryptionMode` base — a
+  one-bit plaintext flip changed **509 of 512** ciphertext bytes, where XTS would change 16.
+
+**Why this had to land before the v2 mount-side work.** `V2Mode` is `{HCTR2 = 0, ADIANTUM = 1,
+NONE = -1}` and `V2FormatDiscoverMode` identifies a volume's mode by trying each mode's MAC key against
+the stored tag. With only one mode implemented, discovery could never be shown to **discriminate** —
+only to return `NONE` on a wrong key. Two modes make that property testable for the first time.
+
+**The honest cost, restated.** HCTR2 runs its block cipher over the **whole sector** (XCTR, one AES call
+per 16 bytes) plus two POLYVAL passes. Over software `AesCt` that is substantially slower than Adiantum,
+which calls AES once per sector. It is correct everywhere and appropriate where AES-NI exists — which is
+precisely the D-4 split. Do **not** swap in the table-driven AES for speed: that trades a measured
+cache-timing leak (`docs/CT-HARDENING-R17.md`) for performance on exactly the hardware that cannot
+afford it.
+
+**Not offered as a volume format.** Like Adiantum, HCTR2 is deliberately absent from
+`EncryptionMode::GetAvailableModes()`. Selecting it is a header change (D-10), and it bundles its own
+primitives so it does **not** compose into cipher cascades — "AES-HCTR2" and "Serpent-HCTR2" would name
+the same construction.

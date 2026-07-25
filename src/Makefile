@@ -154,6 +154,8 @@ export VC_ENABLE_ARGON2_PARAMS ?= 0
 export VC_ENABLE_SHAMIR_MAC ?= 0
 export VC_ENABLE_SHARECODE ?= 0
 export VC_ENABLE_ADIANTUM_MODE ?= 0
+export VC_ENABLE_HCTR2 ?= 0
+export VC_ENABLE_HCTR2_MODE ?= 0
 export VC_ENABLE_NETSHARE ?= 0
 export VC_ENABLE_FLASH_WARN ?= 0
 export VC_ENABLE_V2FORMAT ?= 0
@@ -346,6 +348,23 @@ endif
 ifeq "$(origin NETSHARE)" "command line"
 	VC_ENABLE_NETSHARE := 1
 	C_CXX_FLAGS += -DVC_ENABLE_NETSHARE
+endif
+
+# HCTR2 wide-block mode (opt-in). `make HCTR2=1` links Crypto/Hctr2.o. HCTR2 wants AES-NI (its block
+# cipher runs over the whole sector); Adiantum is the non-AES-NI answer. D-4: the choice is per-VOLUME,
+# recorded in the header, never a per-machine runtime decision — see docs/HCTR2-SPEC.md.
+ifeq "$(origin HCTR2)" "command line"
+	VC_ENABLE_HCTR2 := 1
+	C_CXX_FLAGS += -DVC_ENABLE_HCTR2 -DVC_ENABLE_CTAES
+endif
+
+# HCTR2 EncryptionMode shim (opt-in). `make HCTR2_MODE=1` adds Volume/EncryptionModeHctr2.o and implies
+# the algorithm. Like Adiantum it bundles its own AES and does NOT compose into cipher cascades — see the
+# class header before offering it in any UI.
+ifeq "$(origin HCTR2_MODE)" "command line"
+	VC_ENABLE_HCTR2_MODE := 1
+	VC_ENABLE_HCTR2 := 1
+	C_CXX_FLAGS += -DVC_ENABLE_HCTR2_MODE -DVC_ENABLE_HCTR2 -DVC_ENABLE_CTAES
 endif
 
 # Flash-media deniability warning at hidden/decoy-volume creation (opt-in). `make FLASH_WARN=1` links
