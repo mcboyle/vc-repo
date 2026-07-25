@@ -117,7 +117,7 @@ non-AES-NI hardware (real-build only), which then unblocks the T1-1 v2 mount/cre
 - **Scope.** A stronger confidentiality mode for the user's own storage — squarely inside the project's
   access-control boundary.
 
-## The `EncryptionMode` shim — BUILT (2026-07-25, step `[103]`)
+## The `EncryptionMode` shim — BUILT (2026-07-25, `verification/realbuild/adiantum_mode.sh`)
 
 `src/Volume/EncryptionModeAdiantum.{h,cpp}`, gated `-DVC_ENABLE_ADIANTUM_MODE` (`make ADIANTUM_MODE=1`).
 This is the class whose absence made `V2FormatBinding.h` record itself as *"BLOCKED ON the wide-block
@@ -128,7 +128,7 @@ cipher mode classes"*: the algorithm was proven at `[91]` against all 18 officia
 binds — plus `SectorOffset`. What changes is granularity: XTS tweaks per 16-byte block *within* a unit;
 Adiantum takes one call *per unit* and diffuses across the whole thing.
 
-**Proven by property, not by another KAT run** (`verification/adiantum_mode_test.cpp`, 17/17). The KATs
+**Proven by property, not by another KAT run** (`verification/adiantum_mode_test.cpp` via `realbuild/adiantum_mode.sh`, 17/17). The KATs
 cannot see integration faults — a wrong tweak convention, an ignored `SectorOffset`, a sector/data-unit
 confusion, an aliasing bug. The load-bearing assertion is the one that justifies the mode at all:
 
@@ -160,3 +160,21 @@ caught it immediately.
 
 Still open: exercising it on genuinely **non-AES-NI** hardware, which is what the original claim was
 about and remains untested.
+
+### A tier correction worth recording
+
+This test was first added as step `[103]` of `verification/build_and_verify.sh`. That was wrong, and CI
+said so immediately: the self-contained suite by contract needs **no VeraCrypt build** (`CLAUDE.md`,
+"Self-contained checks"), so a step that links `Volume.a`/`Core.a`/`Platform.a` could only ever call
+`skip_step` — and under `--strict` a skip is a failure. The result was `100/101 steps verified, 1
+skipped -> FAIL` on an otherwise entirely green suite.
+
+The bug was the **tier**, not the test. Archive-linking tests belong in `verification/realbuild/`
+alongside `open_roundtrip.sh` and `netshare_cli.sh`, and that is where it now lives, wired into
+`acceptance.sh` (self-gating: it checks `ar t Volume.a` for the object, so a build without
+`ADIANTUM_MODE=1` SKIPs rather than failing) and into the `flag-matrix` product-build job, which now
+passes `ADIANTUM_MODE=1`. The self-contained suite is back to 100/100 with 0 skipped under `--strict`.
+
+The harness also compiles `EncryptionModeAdiantum.cpp` itself rather than relying on the copy inside
+`Volume.a` — otherwise it could silently link a stale object, or fail confusingly when the product had
+been built without the flag.

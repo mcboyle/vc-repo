@@ -362,6 +362,19 @@ else
   else
     skip "duress register/recognition — binary built without --duress-register (DURESS=1)"
   fi
+  # Adiantum wide-block EncryptionMode shim. Self-gating on the archive actually carrying the object, so
+  # a build without ADIANTUM_MODE=1 SKIPs instead of reporting a false failure. Lives in realbuild/
+  # because it links the real Volume.a/Platform.a — it is NOT part of the self-contained suite.
+  if ar t "$SRC/Volume/Volume.a" 2>/dev/null | grep -q EncryptionModeAdiantum; then
+    if VC_AM_SKIP_BUILD=1 bash "$HERE/adiantum_mode.sh" >/"$WORK/am.log" 2>&1; then
+      ok "Adiantum EncryptionMode shim over the real base (wide-block diffusion measured)"
+    else
+      bad "Adiantum EncryptionMode shim failed"; sed 's/^/      /' "$WORK/am.log"
+    fi
+  else
+    skip "Adiantum EncryptionMode shim — product not built with ADIANTUM_MODE=1"
+  fi
+
   pend "duress-dismount of ACTUALLY-MOUNTED volumes (dismount-all + scrub needs mounted volumes = kernel dm-crypt; the routing + registration above is proven)"
   pend "network-share (McCallum-Relyea) enroll/unlock CLI + transport (docs/NETWORK-SHARE-SPEC.md)"
 fi
