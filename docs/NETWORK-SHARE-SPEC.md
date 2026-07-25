@@ -2,7 +2,9 @@
 
 **Status: MODULE BUILT — the McCallum–Relyea exchange is proven at production parameters and cross-host
 over real TCP, and `src/Common/NetShare.{c,h}` is the shippable module (compressed wire format, RFC 8032
-§5.1.3 decompression, step `[102]`). Remaining: the `--ns-*` CLI and a constant-time group.**
+§5.1.3 decompression, step `[102]`) with the `--ns-*` CLI built and proven end to end against a live
+server (`verification/realbuild/netshare_cli.sh`, 8/8). Remaining: a Tang/HTTPS endpoint and a
+constant-time group.**
 A share for the split-key factor whose recovery **requires a network server's participation**,
 where the **server never sees the key** and a **stolen, off-network machine stays locked**. It composes
 as a Shamir share source, so it drops into the threshold/split-key factor already built
@@ -91,8 +93,10 @@ for a DH instantiation; the exchange algebra is identical. What is **not** yet b
   against the new `S` (no volume re-encryption; this is just re-deriving the share).
 - **Not deniable.** The stored `C` and the config reveal that a network-bound share exists. This is
   confidentiality/access-control, not hidden-volume deniability.
-- **Trust-on-first-provision.** Provisioning trusts the server's advertised `S`; verify `S` out-of-band
-  (pin it) or an active attacker at enroll time can substitute their own.
+- **Trust-on-first-provision — addressed, not merely noted.** Provisioning needs the server's `S`. The
+  CLI does **not** fetch it: `--ns-enroll` *requires* `--ns-server-key`, so `S` is pinned out of band by
+  the user. Fetching it would let an active attacker at enrol time substitute their own `S` and own the
+  share undetectably. The residual risk is now the user's pinning discipline, not the protocol's.
 
 ## What remains to build
 
@@ -154,10 +158,50 @@ as a valid point, so the checksum is demonstrably load-bearing. It detects corru
 an attacker who can rewrite the blob can rewrite the checksum, and gains nothing by it — the credential
 is public and useless without the server.
 
+## The `--ns-*` CLI — built and proven end to end
+
+`src/Main/NetShareTransport.h` owns the POSIX TCP transport (wx-free, header-only, so it is testable on
+its own like `HardwareKeyFactorCli.h`); `Common/` still contains no sockets. `make NETSHARE=1` adds
+`Common/NetShare.o` and the options:
+
+```
+--ns-server host:port     the MR server endpoint
+--ns-cred FILE            credential file (written by --ns-enroll, read to unlock)
+--ns-enroll               enrol a new share and write --ns-cred
+--ns-server-key HEX       the server's public S (64 hex), pinned OUT OF BAND; required by --ns-enroll
+--ns-timeout SECONDS      connect/read timeout (default 10)
+```
+
+The recovered 32 bytes become `HKF_BACKEND_RAW_SECRET`, i.e. the same `rawSecret` path a Shamir
+reconstruction uses — **no new derivation seam**.
+
+**`--ns-server-key` is required, not optional, and that is the point.** Enrolment needs `S`. Fetching it
+from the server would mean an active attacker at enrol time could substitute their own `S` and own the
+share from then on, undetectably. "Trust-on-first-provision" is listed above under *Honest limitations*;
+requiring the pin is how that limitation is **addressed** rather than restated.
+
+Proven by `verification/realbuild/netshare_cli.sh` (8/8, wired into `acceptance.sh`), driving the real
+`veracrypt` binary over a real TCP socket against `verification/netshare_server.c` — a reference server
+built from the same shipping `NetShareServerRespond`, because the older PoC servers speak the raw-struct
+wire format and **cannot** talk to the shipping module:
+
+| probe | result |
+|---|---|
+| enrol + create — credential written, exactly 72 bytes | ok |
+| **positive control**: open with the server reachable | key recovered + header authenticated |
+| off-network (dead port) | does not open |
+| off-network **message** | "could not be reached", *not* "incorrect password" |
+| wrong server (reachable, different `s`) | wrong key → rejected |
+| password alone, no `--ns-*` | rejected — the share genuinely gates the key |
+
+The positive control runs **first** and the script **refuses to run the negatives if it fails** — with no
+working open, every negative rejects for free and proves nothing. (The first version of this test used
+`--volume-properties`, which needs an already-*mounted* volume, so it never exercised the open path at
+all and the negatives passed vacuously. It now uses `--mount` with `acceptance.sh`'s log classification:
+a device-mapper error means the key was correct and only the kernel table load is missing.)
+
 ## What remains
 
-- the **`--ns-*` enrol/unlock CLI options** and a TCP/HTTPS implementation of `NetShareTransportFn`
-  (now genuinely just wiring — the module and its proof are in place);
 - HTTP(S) to a real **Tang** endpoint rather than the bare framing used here;
 - a **constant-time** group implementation before shipping. The from-scratch group is proven correct
   against RFC 8032 but is **not** side-channel hardened. This matters less than for a password KDF —

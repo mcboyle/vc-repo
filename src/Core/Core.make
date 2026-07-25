@@ -91,6 +91,12 @@ ifeq "$(VC_ENABLE_SHARECODE)" "1"
 OBJS += ../Common/ShareCode.o
 endif
 
+# Network-bound share (opt-in via `make NETSHARE=1`). NetShare.o is self-contained C over Sha2.o (already
+# in the build) with no sockets — the transport is injected by Main/NetShareTransport.h.
+ifeq "$(VC_ENABLE_NETSHARE)" "1"
+OBJS += ../Common/NetShare.o
+endif
+
 # Flash-media deniability probe (opt-in via `make FLASH_WARN=1`). FlashProbe.o is self-contained C (no
 # VeraCrypt platform dependency), consumed by TextUserInterface::CreateVolume's hidden-volume warning.
 # A default build stays byte-for-byte stock.

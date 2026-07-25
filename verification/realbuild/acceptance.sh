@@ -363,7 +363,18 @@ else
     skip "duress register/recognition — binary built without --duress-register (DURESS=1)"
   fi
   pend "duress-dismount of ACTUALLY-MOUNTED volumes (dismount-all + scrub needs mounted volumes = kernel dm-crypt; the routing + registration above is proven)"
-  pend "network-share (McCallum-Relyea) enroll/unlock CLI + transport (docs/NETWORK-SHARE-SPEC.md)"
+  # Network-share --ns-* CLI: enrol + unlock against a real MR server over TCP. Self-gating: the probe
+  # only runs when the binary actually carries the option, so a build without NETSHARE=1 SKIPs rather
+  # than reporting a false failure.
+  if "$VC" --help 2>&1 | grep -q -- "--ns-server"; then
+    if bash "$HERE/netshare_cli.sh" >/"$WORK/nscli.log" 2>&1; then
+      ok "network-share --ns-* enrol + unlock against a live MR server (positive control earned first)"
+    else
+      bad "network-share --ns-* CLI failed"; sed 's/^/      /' "$WORK/nscli.log"
+    fi
+  else
+    skip "network-share --ns-* CLI — binary built without NETSHARE=1"
+  fi
 fi
 
 echo; echo "=== Tier 2b: in-process Volume::Open round-trip (library-level, no kernel) ==="
