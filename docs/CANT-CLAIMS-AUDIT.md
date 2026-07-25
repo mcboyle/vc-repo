@@ -190,18 +190,52 @@ Tier-2 run did or did not reach; a claim only leaves this table when a *direct* 
 | Claim | Location | Status after 2026-07-25 VM run |
 |---|---|---|
 | C-path (Windows driver) header round-trip | `docs/REAL-BUILD-VALIDATION.md:294` | UNTESTED — not this env (no Windows driver build here) |
-| duress end-to-end (wx orchestration) | `CLAUDE.md:211` | PARTIAL — `--duress-register` (salt+tag) VERIFIED; the full dismount-all-mounted-volumes + scrub orchestration NOT run (needs mounted volumes + the wx path). Testable here; ran out of session. |
-| network-share against a live external server | `docs/NETWORK-SHARE-SPEC.md:114` | UNTESTED — a live server + enroll/unlock CLI not stood up this session; box has a network, so testable next |
 | SSD/FTL remnant behaviour | `docs/DECOY-FRAGMENTS-SPEC.md:58,72` | UNTESTED — likely genuinely not-this-env (vSAN-backed virtual disk, no raw FTL) |
-| true power-loss (vs torn-write, which is proven) | `docs/TIER5-FORMAT-DESIGN.md:106` | UNTESTED — this VM *can* be hard-destroyed (a container cannot); not exercised yet |
-| flash-media warning firing on a live mounted session | `docs/ROI-TOP-50.md:115` | UNTESTED — built with `FLASH_WARN=1`; live-session firing not exercised |
+| ~~true power-loss (vs torn-write, which is proven)~~ | `docs/TIER5-FORMAT-DESIGN.md:106` | **VERIFIED (2026-07-25)** — see below; moved OUT of this table |
+| ~~flash-media warning firing on a live session~~ | `docs/ROI-TOP-50.md:115` | **VERIFIED (2026-07-25)** — see below; moved OUT of this table |
 | ORAM wiring into VeraCrypt | `docs/ORAM-SPEC.md:105` | UNTESTED — code task, not an environment limit |
 | Adiantum `EncryptionMode` shim on non-AES-NI hardware | `docs/ADIANTUM-SPEC.md:68,98` | UNTESTED — box has AES-NI; would need `-DVC_*` / a masked CPU flag |
 | HKF v2 wiring / different-volume-salt behaviour | `docs/HKF-MIX-V2-SPEC.md:71,172` | UNTESTED — code task; binary is built with `-DVC_ENABLE_HKF_MIX_V2`, behaviour not isolated |
 
-Moved OUT of this table by direct test on 2026-07-25 (see FALSE — NOW TESTABLE above):
-`kernel dm-crypt mount` (VERIFIED working) and `keyslot mount-time auto-search on real media` (VERIFIED
-working).
+Moved OUT of this table by direct test (see FALSE — NOW TESTABLE above / `verification/realbuild/VM-TIER2-RUN.md`):
+
+- **`kernel dm-crypt mount`** — VERIFIED working (2026-07-25).
+- **`keyslot mount-time auto-search on real media`** — VERIFIED working (2026-07-25).
+- **`duress end-to-end`** — VERIFIED (2026-07-25). Mounted two real volumes via kernel dm-crypt, then
+  `sudo veracrypt --text --duress-dismount` → all dismounted (`--list` empty, 0 dm mappings). Separately,
+  entering the *registered duress passphrase* at `--mount` while two volumes were mounted dismounted them
+  all and mounted nothing. (The coupled `KeyScrub ScrubNow()` runs in the same `DuressDismount` path;
+  dismount-all is directly observed, the RAM scrub is not independently observable from userspace.)
+- **`network-share against a live server`** — the McCallum–Relyea socket transport is VERIFIED here:
+  `verification/netshare_transport_poc.c` [49] builds and its forked-server round-trip passes
+  (`NETSHARE TRANSPORT ROUND-TRIP PASSED`, enrolled share `edf4bd73…` == the CLAUDE.md anchor;
+  off-network and wrong-server fail). The remaining gap is **not environmental**: the veracrypt product
+  CLI has no `--ns-*` enroll/unlock options, so product integration is a **code task** (PENDING-INTEGRATION),
+  like ORAM/HKF-v2 — a remote endpoint is the same code with a different socket address.
+- **`true power-loss`** — VERIFIED (2026-07-25), on a dedicated disposable scratch disk (`/dev/sdb`)
+  a container cannot provide. Created a **device-hosted** VeraCrypt volume directly on the raw block
+  device (distinct from the file-container path the harness uses), mounted it via kernel dm-crypt, wrote a
+  marker + a 4 MiB random file, `fsync`+`sync`, and left it **mounted**. Then the VM was hard-powered-off
+  in vSphere (Power Off, not guest shutdown) — a real abrupt power loss, not the torn-write simulation
+  (which was already proven). On reboot, `--mount /dev/sdb` re-opened the volume (rc=0, header intact) and
+  both the marker and the 4 MiB file's SHA-256 matched byte-for-byte, with no fs-repair needed. Expected
+  values were recorded on the persistent root disk (`/home/mboyle/powerloss/expected.txt`) so the check is
+  reproducible across the reboot. Also establishes the **device-hosted (raw block device) volume** path
+  works end to end, which file-container tests never exercise.
+- **`flash-media warning firing on a live session`** — VERIFIED (2026-07-25). The warning is a
+  **hidden-volume-creation** code path (`src/Main/TextUserInterface.cpp:719`, `if Type == Hidden`), not a
+  mount-time one. Fires two ways, both observed live: (1) **file-hosted** hidden volume → `!IsDevice()` →
+  `FlashProbe` fails closed (`ROTATIONAL|UNKNOWN`) → the full "NOT safe for a deniable hidden/decoy volume …"
+  text printed; (2) **device-hosted** hidden volume on `/dev/sdb` → also warned.
+  **Correction to an in-progress prediction, logged per this document's own rule:** it was first predicted
+  that a device reading `rotational=1` would stay *silent* (reading only `FlashProbeRotationalSysfs`). The
+  direct test warned anyway. `FlashProbeDevice` (`src/Common/FlashProbe.c:212`) hardcodes the third
+  (thin/dedup/SMR) axis to `VC_FLASH_WARN_UNKNOWN` — deliberate fail-closed, since that property is
+  invisible under device-mapper — and `FlashProbeAggregate` OR's the axes, so **a Linux device-hosted
+  hidden volume never reads clean and always warns**, independent of `rotational`. Here two axes fired:
+  `discard_granularity=512` (TRIM) and the always-`UNKNOWN` thin axis. Consequence: the planned
+  `scsi0:1.virtualSSD=1` (present as SSD, `rotational=0`) experiment is **moot** — the outcome is identical
+  — so it was not run. The rotational branch is only decisive at the sysfs layer, not in the aggregate.
 
 Several remaining are *probably* true — but "probably true" is what the four falsified claims also looked
 like, so each still gets tested before it is written down as fact.
