@@ -21,6 +21,9 @@
 #include "VolumePassword.h"
 #include "VolumeException.h"
 #include "VolumeLayout.h"
+#if defined(VC_ENABLE_V2FORMAT)
+#include "V2SectorMacIo.h"
+#endif
 
 namespace VeraCrypt
 {
@@ -140,6 +143,22 @@ namespace VeraCrypt
 		uint64 TotalDataWritten;
 		int Pim;
 		bool EncryptionNotCompleted;
+
+#if defined(VC_ENABLE_V2FORMAT)
+		/* v2 per-sector MAC state. Inert unless Open() discovered a v2 mode — a v1 volume must take a
+		   byte-identical path to before, so every entry point is a no-op while Mode == NONE. */
+		V2SectorMacIo V2Mac;
+
+	public:
+		/* The fail-closed override (docs/V2-FORMAT-SPEC.md §"Tag-mismatch policy"). Deliberate,
+		   per-instance, never persisted. Callers that enable it MUST report GetV2IgnoredMismatchCount()
+		   to the user afterwards, or this degrades to fail-warn with extra steps. */
+		void SetV2IgnoreTags (bool ignore) { V2Mac.SetIgnoreTags (ignore); }
+		bool IsV2 () const { return V2Mac.IsActive(); }
+		uint64 GetV2IgnoredMismatchCount () const { return V2Mac.GetIgnoredMismatchCount(); }
+		uint64 GetV2FirstIgnoredSector () const { return V2Mac.GetFirstIgnoredSector(); }
+	protected:
+#endif
 
 	private:
 		Volume (const Volume &);
