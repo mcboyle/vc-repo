@@ -116,3 +116,82 @@ non-AES-NI hardware (real-build only), which then unblocks the T1-1 v2 mount/cre
   fork's honesty convention.
 - **Scope.** A stronger confidentiality mode for the user's own storage — squarely inside the project's
   access-control boundary.
+
+## The `EncryptionMode` shim — BUILT (2026-07-25, `verification/realbuild/adiantum_mode.sh`)
+
+`src/Volume/EncryptionModeAdiantum.{h,cpp}`, gated `-DVC_ENABLE_ADIANTUM_MODE` (`make ADIANTUM_MODE=1`).
+This is the class whose absence made `V2FormatBinding.h` record itself as *"BLOCKED ON the wide-block
+cipher mode classes"*: the algorithm was proven at `[91]` against all 18 official KATs, but there was no
+`EncryptionMode` subclass, so no volume path existed to exercise it.
+
+**Tweak convention.** The data-unit / sector number as 8 little-endian bytes — the same identity XTS
+binds — plus `SectorOffset`. What changes is granularity: XTS tweaks per 16-byte block *within* a unit;
+Adiantum takes one call *per unit* and diffuses across the whole thing.
+
+**Proven by property, not by another KAT run** (`verification/adiantum_mode_test.cpp` via `realbuild/adiantum_mode.sh`, 17/17). The KATs
+cannot see integration faults — a wrong tweak convention, an ignored `SectorOffset`, a sector/data-unit
+confusion, an aliasing bug. The load-bearing assertion is the one that justifies the mode at all:
+
+> flipping **one plaintext bit** changed **509 of 512** ciphertext bytes.
+
+Under XTS that number would be 16. The test requires >90% and separately requires >16, so a shim that
+quietly degraded to per-block calls would fail rather than pass looking fine. Also asserted: round-trip
+over multiple sectors; the sector index and `SectorOffset` both participate (and it is their *sum* that
+forms the tweak); a wrong key does not recover plaintext; a partial data unit and an oversized sector are
+**refused** rather than silently truncated or split; an unkeyed instance throws.
+
+A real bug surfaced on the first run and is worth recording: `SetKey` called `SecureBuffer::Free()` on a
+never-allocated buffer, which throws `NotInitialized`. It reads as correct hygiene and is not — the test
+caught it immediately.
+
+### Two things this does NOT yet mean
+
+1. **Adiantum is not selectable.** The shim is not registered in `EncryptionMode::GetAvailableModes()`,
+   so no volume can be created with it. That is deliberate, not an oversight — it is a format decision
+   with on-disk and compatibility consequences and should be taken explicitly. Note also that the product
+   binary linking cleanly with `ADIANTUM_MODE=1` proves little on its own: nothing references the class,
+   so the archive member is simply never pulled in.
+2. **It does not compose into cascades.** Adiantum is a *self-contained* construction bundling its own
+   constant-time AES-256, XChaCha12 and NH/Poly1305; it accepts `SetCiphers()` and ignores it. So
+   "AES-Adiantum" and "Serpent-Adiantum" would be the same construction, and `GetKeySize()` is Adiantum's
+   own 32 bytes rather than a sum over `Ciphers`. It must not be offered in cipher-cascade UI as though
+   it composed. This is a property of Adiantum, not a defect in the shim — but the `EncryptionMode`
+   interface is shaped for "mode over a cipher list", and Adiantum genuinely does not fit that shape.
+
+Still open: exercising it on genuinely **non-AES-NI** hardware, which is what the original claim was
+about and remains untested.
+
+### A tier correction worth recording
+
+This test was first added as step `[103]` of `verification/build_and_verify.sh`. That was wrong, and CI
+said so immediately: the self-contained suite by contract needs **no VeraCrypt build** (`CLAUDE.md`,
+"Self-contained checks"), so a step that links `Volume.a`/`Core.a`/`Platform.a` could only ever call
+`skip_step` — and under `--strict` a skip is a failure. The result was `100/101 steps verified, 1
+skipped -> FAIL` on an otherwise entirely green suite.
+
+The bug was the **tier**, not the test. Archive-linking tests belong in `verification/realbuild/`
+alongside `open_roundtrip.sh` and `netshare_cli.sh`, and that is where it now lives, wired into
+`acceptance.sh` (self-gating: it checks `ar t Volume.a` for the object, so a build without
+`ADIANTUM_MODE=1` SKIPs rather than failing) and into the `flag-matrix` product-build job, which now
+passes `ADIANTUM_MODE=1`. The self-contained suite is back to 100/100 with 0 skipped under `--strict`.
+
+The harness also compiles `EncryptionModeAdiantum.cpp` itself rather than relying on the copy inside
+`Volume.a` — otherwise it could silently link a stale object, or fail confusingly when the product had
+been built without the flag.
+
+### The flag stamp caught this change's own mistake
+
+Adding `ADIANTUM_MODE=1` to the CI product build without adding it to `open_roundtrip.sh`'s invocation
+made the two disagree, and `src/.build-flags` refused the run:
+
+```
+archive flag stamp: ... -DVC_ENABLE_ADIANTUM -DVC_ENABLE_ADIANTUM_MODE -DVC_ENABLE_CTAES -DVC_ENABLE_POLY1305 ...
+harness flag set  : ... (no Adiantum defines)
+FAIL: archives were built with a DIFFERENT feature set than requested
+```
+
+That guard exists because a mixed-flag build does **not** fail loudly — it fails as a volume that will
+not open, which is indistinguishable from a crypto bug and once cost a whole session on the Argon2
+round-trip. Here it turned a would-be phantom failure into a one-line diff. Worth recording as the
+mechanism working on its author, not just in principle: **every consumer of the archives must carry the
+same flag set, and adding a build flag means updating every invocation that links against it.**

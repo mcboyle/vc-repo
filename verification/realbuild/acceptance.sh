@@ -26,6 +26,7 @@ SRC="$(cd "$HERE/../../src" && pwd)"
 VC="${1:-$SRC/Main/veracrypt}"           # built CLI binary (override as arg 1)
 WORK="$(mktemp -d 2>/dev/null || echo /tmp/vcacc.$$)"; mkdir -p "$WORK"
 PASS=0; FAIL=0; SKIP=0; PEND=0
+PREBUILT=0                               # set when we use a binary someone else built (see Tier 0)
 ok()   { echo "  PASS: $1"; PASS=$((PASS+1)); }
 bad()  { echo "  FAIL: $1"; FAIL=$((FAIL+1)); }
 skip() { echo "  SKIP: $1"; SKIP=$((SKIP+1)); }
@@ -59,26 +60,47 @@ classify_mount_log() {
 	return 1
 }
 
+# THE ONE FLAG LIST. Declared at top level, NOT inside the build branch below, because it is used by
+# two steps that must agree:
+#   - the Tier 0 build, and
+#   - Tier 2b, which passes it to open_roundtrip.sh, which resolves it to a -D set and compares that
+#     against src/.build-flags, REFUSING on any mismatch.
+# It used to be assigned inside the `else` (build-it-ourselves) branch. When a veracrypt binary was
+# already present that branch never ran, FLAGS was empty, and Tier 2b's `${FLAGS:-}` silently fell
+# through to open_roundtrip.sh's OWN defaults — a different set (FLASH_WARN in, BALLOON/ADIANTUM out).
+# Tier 2b then compared the wrong flag set against the archives and reported a hard FAIL that looked
+# like a crypto failure. Same class as the mixed-build hazard the stamp exists to catch, one level up:
+# the guard was fine, the thing being handed to it was wrong.
+#
+# ADIANTUM_MODE=1 is likewise not optional even though the Adiantum step self-gates on the object
+# being in Volume.a: if the build carries it but this list omits it, the stamp comparison fails; if
+# this list carries it but the gate is never satisfied, the step can only ever skip. The gate
+# (`ar t Volume.a | grep EncryptionModeAdiantum`) and this list must agree.
+FLAGS="NOGUI=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 ARGON2PARAMS=1 BALLOON=1 SHAMIRMAC=1 SHARECODE=1 HKF_SIMULATOR=1 ADIANTUM_MODE=1"
+
 echo "=== Tier 0: build the fork with the feature flags ==="
 # A default build must stay byte-for-byte stock; the flags are all opt-in.
 if command -v make >/dev/null 2>&1; then
   if [ -x "$VC" ]; then
     ok "veracrypt binary present ($VC) — using it (pass a path as arg 1 to override)"
+    # A supplied binary was built elsewhere, under flags this script did not choose. Tier 2b's stamp
+    # comparison would then be measuring someone else's build against our list, so let it say so.
+    PREBUILT=1
   else
     # clang is the default; gcc also works now (the redundant `static VC_INLINE` in chacha256.c +
     # chachaRng.c that made gcc hard-error with "duplicate 'static'" has been removed).
     # HKF_SIMULATOR (not just HKF) so the simulator round-trip below can run — testing only, never ship.
-    VCC=""; command -v clang >/dev/null 2>&1 && VCC="CC=clang CXX=clang++"
-    FLAGS="NOGUI=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 ARGON2PARAMS=1 BALLOON=1 SHAMIRMAC=1 SHARECODE=1 HKF_SIMULATOR=1"
-    # `make clean` first, WITH the same feature flags: the build system does NOT rebuild objects when
-    # only -D feature flags change, AND a plain `make clean` only removes objects that are in OBJS for
-    # the *current* flags — so a feature object (e.g. Common/KeyScrub.o) left by a differently-flagged
-    # build would survive the clean and silently produce a mixed binary or a duplicate-symbol link
-    # error. Passing the flags to clean puts every feature object in OBJS so it is actually removed.
-    # (This trap produced several phantom failures during validation — always clean WITH the flags.)
-    make -C "$SRC" $FLAGS clean >/dev/null 2>&1 || true
-    echo "  building: make -C $SRC $VCC $FLAGS"
-    if make -C "$SRC" $VCC $FLAGS -j4 >/"$WORK"/build.log 2>&1; then
+    command -v clang >/dev/null 2>&1 && { export CC=clang CXX=clang++; }
+    # Build via scripts/build-product.sh, NOT bare `make`, for two reasons that both bit this harness:
+    #  1. TRUE clean. `make clean` leaves Common/*.o in place and make does not rebuild on -D changes,
+    #     so an object from a differently-flagged build is silently reused and the binary is MIXED —
+    #     which fails as wrong behaviour (a volume that will not open), not as a build error.
+    #  2. IT WRITES src/.build-flags. Tier 2b's guard compares against that stamp. Building with bare
+    #     make leaves the stamp reflecting whatever last ran build-product.sh, so Tier 2b would check
+    #     this run's flags against a stale stamp and fail for a reason that has nothing to do with the
+    #     code under test. CLAUDE.md already says to prefer build-product.sh; this makes it structural.
+    echo "  building: scripts/build-product.sh $FLAGS"
+    if "$HERE/../../scripts/build-product.sh" $FLAGS >/"$WORK"/build.log 2>&1; then
       ok "fork built with all feature flags"
       [ -x "$VC" ] || VC="$(find "$SRC" -name veracrypt -type f -perm -u+x 2>/dev/null | head -1)"
     else
@@ -362,6 +384,19 @@ else
   else
     skip "duress register/recognition — binary built without --duress-register (DURESS=1)"
   fi
+  # Adiantum wide-block EncryptionMode shim. Self-gating on the archive actually carrying the object, so
+  # a build without ADIANTUM_MODE=1 SKIPs instead of reporting a false failure. Lives in realbuild/
+  # because it links the real Volume.a/Platform.a — it is NOT part of the self-contained suite.
+  if ar t "$SRC/Volume/Volume.a" 2>/dev/null | grep -q EncryptionModeAdiantum; then
+    if VC_AM_SKIP_BUILD=1 bash "$HERE/adiantum_mode.sh" >/"$WORK/am.log" 2>&1; then
+      ok "Adiantum EncryptionMode shim over the real base (wide-block diffusion measured)"
+    else
+      bad "Adiantum EncryptionMode shim failed"; sed 's/^/      /' "$WORK/am.log"
+    fi
+  else
+    skip "Adiantum EncryptionMode shim — product not built with ADIANTUM_MODE=1"
+  fi
+
   pend "duress-dismount of ACTUALLY-MOUNTED volumes (dismount-all + scrub needs mounted volumes = kernel dm-crypt; the routing + registration above is proven)"
   # Network-share --ns-* CLI: enrol + unlock against a real MR server over TCP. Self-gating: the probe
   # only runs when the binary actually carries the option, so a build without NETSHARE=1 SKIPs rather
@@ -383,8 +418,14 @@ echo; echo "=== Tier 2b: in-process Volume::Open round-trip (library-level, no k
 # HKF_SIMULATOR build — correct factor opens while wrong-factor / password-alone reject (2FA, through
 # the salt-bound T2-1 derivation). No kernel dm-crypt. Reuses the product this script already built.
 if [ -f "$SRC/Volume/Volume.a" ] && [ -f "$SRC/Core/Core.a" ] && [ -f "$SRC/Platform/Platform.a" ]; then
-  if VC_OR_SKIP_BUILD=1 bash "$HERE/open_roundtrip.sh" ${FLAGS:-} >/"$WORK/or.log" 2>&1; then
+  if VC_OR_SKIP_BUILD=1 bash "$HERE/open_roundtrip.sh" $FLAGS >/"$WORK/or.log" 2>&1; then
     ok "in-process Volume::Open round-trip (plain open/reject + factor 2FA) — open_roundtrip.sh"
+  elif [ "$PREBUILT" = 1 ] && grep -q "DIFFERENT feature set" "$WORK/or.log"; then
+    # Not a test failure: the archives came from someone else's build with different -D flags, so the
+    # stamp guard correctly refused. Reporting FAIL here would blame the crypto for a provisioning
+    # mismatch — the exact misdiagnosis this project has paid for twice. Say what is actually wrong.
+    skip "in-process Volume::Open round-trip — supplied build's flags differ from this harness's set (rebuild with: scripts/build-product.sh $FLAGS)"
+    sed 's/^/    /' "$WORK/or.log" | grep -E "flag stamp|harness flag set"
   else
     bad "in-process Volume::Open round-trip failed"; sed 's/^/    /' "$WORK/or.log" | tail -15
   fi
