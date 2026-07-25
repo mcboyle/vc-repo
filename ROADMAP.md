@@ -413,10 +413,23 @@ brief:
   shippable module** `src/Crypto/Adiantum.{c,h}` (gated `-DVC_ENABLE_ADIANTUM` / `make ADIANTUM=1`; T2-4d
   step `[91]`: real `Adiantum.o` linked against the real `AesCt.o` + `chacha256.o` + `Poly1305.o`
   reproduces every official vector both directions == python), together with its polynomial hash promoted
-  to `src/Crypto/Poly1305.{c,h}` (T2-4c step `[90]`: RFC 8439 §2.5.2/A.3 + reference agreement). Remaining
-  **T2-4**: the HCTR2/Adiantum `EncryptionMode` classes that call `AdiantumEncrypt`/`AdiantumDecrypt` (and
-  `AesCt` for HCTR2) per sector on the non-AES-NI path (real-build C++), which unblocks the T1-1 v2
-  mount/create call sites. A faster bitsliced S-box can drop into `AesCt.c` later behind the same interface.
+  to `src/Crypto/Poly1305.{c,h}` (T2-4c step `[90]`: RFC 8439 §2.5.2/A.3 + reference agreement).
+  **T2-4 IS NOW COMPLETE — both wide-block modes exist as shippable code AND as `EncryptionMode`
+  classes.** Adiantum's shim landed in #35 (`src/Volume/EncryptionModeAdiantum`); HCTR2 required *two*
+  pieces, because — unlike AesCt/Poly1305/Adiantum — it had **never been promoted out of the PoC**:
+  `src/Crypto/Hctr2.{c,h}` (gated `-DVC_ENABLE_HCTR2` / `make HCTR2=1`; step `[105]`: all **35 official
+  google/hctr2 AES-256 vectors** reproduce through the real compiled object with the **constant-time
+  `AesCt` substituted for the table-driven AES** — the HCTR2 analogue of `[89]`), then
+  `src/Volume/EncryptionModeHctr2.{h,cpp}` (gated `-DVC_ENABLE_HCTR2_MODE` / `make HCTR2_MODE=1`).
+  **This unblocks the T1-1 v2 mount/create call sites, and it is what makes `V2FormatDiscoverMode`
+  testable at all:** `V2Mode` is `{HCTR2 = 0, ADIANTUM = 1, NONE = -1}` and discovery works by trying
+  each mode's MAC key, so with only one mode implemented it could never be shown to *discriminate* —
+  only to return `NONE` on a wrong key. Note the honest cost recorded in `Crypto/Hctr2.h`: HCTR2 runs
+  its block cipher over the **whole** sector, so over software `AesCt` it is substantially slower than
+  Adiantum — correct everywhere, appropriate where AES-NI exists, which is exactly the D-4 split. A
+  faster bitsliced S-box can drop into `AesCt.c` later behind the same interface. Neither mode is
+  registered in `EncryptionMode::GetAvailableModes()`: selecting one is a header change (D-10), and
+  both bundle their own primitives so they do **not** compose into cipher cascades.
 - **SSD deniability warning at decoy creation [A-1] — blocking for the decoy feature (D-13 audience).**
   TRIM reveals which sectors are free (breaking free-space-indistinguishable-from-random); wear-levelling
   cannot be disabled and leaves hidden-volume-creation residue in retired pages. **Now partly built:** the

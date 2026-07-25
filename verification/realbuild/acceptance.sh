@@ -80,7 +80,7 @@ classify_mount_log() {
 # and honest while silently testing nothing. Both ADIANTUM_MODE=1 and NETSHARE=1 were in exactly that
 # state. Conversely, if the build carries a flag this list omits, Tier 2b's stamp comparison fails.
 # Rule: a step's gate and this list must agree, in both directions.
-FLAGS="NOGUI=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 ARGON2PARAMS=1 BALLOON=1 SHAMIRMAC=1 SHARECODE=1 HKF_SIMULATOR=1 ADIANTUM_MODE=1 NETSHARE=1"
+FLAGS="NOGUI=1 KEYSLOTS=1 KEYSCRUB=1 DURESS=1 ARGON2PARAMS=1 BALLOON=1 SHAMIRMAC=1 SHARECODE=1 HKF_SIMULATOR=1 ADIANTUM_MODE=1 NETSHARE=1 HCTR2_MODE=1"
 
 echo "=== Tier 0: build the fork with the feature flags ==="
 # A default build must stay byte-for-byte stock; the flags are all opt-in.
@@ -399,6 +399,19 @@ else
     fi
   else
     skip "Adiantum EncryptionMode shim — product not built with ADIANTUM_MODE=1"
+  fi
+
+  # HCTR2 EncryptionMode shim — the OTHER wide-block mode (D-4: HCTR2 where AES-NI is present,
+  # Adiantum where it is not). Same self-gating shape; NOTE its flag is in FLAGS above, or this could
+  # only ever skip.
+  if ar t "$SRC/Volume/Volume.a" 2>/dev/null | grep -q EncryptionModeHctr2; then
+    if VC_H2_SKIP_BUILD=1 bash "$HERE/hctr2_mode.sh" >/"$WORK/h2.log" 2>&1; then
+      ok "HCTR2 EncryptionMode shim over the real base (wide-block diffusion measured)"
+    else
+      bad "HCTR2 EncryptionMode shim failed"; sed 's/^/      /' "$WORK/h2.log"
+    fi
+  else
+    skip "HCTR2 EncryptionMode shim — product not built with HCTR2_MODE=1"
   fi
 
   pend "duress-dismount of ACTUALLY-MOUNTED volumes (dismount-all + scrub needs mounted volumes = kernel dm-crypt; the routing + registration above is proven)"

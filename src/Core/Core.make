@@ -128,4 +128,10 @@ ifeq "$(VC_ENABLE_ADIANTUM)" "1"
 OBJS += ../Crypto/Adiantum.o
 endif
 
+# HCTR2 wide-block mode (opt-in via `make HCTR2=1`). Depends only on Crypto/AesCt.o — HCTR2's POLYVAL is
+# self-contained, unlike Adiantum which also needs chacha256 + Poly1305. A default build stays stock.
+ifeq "$(VC_ENABLE_HCTR2)" "1"
+OBJS += ../Crypto/Hctr2.o
+endif
+
 include $(BUILD_INC)/Makefile.inc

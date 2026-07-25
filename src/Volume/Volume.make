@@ -42,6 +42,15 @@ OBJS += EncryptionModeXTS.o
 ifeq "$(VC_ENABLE_ADIANTUM_MODE)" "1"
 OBJS += EncryptionModeAdiantum.o
 endif
+
+# HCTR2 wide-block EncryptionMode shim (opt-in via `make HCTR2_MODE=1`). The HCTR2 ALGORITHM is proven
+# against the official google/hctr2 vectors at step [105]; this is the EncryptionMode subclass. It is the
+# SECOND of the two the v2 format needs: V2Mode is {HCTR2, ADIANTUM, NONE} and V2FormatDiscoverMode picks
+# by trying each mode's MAC key, so with only one implemented, discovery could never be shown to
+# DISCRIMINATE — only to return NONE on a wrong key.
+ifeq "$(VC_ENABLE_HCTR2_MODE)" "1"
+OBJS += EncryptionModeHctr2.o
+endif
 else
 OBJS += EncryptionModeWolfCryptXTS.o
 endif

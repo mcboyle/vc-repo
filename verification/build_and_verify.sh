@@ -2877,3 +2877,31 @@ if [ -n "$HV_CC" ] && "$HV_CC" -O2 $HV_WNO $HV_NOASM \
 else
 	skip_step " no compiler built the HKF v2 HKDF test (see /tmp/hv.log)"
 fi
+
+echo ""
+echo "[105] HCTR2 SHIPPABLE module (src/Crypto/Hctr2.c) vs the OFFICIAL google/hctr2 vectors"
+# WHY: step [26] proved the HCTR2 ALGORITHM in a PoC, but HCTR2 was never promoted to src/ the way
+# AesCt [88], Poly1305 [90] and Adiantum [91] were -- so the mode D-4 selects for AES-NI hardware had no
+# shippable implementation at all. This runs the SAME official vectors through the real compiled
+# Crypto/Hctr2.o, which differs from the PoC in one cryptographically material way: the block cipher is
+# the CONSTANT-TIME AesCt, not the table-driven in-tree AES. That substitution is exactly what can
+# silently break a mode (wrong key schedule, wrong inverse-cipher direction, endianness slip in the XCTR
+# counter) while still producing ciphertext that round-trips convincingly. It is the HCTR2 analogue of
+# [89], which did the same for Adiantum.
+# ANCHOR: OFFICIAL -- google/hctr2 test_vectors/ours/HCTR2/HCTR2_AES256.json, an artifact we did not
+# author. Plus PROPERTY checks no vector expresses: wide-block diffusion, in-place aliasing (in == out),
+# tweak separation, and fail-closed bounds.
+H2_CC=""; for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then H2_CC="$c"; break; fi; done
+H2_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
+if [ -n "$H2_CC" ] && "$H2_CC" -O2 $H2_NOASM -DVC_ENABLE_HCTR2 -DVC_ENABLE_CTAES \
+      $INC -I"$SRCROOT/Crypto" -I"$HERE" \
+      "$HERE/hctr2_module_test.c" "$SRCROOT/Crypto/Hctr2.c" "$SRCROOT/Crypto/AesCt.c" \
+      -o /tmp/hctr2_module 2>/tmp/h2.log; then
+	/tmp/hctr2_module > /tmp/h2_out.txt 2>&1; h2rc=$?
+	sed 's/^/  /' /tmp/h2_out.txt
+	if [ "$h2rc" = 0 ] && grep -q 'HCTR2 MODULE TEST PASSED' /tmp/h2_out.txt; then
+		echo "    MATCH: all 35 official HCTR2 vectors reproduce through the shippable constant-time module"
+	else echo "    HCTR2 MODULE TEST FAILED"; exit 1; fi
+else
+	skip_step " no compiler built the HCTR2 module test (see /tmp/h2.log)"
+fi

@@ -142,7 +142,7 @@ jobs:
       # is a CI failure that reads like a crypto failure — it has already happened twice (ADIANTUM_MODE,
       # then BALLOON). Change both lines together.
       - name: Build full-featured console product (all fork knobs)
-        run: ./scripts/build-product.sh NOGUI=1 HKF=1 HKF_SIMULATOR=1 HKF_MIX_V2_SALTBIND=1 KEYSCRUB=1 DURESS=1 KEYSLOTS=1 SHARECODE=1 SHAMIRMAC=1 FLASH_WARN=1 ARGON2PARAMS=1 ADIANTUM_MODE=1 BALLOON=1
+        run: ./scripts/build-product.sh NOGUI=1 HKF=1 HKF_SIMULATOR=1 HKF_MIX_V2_SALTBIND=1 KEYSCRUB=1 DURESS=1 KEYSLOTS=1 SHARECODE=1 SHAMIRMAC=1 FLASH_WARN=1 ARGON2PARAMS=1 ADIANTUM_MODE=1 BALLOON=1 HCTR2_MODE=1
       # In-process Volume::Open round-trip against the just-built full-featured archives (Core/Volume/
       # Platform.a). Exercises the real C++ create->open path directly — correct password opens + recovers
       # a non-trivial master key; wrong password rejects; and with the simulator factor: correct factor
@@ -155,5 +155,8 @@ jobs:
       - name: Adiantum EncryptionMode shim (real product objects)
         run: VC_AM_SKIP_BUILD=1 bash verification/realbuild/adiantum_mode.sh
 
+      - name: HCTR2 EncryptionMode shim (real product objects)
+        run: VC_H2_SKIP_BUILD=1 bash verification/realbuild/hctr2_mode.sh
+
       - name: In-process Volume::Open round-trip (real product objects)
-        run: VC_OR_SKIP_BUILD=1 ./verification/realbuild/open_roundtrip.sh NOGUI=1 HKF=1 HKF_SIMULATOR=1 HKF_MIX_V2_SALTBIND=1 KEYSCRUB=1 DURESS=1 KEYSLOTS=1 SHARECODE=1 SHAMIRMAC=1 FLASH_WARN=1 ARGON2PARAMS=1 ADIANTUM_MODE=1 BALLOON=1
+        run: VC_OR_SKIP_BUILD=1 ./verification/realbuild/open_roundtrip.sh NOGUI=1 HKF=1 HKF_SIMULATOR=1 HKF_MIX_V2_SALTBIND=1 KEYSCRUB=1 DURESS=1 KEYSLOTS=1 SHARECODE=1 SHAMIRMAC=1 FLASH_WARN=1 ARGON2PARAMS=1 ADIANTUM_MODE=1 BALLOON=1 HCTR2_MODE=1
