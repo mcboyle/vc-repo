@@ -78,12 +78,29 @@ namespace VeraCrypt
 		VolumeTime GetVolumeCreationTime () const { return VolumeCreationTime; }
 		void SetSize (uint32 headerSize);
 		bool IsMasterKeyVulnerable () const { return XtsKeyVulnerable; }
-#if defined(VC_ENABLE_KEYSLOTS)
+#if defined(VC_ENABLE_KEYSLOTS) || defined(VC_ENABLE_V2FORMAT)
 		/* The volume master-key material (VMK): the concatenated primary + secondary (XTS) master keys
 		   as laid out in the header key area (DataKeyAreaMaxSize bytes), populated by a successful
-		   Decrypt. Retained for reference; a keyslot actually wraps the full effective plaintext below. */
+		   Decrypt. Retained for reference; a keyslot actually wraps the full effective plaintext below.
+
+		   GUARDED BY THE UNION OF THE FEATURES THAT NEED IT, not by whichever added it first. Keyslots
+		   introduced this accessor, but V2FORMAT independently needs the VMK — mode discovery derives each
+		   wide-block mode's MAC key from it. Guarding it on KEYSLOTS alone made `make V2FORMAT=1` fail to
+		   compile with "no member named GetMasterKeys", which reads like a missing API rather than a
+		   missing -D. Same defect class as the nested include guards fixed in PR #37: a feature's
+		   accessor must not be hostage to an unrelated feature's flag. The backing member (DataAreaKey)
+		   is unguarded, so widening this costs nothing. */
 		ConstBufferPtr GetMasterKeys () const { return ConstBufferPtr (DataAreaKey.Ptr(), DataAreaKey.Size()); }
 		static size_t GetMasterKeyDataSize () { return DataKeyAreaMaxSize; }
+#endif
+
+#if defined(VC_ENABLE_KEYSLOTS)
+		/* KEYSLOTS-ONLY BELOW. These depend on EffectivePlaintext, which is itself guarded on KEYSLOTS —
+		   so they must NOT ride the widened guard above. Widening the whole block instead of just the VMK
+		   accessor is what broke the first attempt at this fix: it exposed GetHeaderPlaintext() in a
+		   V2FORMAT-only build and failed with "use of undeclared identifier 'EffectivePlaintext'" in an
+		   unrelated translation unit (EncryptionTest.o). Widen the narrowest thing that is actually
+		   shared, not the block it happens to sit in. */
 
 		/* The EFFECTIVE decrypted-header plaintext: the leading KeyslotPayloadSize bytes of the header
 		   that Deserialize actually reads (magic, geometry, and the master-key area) — everything needed

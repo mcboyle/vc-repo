@@ -135,6 +135,50 @@ evidentiary standing**, and this spec must not let them be read as a single sett
 The verdict "keep HCTR2" is unchanged — only the **breadth of the robustness claim narrows**: HCTR2 is a
 confidentiality mode, the authenticated wrapping is pending design, and key-commitment is an open question.
 
+### Tag-mismatch policy — FAIL CLOSED (owner decision, 2026-07-25)
+
+**On a per-sector tag mismatch at read time, the volume FAILS CLOSED: the read is refused and no data is
+returned.** This was an open question until now; `src/Volume/V2FormatBinding.h` carried it explicitly so
+it would be decided deliberately rather than inferred later from whatever the I/O layer happened to do.
+It is recorded here **before** that layer is built, which is the point.
+
+**The alternative, and why it lost.** *Fail-warn* — surface the mismatch, return the data anyway — is
+the policy `docs/ROLLBACK-COUNTER-SPEC.md` chose for the rollback counter, so the precedent existed.
+It was rejected here because a warning that can be ignored reduces per-sector authentication to advice:
+the adversary this format exists to answer is one who **edits ciphertext**, and under fail-warn the
+edited plaintext still reaches the filesystem. Under D-5's posture (maximum security for a small number
+of high-risk users), silently-usable modified data is the worse failure.
+
+**The cost, stated plainly because it is real and it is being accepted, not avoided.**
+
+- **One corrupt sector makes that sector unreadable.** There is no bad-block tolerance and no partial
+  recovery of a damaged volume through the normal path.
+- **This is an availability risk, not a theoretical one.** Flash with wear-levelling can retire a block;
+  an interrupted write can leave a sector and its tag inconsistent; ordinary media develop bad sectors.
+  Each of those now surfaces as a hard read failure rather than as degraded data.
+- **It interacts with the deniability story.** A hidden volume whose outer volume is written over will
+  produce tag mismatches in the overwritten region — expected behaviour, but it means "fails closed" is
+  a state a legitimate user can reach without any adversary involved.
+
+**Therefore the I/O layer MUST ship a recovery path — this is a requirement, not a nicety.** Without one,
+fail-closed converts a single bad sector into a lost volume, which for a disk encryptor is a worse
+outcome than the tampering it defends against. The requirement:
+
+1. A **deliberate operator override** that reads past a failing tag. Not a config default, not a silent
+   fallback — an explicit action taken by someone who has been told what it means.
+2. The override is **logged**, and the fact that it was used is surfaced to the user. An override that
+   leaves no trace re-creates fail-warn with extra steps.
+3. It is **per-invocation and scoped**, never a persistent volume property. A volume must not be able to
+   carry "ignore my tags" as state, or an adversary who can write the header can disable detection.
+4. The reserved MAC table is **separable** from the data area, so the override costs nothing structurally
+   — this is cheap to build and there is no excuse for shipping the policy without it.
+
+**What this lets the project claim, and what it does not.** With fail-closed plus the override,
+`docs/THREAT-MODEL.md` may claim **tamper-evidence**: modified ciphertext is detected and refused rather
+than silently returned. It may **not** claim tamper-*resistance* — nothing here prevents an adversary
+with write access from destroying data, and a wide-block mode plus a MAC detects and amplifies tampering
+rather than preventing it. Nor does it establish key-commitment (see the three-layer note above).
+
 ### Layout
 
 A contiguous **MAC table** sized for **every** data sector of the volume, placed at a deterministic

@@ -271,6 +271,38 @@ namespace VeraCrypt
 						mode.SetSectorOffset (partitionStartOffset / ENCRYPTION_DATA_UNIT_SIZE);
 					}
 
+#if defined(VC_ENABLE_V2FORMAT)
+					// v2 mode discovery (T1-1). Nothing on disk marks a volume as v2: read data sector 0
+					// plus its MAC-table slot and ask which mode's key reproduces the tag. V2_MODE_NONE —
+					// a v1 volume, or one whose table is absent/unreadable — leaves V2Mac inert, so v1
+					// volumes keep their existing behaviour exactly.
+					//
+					// Discovery is deliberately NON-FATAL: a read error here degrades to "treat as v1",
+					// never to "refuse the mount". Failing a mount because the tail of the disk is
+					// unreadable would turn an availability problem into a lockout, and a v1 volume
+					// legitimately has no table to read.
+					try
+					{
+						const uint64 dataSectors = VolumeDataSize / SectorSize;
+						if (dataSectors > 0)
+						{
+							SecureBuffer sector0 (SectorSize);
+							SecureBuffer tag0 (V2_MAC_TAG_LEN);
+							VolumeFile->ReadAt (sector0, VolumeDataOffset);
+							VolumeFile->ReadAt (tag0, VolumeDataOffset + VolumeDataSize + V2FormatSlotOffset (0));
+
+							const ConstBufferPtr mk = header->GetMasterKeys();
+							V2Mode v2mode = (V2Mode) V2Format::DiscoverMode (mk.Get(), (int) mk.Size(),
+								sector0.Ptr(), SectorSize, tag0.Ptr());
+
+							if (v2mode != V2_MODE_NONE)
+								V2Mac.Configure (v2mode, mk.Get(), (int) mk.Size(), SectorSize,
+								                 VolumeDataOffset + VolumeDataSize, dataSectors);
+						}
+					}
+					catch (...) { /* not v2, or the tail is unreadable — stay inert */ }
+#endif
+
 					// Volume protection
 					if (Protection == VolumeProtection::HiddenVolumeReadOnly)
 					{
@@ -424,6 +456,18 @@ namespace VeraCrypt
 			length -= SectorSize;
 		}
 
+#if defined(VC_ENABLE_V2FORMAT)
+		// v2 per-sector authentication. MUST run HERE — before any decryption — because the tag is over
+		// CIPHERTEXT, and `buffer` still holds ciphertext at this point. Verifying after the decrypt calls
+		// below would authenticate the wrong bytes while still passing every round-trip test.
+		// FAILS CLOSED: a mismatch throws V2TagMismatch and the caller receives no plaintext (the buffer
+		// is left holding ciphertext, never a decrypted-but-unauthenticated sector).
+		// No-op on a v1 volume, so existing volumes take an unchanged path.
+		if (length && V2Mac.IsActive())
+			V2Mac.VerifyRange (*VolumeFile, buffer.Get() + bufferOffset,
+			                   (byteOffset + bufferOffset) / SectorSize, length / SectorSize);
+#endif
+
 		if (length)
 		{
 			if (EncryptionNotCompleted)
@@ -433,7 +477,7 @@ namespace VeraCrypt
 				{
 					uint64 encryptedLength = VC_MIN (length, (EncryptedDataSize - hostOffset));
 
-					EA->DecryptSectors (buffer.GetRange (bufferOffset, encryptedLength), hostOffset / SectorSize, encryptedLength / SectorSize, SectorSize);			
+					EA->DecryptSectors (buffer.GetRange (bufferOffset, encryptedLength), hostOffset / SectorSize, encryptedLength / SectorSize, SectorSize);
 				}
 			}
 			else
@@ -496,6 +540,19 @@ namespace VeraCrypt
 
 		EA->EncryptSectors (encBuf, hostOffset / SectorSize, length / SectorSize, SectorSize);
 		VolumeFile->WriteAt (encBuf, hostOffset);
+
+#if defined(VC_ENABLE_V2FORMAT)
+		// v2 per-sector authentication: tag the CIPHERTEXT we just wrote.
+		// ORDER IS DELIBERATE — data first, tags second. Data and tag live in two disk regions and there
+		// is no journal, so an interrupted write always leaves one of them stale and those sectors fail
+		// closed (power loss, crash, USB pulled mid-write; no adversary required). Both orders lose the
+		// same sectors, but this one fails safer: a torn write leaves NEW data under an OLD tag, so an
+		// operator using the documented override reads what was actually written. Tags-first would leave
+		// a valid-looking tag over stale data — harder to reason about, easier to mistake for intact.
+		// See src/Volume/V2SectorMacIo.h and docs/V2-FORMAT-SPEC.md §"Tag-mismatch policy".
+		if (V2Mac.IsActive())
+			V2Mac.UpdateRange (*VolumeFile, encBuf.Ptr(), byteOffset / SectorSize, length / SectorSize);
+#endif
 
 		TotalDataWritten += length;
 

@@ -86,6 +86,23 @@ overselling deniability gets high-risk people hurt.
   exposure — where handing over only a decoy can itself be the charged offence — a hidden volume can
   leave the user *worse off* than a single encrypted volume with no hidden capability. See
   `docs/KEY-DISCLOSURE-LEGAL.md` for the jurisdiction matrix this pairs with.
+- **Tampering with the encrypted data.** Stock VeraCrypt — and this fork today — provide **no per-sector
+  authentication**: XTS is malleable at 16-byte granularity, so an adversary with write access can edit
+  ciphertext and the decrypted plaintext changes in a controlled way, undetected. The two wide-block
+  modes now shipped (`docs/HCTR2-SPEC.md`, `docs/ADIANTUM-SPEC.md`) **amplify** such an edit — one
+  changed bit randomises the whole sector — but amplification is not detection, and neither mode is
+  authenticated. The v2 per-sector MAC table (`docs/V2-FORMAT-SPEC.md`) is the tier that would detect it;
+  **it is designed and specified but the I/O layer is not built**, so nothing in a shipping build detects
+  ciphertext tampering today.
+
+  When that layer lands, the claim it will support is **tamper-EVIDENCE, not tamper-resistance**: the
+  policy is decided (fail closed — a per-sector tag mismatch refuses the read rather than returning the
+  data), so modified ciphertext is detected and withheld. Nothing prevents an adversary with write access
+  from **destroying** data, and key-commitment — whether a ciphertext could decrypt under two keys —
+  remains separately unestablished. Note also the accepted cost of fail-closed: one corrupt sector makes
+  that sector unreadable, with no bad-block tolerance, so flash wear-levelling or an interrupted write
+  can reach a refusing state with no adversary involved. That is why the I/O layer is required to ship a
+  deliberate, logged operator override; see `docs/V2-FORMAT-SPEC.md` §"Tag-mismatch policy — FAIL CLOSED".
 
 ## Verification caveat
 
