@@ -21,6 +21,7 @@
 #endif
 #if defined(VC_ENABLE_V2FORMAT)
 #include "Volume/V2FormatBinding.h"
+#include "Volume/V2SectorMacIo.h"
 #endif
 
 #ifdef TC_UNIX
@@ -141,6 +142,38 @@ namespace VeraCrypt
 					SizeDone.Set (WriteOffset - DataStart);
 				}
 			}
+
+#if defined(VC_ENABLE_V2FORMAT)
+			// v2: POPULATE the per-sector MAC table. This is the step that ARMS tamper detection —
+			// before it the table is all zeroes, V2FormatDiscoverMode returns NONE, and the layer is
+			// inert. It must run AFTER the format pass above, because it tags the ciphertext that pass
+			// actually wrote. (--quick is refused for v2 upstream, precisely so that ciphertext exists.)
+			//
+			// WHAT THE MODE VALUE MEANS TODAY — read before trusting it. Data is encrypted with XTS:
+			// VolumeCreator hardcodes EncryptionModeXTS and EncryptionAlgorithm only ever offers XTS, so
+			// no volume is wide-block encrypted yet. The v2 MAC therefore authenticates XTS ciphertext,
+			// which is genuinely useful (it detects exactly the edits XTS's 16-byte malleability
+			// permits), but the V2Mode value is currently only a MAC KEY DOMAIN, not a statement about
+			// how the data is encrypted. Discovery is effectively binary — "this is a v2 volume" —
+			// and ADIANTUM is chosen deterministically as that domain. When wide-block selection is
+			// wired (a header change, so D-10), the value becomes meaningful and this comment must go.
+			if (Options->V2Format && !AbortRequested)
+			{
+				const uint64 usableBytes = Layout->GetDataSize (HostSize)
+					- (uint64) V2FormatMacTableBytes (Layout->GetDataSize (HostSize) / Options->SectorSize,
+					                                  (uint32_t) Options->SectorSize);
+				const uint64 usableSectors = usableBytes / Options->SectorSize;
+
+				V2SectorMacIo mac;
+				mac.Configure (V2_MODE_ADIANTUM, MasterKey.Ptr(), (int) MasterKey.Size(),
+				               Options->SectorSize, DataStart + usableBytes, usableSectors);
+				mac.PopulateTable (*VolumeFile, DataStart);
+
+				// The sequential write position is used by the code after this block; PopulateTable
+				// seeks all over the file, so restore it explicitly rather than relying on luck.
+				VolumeFile->SeekAt (WriteOffset);
+			}
+#endif
 
 			if (!AbortRequested)
 			{
