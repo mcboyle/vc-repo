@@ -78,11 +78,27 @@ int KeyslotAdd (const KeyslotStoreCfg *cfg, KeyslotArea *area,
                 const unsigned char *pass, int passLen, int flags,
                 const unsigned char *vmk);
 
+/* Optional parallel executor for the constant-time labeled-table scan (KeyslotOpenParallel). It MUST
+   call body(ctx, i) for EVERY i in [0, n) and return only after all have completed — no skipping, no
+   early exit, no reordering that drops indices. The count n is the public, config-bounded slot count,
+   so running the N per-slot derivations concurrently changes only wall-clock, not the security
+   property (all N run regardless of which/how-many match; the constant-time mask-select is unchanged
+   and stays serial). NULL selects the original single-threaded loop, byte-for-byte. */
+typedef void (*KeyslotParallelFor) (int n, void (*body) (void *ctx, int i), void *ctx);
+
 /* Try to open any slot with 'pass'. On success returns 1, fills vmkOut (cfg->vmkLen bytes) and, if
    non-NULL, *flagsOut. Returns 0 if no slot matches. */
 int KeyslotOpen (const KeyslotStoreCfg *cfg, KeyslotArea *area,
                  const unsigned char *pass, int passLen,
                  unsigned char *vmkOut, int *flagsOut);
+
+/* Same contract as KeyslotOpen, but the labeled-table per-slot KDF+unwrap is dispatched through 'pf'
+   (a parallel-for). pf == NULL is identical to KeyslotOpen. The per-slot work is the pure
+   KeyslotUnwrapCT; only the ordering of when those N independent derivations run changes. Every slot
+   is still derived and the first match is still selected in constant time with no early return. */
+int KeyslotOpenParallel (const KeyslotStoreCfg *cfg, KeyslotArea *area,
+                         const unsigned char *pass, int passLen,
+                         unsigned char *vmkOut, int *flagsOut, KeyslotParallelFor pf);
 
 /* Open exactly labeled-table slot 'index' with 'pass' (admin-side; used by rotation to locate the
    slot to retire). Reveals per-index success, unlike the constant-time KeyslotOpen mount path.

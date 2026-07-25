@@ -30,6 +30,28 @@ sudo chmod 440 /etc/sudoers.d/99-mboyle-nopasswd && sudo visudo -c
 This is itself an instance of the pattern this repo tracks: "sudo is available" was a
 partially-true inherited claim; the direct test (`sudo -n true`) is what settled it.
 
+**Environment fact worth recording: installing extra GCC versions breaks `clang++` builds unless the
+matching `libstdc++-N-dev` is also installed.** Installing `gcc-14` (to measure `-fstack-usage` frames
+across the CI compiler matrix) moved `clang++`'s auto-selected libstdc++ to gcc-14's, which had no
+headers — the product build then failed with `'cstddef'/'exception'/'cxxabi.h' file not found`, which
+reads like a broken checkout but is a toolchain-selection artifact. Two ways out: install the matching
+`libstdc++-14-dev` (advances `clang++` permanently to gcc-14's libstdc++), or remove the extra GCCs to
+restore `clang++`'s original gcc-13 selection (`clang++ -v … | grep 'Selected GCC installation'` shows
+which it picks). The box here was restored to gcc-13 so the shipped binary and its timing numbers came
+from one toolchain; the cross-compiler frame numbers were captured first.
+
+**Environment/methodology fact worth recording: timing a binary while rebuilding that same path produces
+~0.01s samples that read as a severe regression.** A background serial pre/post run was probing
+`src/Main/veracrypt` while the product was being rebuilt at that path; the PRE binary (built once in a
+worktree) stayed stable at ~85s, while POST was overwritten mid-run and produced a **bimodal 0.01–85s
+spread and a meaningless 43.63s mean** — a "regression" that was pure apparatus. Three hypotheses about
+the *change* (a live `assert` firing, the `-1` sentinel leaking into the serial path, `rec_fits` bailing
+early) were all wrong; the cause was the measurement, not the code — the same error class as the
+mixed-build Argon2 episode (a symptom read as evidence about the thing under test rather than the
+apparatus). Fix, now enforced by `verification/realbuild/keyslot_timing.sh`: **freeze both binaries to
+stable paths, sha256-guard them before and after the run (abort if either changed), and capture exit
+status alongside wall-clock** so a 0.01s success and a 0.01s crash are never conflated.
+
 ## Build (STEP 2)
 
 ```
@@ -113,14 +135,16 @@ branch:** `classify_mount_log` now also returns 2 (key-correct, dm reached) when
 
 ### 2. Wrong-key mounts cost ~46–87s — and the cause is a DELIBERATE constant-time security feature
 
-Measured on this box:
+Measured on this box, on the **pre-parallel (original serial) binary** — this is the baseline that
+motivated the change; post-change speedup numbers are produced separately by the guarded
+`keyslot_timing.sh` (do not cross-compare rows below with those):
 
-| Mount | Time |
+| Operation (pre-parallel serial binary) | Time |
 |---|---|
-| correct password, pinned `--hash=SHA-512` | **1s** (mounts) |
-| wrong password, pinned `--hash=SHA-512`, PIM pinned | **46s** then rejects |
-| wrong password, **no** `--hash` | **>120s** (did not finish) |
-| plain mount via keyslot passphrase (auto-search path, succeeds) | **87s** then mounts |
+| native-key mount, pinned `--hash=SHA-512` (auto-search NOT triggered) | **1s** (mounts) |
+| wrong-password mount → auto-search, pinned `--hash=SHA-512`, PIM pinned | **46s** then rejects |
+| wrong-password mount → auto-search, **no** `--hash` (full PRF sweep too) | **>120s** (did not finish) |
+| mount via a keyslot passphrase → auto-search succeeds | **87s** then mounts |
 
 CPU/mem sample during a wrong-key mount: **one** thread at 99.8%, 15 cores idle, load 0.71;
 RAM used 1409→1400 MB (≈60 GB stays free). So the cost is a **single-threaded, CPU-bound,
@@ -147,10 +171,21 @@ regressing that guarantee. So the "obvious" optimization is off the table by des
 16 cores are idle — the loop is serial. More vCPUs/RAM, and ESXi VMX knobs
 (`sched.cpu.latencySensitivity`, NUMA sizing, hpet, hardware-assisted-virt exposure), change
 nothing; only a faster per-core clock would, and only linearly. The only *safe* software
-speedup is to **parallelize the 63 independent derivations across cores while still computing
-all of them and selecting in constant time** (~46s → ~4s on 16 cores) — a security-sensitive
-change deliberately NOT made in this session (owner asked to change nothing that could harm
-security). Documented here as the correct next step, not implemented.
+speedup is to **parallelize the N independent derivations across cores while still computing
+all of them and selecting in constant time**.
+
+**Update — this parallelization is now IMPLEMENTED** (`docs/KEYSLOT-PARALLEL-SCAN.md`;
+`Common/KeyslotStore.c` `KeyslotOpenParallel` + `Volume/KeyslotParallelExecutor.h`). It preserves the
+constant-time invariant (all N derived, no early exit, index-order first-match select), keeps the module
+allocation-free, is exception-safe across the C boundary (a `std::thread` `EAGAIN` failure falls back to
+inline execution — never a false "wrong password"), and is gated by a committed regression test
+(`build_and_verify.sh` step [99]) that checks byte-identical VMK recovery + the constant-time property.
+Measured on this 16-core VM with the hash-guarded `keyslot_timing.sh` (frozen PRE=origin/master vs POST,
+N=5): the wrong-password mount → auto-search drops **47.6s → 5.7s (8.3×)**, while the serial `pf==NULL`
+path (`--keyslot-open`, isolated with the correct native password) is **unchanged — PRE 36.98s vs POST
+36.86s, Δ0.11s within the 0.45s spread**. (A naive serial measurement using a *wrong* `--password` first
+showed 84.6s vs 51.1s — not a regression but the parallel auto-search leaking in via `Core->OpenVolume`;
+see `docs/KEYSLOT-PARALLEL-SCAN.md`.)
 
 **Consequence for the harness.** `acceptance.sh` runs several negative mounts (some with no
 pinned `--hash`), each paying the 46s+ auto-search, so it cannot finish within a 5-minute
