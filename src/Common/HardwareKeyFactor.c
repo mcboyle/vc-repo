@@ -11,6 +11,15 @@
 #if defined(VC_ENABLE_HKF_LEN_CONDITION) || defined(VC_ENABLE_HKF_MIX_V2)
 #include "Crypto/Sha2.h"   /* sha256() for §6 length conditioning and the Rank-1 v2 HKDF mix */
 #endif
+/* NOT nested inside the Sha2 block above. That block is gated on LEN_CONDITION||MIX_V2, and the RAM
+   protection below is gated on KEYSCRUB&&HKF -- an independent pair. Nesting them meant a build with
+   KEYSCRUB+HKF but without MIX_V2 (clang-tidy's define set, for one) skipped the include while still
+   emitting the calls: an implicit-declaration error. Same shape as the guard-complementarity rule in
+   docs/REAL-BUILD-VALIDATION.md -- a declaration must be gated on exactly the condition that decides
+   whether its uses exist, not on a neighbouring one that usually happens to be true. */
+#if defined(VC_ENABLE_KEYSCRUB) && defined(VC_ENABLE_HKF)
+#include "KeyScrub.h"      /* VcKsRamProtect: ChaCha-at-rest for the factor secrets while idle */
+#endif
 
 /* ------------------------------------------------------------------ *
  *  CRC-32 (standard, polynomial 0xEDB88320) — identical to Common/Crc *
@@ -652,11 +661,54 @@ static int hkf_dispatch_response (const HKFConfig *cfg,
  * derived value, so such a volume must be re-enrolled (or mounted with a version-try loop). Defence in
  * depth — not a substitute for enabling salt-binding by default. See docs/CRC-SEAM-ADDENDUM.md.
  */
+/* ------------------------------------------------------------------ *
+ *  RAM-protection of the active factor secrets (KeyScrub integration)  *
+ * ------------------------------------------------------------------ *
+ * KeyScrub's ChaCha-at-rest RAM protection (VcKsRamProtect, the Windows VcProtectMemory scheme) was
+ * built, proven byte-for-byte and anchored [6]/[98] -- and then called on nothing. Only Init and
+ * Shutdown had call sites, so HKFConfig.rawSecret / simSecret / fidoPin sat in CLEARTEXT for the
+ * whole process lifetime: exactly the "an anchor proves a component, not that it is reached" failure
+ * recorded at step [106].
+ *
+ * WHERE THE SECRETS ARE PROTECTED. From HKFSetActiveConfig (the moment the process adopts a factor)
+ * until HKFComputeResponse needs the bytes, and again immediately afterwards. The window in which a
+ * secret is readable is therefore the duration of one challenge-response, not the process lifetime.
+ *
+ * WHY THIS IS SAFE AGAINST THE OBVIOUS FAILURE MODE. The transform is its own inverse (KeyScrub.h:
+ * "Decrypt == Encrypt"), so protect and unprotect are the same call and cannot get out of step by
+ * being applied in the wrong order. If the key-derivation area was never initialised, VcKsRamProtect
+ * is a documented no-op -- so a build without KeyScrub active still derives byte-identical keys.
+ * Whole fixed-size arrays are transformed rather than the used prefix, so the length fields cannot
+ * desynchronise the pairing either.
+ *
+ * We cast away const exactly as HKFScrubActiveConfig already does: the storage is caller-owned and
+ * the const is about not reinterpreting the config, not about immutable bytes. */
+#if defined(VC_ENABLE_KEYSCRUB) && defined(VC_ENABLE_HKF)
+static void hkf_toggle_secret_protection (const HKFConfig *ccfg)
+{
+	HKFConfig *cfg = (HKFConfig *) ccfg;
+	if (!cfg)
+		return;
+	VcKsRamProtect (cfg->rawSecret, sizeof (cfg->rawSecret));
+	VcKsRamProtect (cfg->simSecret, sizeof (cfg->simSecret));
+	VcKsRamProtect ((unsigned char *) cfg->fidoPin, sizeof (cfg->fidoPin));
+}
+#else
+#define hkf_toggle_secret_protection(cfg) ((void) 0)
+#endif
+
 int HKFComputeResponse (const HKFConfig *cfg,
                         const unsigned char *challenge, int challenge_len,
                         unsigned char *response_out, int *response_len_out)
 {
-	int rc = hkf_dispatch_response (cfg, challenge, challenge_len, response_out, response_len_out);
+	int rc;
+	/* Reveal the secrets for exactly the duration of the dispatch, then put them back. One
+	   unprotect, one re-protect, one return -- there is no path out of this function that skips
+	   the re-protect, which is why the wrapper lives here rather than inside hkf_dispatch_response
+	   (that one has many returns). */
+	hkf_toggle_secret_protection (cfg);
+	rc = hkf_dispatch_response (cfg, challenge, challenge_len, response_out, response_len_out);
+	hkf_toggle_secret_protection (cfg);
 #if defined(VC_ENABLE_HKF_LEN_CONDITION)
 	if (rc == HKF_OK && response_len_out && *response_len_out > 32)
 	{
@@ -689,6 +741,11 @@ const HKFConfig *g_hkfActiveConfig = 0;
 
 void HKFSetActiveConfig (const HKFConfig *cfg)
 {
+	/* Protect on adoption: from here on the secrets are ChaCha-encrypted at rest in RAM, and are
+	   revealed only inside HKFComputeResponse. Callers populate the config BEFORE calling this
+	   (the CLI parser writes the plaintext bytes), so this is the first moment protection can be
+	   applied without the caller having to know about KeyScrub at all. */
+	hkf_toggle_secret_protection (cfg);
 	g_hkfActiveConfig = cfg;
 }
 

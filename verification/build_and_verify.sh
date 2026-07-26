@@ -115,6 +115,19 @@ if "$KS_CC" -O2 $KS_WNO $KS_NOASM $KS_DEF $INC -c "$SRCROOT/Common/KeyScrub.c" -
 	else
 		echo "    MISMATCH"; diff /tmp/ks_c_ref.txt /tmp/ks_py.txt; exit 1
 	fi
+	# REACHABILITY: the transform above is anchored, but an anchor proves a COMPONENT, not that the
+	# component is REACHED (step [106]). VcKsRamProtect had only Init/Shutdown call sites, so the HKF
+	# factor secrets sat in cleartext for the process lifetime. ram_protect_test.c observes memory
+	# rather than control flow -- the sentinel must be absent while at rest and the response must
+	# still be correct -- and carries a negative control so "protected" cannot be confused with
+	# "the sentinel search is broken".
+	if "$KS_CC" -O2 $KS_WNO $KS_NOASM $KS_DEF $INC "$HERE/ram_protect_test.c" \
+	     /tmp/ks_keyscrub.o /tmp/ks_hkf.o /tmp/ks_t1ha2.o /tmp/ks_chacha256.o /tmp/ks_chachaRng.o \
+	     -lpthread -o /tmp/ram_protect_test 2>>/tmp/ks_cc.log; then
+		if /tmp/ram_protect_test; then
+			echo "    MATCH: HKF factor secrets are ChaCha-protected at rest (reachability, not just the KAT)"
+		else echo "    RAM-PROTECT REACHABILITY FAILED"; exit 1; fi
+	else echo "    ram_protect_test.c did not build"; sed -n '1,20p' /tmp/ks_cc.log; exit 1; fi
 	# all boolean self-checks must report YES (incl. the [L] present-before/absent-after liveness pairs)
 	if grep -Eq ': NO$' /tmp/ks_c.txt; then echo "    KEYSCRUB SELFTEST FAILED"; exit 1; fi
 	# Negative control (ROI item 2): rebuild the SAME selftest with the wipe disabled and confirm the
