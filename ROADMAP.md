@@ -294,9 +294,24 @@ the on-disk format design review is **not** waived.
   warn-and-continue was rejected as fail-warn).
   Proven on a **real mount** (`v2_tamper_e2e.sh` tier 5): `dd` of a tampered sector returns an I/O error
   by default, succeeds under `--v2-ignore-tags`, and the ignored-sector count reaches `--list -v`.
-  **OPEN DECISION — v2 AND HIDDEN VOLUMES COLLIDE (step `[107]`).** The MAC table occupies the tail of
+  **RESOLVED (step `[108]`, 2026-07-26) — v2 AND HIDDEN VOLUMES ARE MUTUALLY EXCLUSIVE, ENFORCED.**
+  Option 1 of the three below was chosen. Creating a hidden volume inside a v2 outer is now refused at
+  creation time: the CLI opens the **outer** volume first (`--outer-password` / `--outer-pim`, prompted
+  when absent and interactive) and refuses if it is v2. A wrong or missing outer password **fails closed**
+  — unverifiable is treated as unsafe, since a wrong password is indistinguishable from "it is v2 and we
+  could not tell". `--skip-v2-host-check` is the documented expert/recovery bypass, and is what keeps the
+  hazard demonstrable. All of it sits inside `#if defined(VC_ENABLE_V2FORMAT)`, so a stock build is
+  byte-for-byte unchanged. Proven by `verification/realbuild/v2_hidden_guard.sh` (**12/12**), now a
+  regression guard in `acceptance.sh` — it asserts *specificity* too: a hidden volume inside a **v1** outer
+  must still be created and must still open, so a guard that refused everything would fail.
+  Fail-open was rejected (it gives up tamper detection: an attacker's edit becomes indistinguishable from
+  free space) and "ship it documented" was rejected (it knowingly ships a deniability regression to the
+  users most dependent on decoys). Scope limit: the guard is in the CLI creation path, which is where this
+  fork drives hidden-volume creation; a GUI wizard would need the same check.
+  The original finding, retained because it is the justification:
+  **v2 AND HIDDEN VOLUMES COLLIDE (step `[107]`).** The MAC table occupies the tail of
   the outer's data area; a hidden volume occupies the tail of the outer's data area. Same bytes.
-  Reproduced on real containers (`verification/realbuild/v2_hidden_collision.sh`, 6/6): a 20 MiB v2
+  Reproduced on real containers (`verification/realbuild/v2_hidden_guard.sh` steps [1]/[6], originally 6/6 as v2_hidden_collision.sh): a 20 MiB v2
   outer's table is `[20212736, 20840448)` and a 5 MiB hidden volume is `[15597568, 20840448)` — the
   table is **entirely inside** the hidden volume. The product accepts the combination with no guard;
   creation damages nothing (VeraCrypt does not wipe the outer's free space); the first **write** to the
@@ -307,9 +322,8 @@ the on-disk format design review is **not** waived.
   volume's extent, where v1 returns unremarkable random bytes. `docs/V2-FORMAT-SPEC.md`'s claim that the
   two coexist safely assumed *fail-open* for unverifiable sectors and predates the fail-closed decision
   by one day; it is now marked superseded there. The options differ in kind — make the two mutually
-  exclusive; revert to fail-open (giving up tamper detection); or ship the tell documented — so this is
-  recorded as an owner decision rather than patched. **Until decided: do not create a hidden volume
-  inside a `--v2-format` outer.**
+  exclusive; revert to fail-open (giving up tamper detection); or ship the tell documented — so this was
+  recorded as an owner decision rather than patched. **Decided: option 1, see above.**
   ~~Remaining: **backup-header mirroring** of the slot table~~ — **WITHDRAWN, tested and false.** Opening
   via the backup header already discovers v2 (same stored `VolumeDataSize`), both restore paths preserve
   it through `ReEncryptVolumeHeaderWithNewSalt`, and the table (16 bytes/sector — ~32 GiB for 1 TiB)

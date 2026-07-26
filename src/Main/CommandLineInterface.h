@@ -108,6 +108,13 @@ namespace VeraCrypt
 		bool ArgQuick;
 #if defined(VC_ENABLE_V2FORMAT)
 		bool ArgV2Format;                                 // --v2-format: create a v2-format volume (T1-1)
+		// T1-1 hidden-volume guard. A v2 outer's MAC table occupies the tail of its data area, which is
+		// exactly where a hidden volume goes, so the two destroy each other. Detecting v2 needs the
+		// OUTER volume's key (a v2 tail is indistinguishable from v1 free space without it — that is
+		// D-10 working), hence a separate password here.
+		shared_ptr <VolumePassword> ArgOuterPassword;     // --outer-password: outer volume's password
+		int ArgOuterPim;                                  // --outer-pim
+		bool ArgSkipV2HostCheck;                          // --skip-v2-host-check: UNSAFE bypass
 #endif
 		FilesystemPath ArgRandomSourcePath;
 		uint64 ArgSize;

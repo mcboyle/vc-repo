@@ -293,7 +293,7 @@ decisions were taken a day apart and never reconciled.
 **The conflict is also structural, not only behavioural.** The MAC table is placed at the **tail of the
 outer's data area**; a hidden volume is placed at the **tail of the outer's data area**. They are the
 same bytes. Measured on a real 20 MiB outer with a 5 MiB hidden volume
-(`verification/realbuild/v2_hidden_collision.sh`, 6/6):
+(`verification/realbuild/v2_hidden_guard.sh` steps [1]/[6], originally 6/6 as v2_hidden_collision.sh):
 
 ```
 outer MAC table = [20212736, 20840448)
@@ -315,11 +315,29 @@ So under the shipped policy there are two distinct costs, and both are real:
    returned unremarkable random bytes. That is a new distinguisher that v1 does not have — which is
    exactly what the D-10 hard rule forbids.
 
-**This is an open design question, not a settled one.** It is recorded here rather than quietly patched
-because the options differ in kind — make v2 and hidden volumes mutually exclusive; revert to fail-open
-for unverifiable sectors (which gives up tamper detection); or ship the combination with the tell
-documented. See `ROADMAP.md` → T1-1. Until it is decided, **do not create a hidden volume inside a
-`--v2-format` outer volume.**
+**RESOLVED (owner, 2026-07-26): option 1 — mutually exclusive, ENFORCED.** Of the three candidates
+(mutually exclusive / revert to fail-open / ship the tell documented), fail-open was rejected because it
+gives up tamper detection — an attacker's edit becomes indistinguishable from free space — and
+"documented" was rejected because it knowingly ships a deniability regression to the users most dependent
+on decoys. So the combination is now refused at creation time:
+
+- `TextUserInterface::CreateVolume` opens the **outer** volume before creating a hidden volume and
+  **refuses if the outer is v2**, naming v2 as the reason.
+- Detection needs the outer's key, because a v2 tail is indistinguishable from v1 free space without it
+  (D-10 working as intended, not an oversight). Hence `--outer-password` / `--outer-pim`, prompted when
+  absent and interactive.
+- **Unverifiable is treated as unsafe.** A wrong or missing outer password is refused, not assumed
+  benign — a wrong password is indistinguishable from "it is v2 and we could not tell".
+- `--skip-v2-host-check` is the documented expert/recovery bypass. It is what keeps the hazard
+  demonstrable, and the harness uses it to prove the damage is still real.
+- The whole guard is inside `#if defined(VC_ENABLE_V2FORMAT)`, so a stock build is byte-for-byte
+  unchanged — consistent with the fork's gating convention.
+
+Proven by `verification/realbuild/v2_hidden_guard.sh` (**12/12**), wired into `acceptance.sh` as a
+regression guard. It asserts the *specificity* of the guard as well as its existence: a hidden volume
+inside a **v1** outer must still be created and must still open, so a guard that refused everything would
+fail. **Note the scope limit:** the guard lives in the CLI creation path, which is where hidden-volume
+creation is driven in this fork. A GUI wizard path would need the same check — it does not inherit it.
 
 ---
 

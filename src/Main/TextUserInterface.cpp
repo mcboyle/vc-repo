@@ -754,6 +754,68 @@ namespace VeraCrypt
 
 			if (hostSize < TC_MIN_HIDDEN_VOLUME_HOST_SIZE)
 				throw_err (StringFormatter (_("Minimum outer volume size is {0}."), SizeToString (TC_MIN_HIDDEN_VOLUME_HOST_SIZE)));
+
+#if defined(VC_ENABLE_V2FORMAT)
+			// T1-1 GUARD: refuse to create a hidden volume inside a v2-format outer volume.
+			//
+			// A v2 outer reserves its per-sector MAC table at the TAIL of its data area, and a hidden
+			// volume is placed at the TAIL of the outer's data area. They are the same bytes. The failure
+			// is not a clean error at creation time either: creation looks fine (VeraCrypt deliberately
+			// does not wipe the outer's free space), and then the first WRITE to the hidden volume
+			// overwrites the table, after which the outer opens as v1 with authentication silently gone.
+			// Proven on real containers by verification/realbuild/v2_hidden_collision.sh.
+			//
+			// Detecting v2 REQUIRES the outer volume's key. A v2 tail is indistinguishable from v1 random
+			// free space to anyone without it — that is the D-10 deniability property working as intended,
+			// not an oversight — so there is no passwordless probe to fall back on. Hence we ask for the
+			// outer password, and treat "cannot tell" as "refuse" rather than guessing.
+			if (!CmdLine->ArgSkipV2HostCheck)
+			{
+				shared_ptr <VolumePassword> outerPassword = CmdLine->ArgOuterPassword;
+				int outerPim = CmdLine->ArgOuterPim;
+
+				if (!outerPassword)
+				{
+					if (Preferences.NonInteractive)
+						throw_err (_("Creating a hidden volume needs the OUTER volume's password, to verify the outer volume is not v2-format (a v2 outer's per-sector MAC table occupies the same bytes as the hidden volume, and the two would destroy each other). Pass --outer-password, or --skip-v2-host-check to bypass this check (UNSAFE)."));
+
+					ShowString (L"\n");
+					ShowInfo (_("The outer volume's password is needed to verify it is not v2-format (a v2 outer volume cannot host a hidden volume)."));
+					outerPassword = AskPassword (_("Enter password for the OUTER volume"));
+					outerPim = AskPim (_("Enter PIM for the OUTER volume"));
+				}
+
+				shared_ptr <Volume> outerVolume;
+				try
+				{
+					outerVolume = Core->OpenVolume (
+						make_shared <VolumePath> (options->Path),
+						true,                       // preserveTimestamps: do not disturb the host
+						outerPassword,
+						outerPim,
+						CmdLine->ArgHash,
+						CmdLine->ArgKeyfiles,
+						true,                       // emvSupportEnabled
+						VolumeProtection::ReadOnly,
+						shared_ptr <VolumePassword> (), 0, shared_ptr <Pkcs5Kdf> (), shared_ptr <KeyfileList> (),
+						true,                       // sharedAccessAllowed
+						VolumeType::Normal);
+				}
+				catch (...)
+				{
+					// Fail closed. A wrong password here is indistinguishable from "the outer is v2 and
+					// we could not tell", so proceeding would silently reintroduce exactly the hazard
+					// this guard exists to prevent.
+					throw_err (_("Could not open the outer volume with the supplied password, so it is not possible to verify that it is not v2-format. Refusing to create the hidden volume. Re-run with the correct --outer-password, or --skip-v2-host-check to bypass this check (UNSAFE)."));
+				}
+
+				bool outerIsV2 = outerVolume->IsV2();
+				outerVolume->Close();
+
+				if (outerIsV2)
+					throw_err (_("The outer volume is v2-format, and a v2-format volume CANNOT host a hidden volume: the outer volume's per-sector MAC table occupies the same bytes the hidden volume would use, so writing to the hidden volume would destroy the outer volume's authentication (it would silently revert to unauthenticated v1). Create the outer volume without --v2-format if you need a hidden volume inside it. See docs/V2-FORMAT-SPEC.md."));
+			}
+#endif
 		}
 
 		uint64 minVolumeSize = options->Type == VolumeType::Hidden ? TC_MIN_HIDDEN_VOLUME_SIZE : TC_MIN_VOLUME_SIZE;
