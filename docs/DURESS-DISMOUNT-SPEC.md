@@ -17,6 +17,16 @@ Gated behind `-DVC_ENABLE_DURESS` (`make DURESS=1`); a build without it is byte-
   and destroys the deniability the rest of this fork is built on (`docs/THREAT-MODEL.md` → imaged-first).
 - **Locking down is enough and is deniable.** Dismount + RAM-scrub returns the system to "nothing
   mounted, no keys in memory" — indistinguishable from a machine that was simply never unlocked.
+
+  **Enforced in code since 2026-07-26.** This requirement was previously stated here and contradicted by
+  `src/Common/VcStatus.c`, which assigned duress its own exit code (78), name (`"duress"`) and
+  description — an adversary holding the surrendered passphrase could read `$?` and learn that what they
+  were given was a *duress* passphrase. `VcStatusMountSafe()` now collapses duress, wrong password,
+  missing factor, expired slot and locked slot into a single indistinguishable outcome on the mount
+  path. **The duress action itself is unchanged** — dismount-all and scrub still run exactly as before;
+  only the outcome *reported* to the caller becomes generic, which is what "indistinguishable" required
+  all along. Proven by `verification/no_oracle_test.c` (9/9), which carries its own negative control
+  showing the unpartitioned codes really are distinguishable. Fine-grained codes remain on admin paths.
 - **It composes with what is already here.** The RAM scrub is exactly the KeyScrub `ScrubNow()` path
   (`docs/MEMORY-SCRUB.md`); duress-dismount is that plus a force-dismount of every volume.
 

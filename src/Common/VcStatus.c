@@ -29,4 +29,29 @@ int VcStatusExitCode (VcStatus s)      { return in_range (s) ? TABLE[s].exitCode
 const char *VcStatusName (VcStatus s)  { return in_range (s) ? TABLE[s].name     : TABLE[VC_ERR_INTERNAL].name; }
 const char *VcStatusString (VcStatus s){ return in_range (s) ? TABLE[s].desc     : TABLE[VC_ERR_INTERNAL].desc; }
 
+int VcStatusIsCredentialDependent (VcStatus s)
+{
+	switch (s)
+	{
+	case VC_ERR_WRONG_PASSWORD:
+	case VC_ERR_FACTOR_MISSING:
+	case VC_ERR_SLOT_EXPIRED:
+	case VC_ERR_SLOT_LOCKED:
+	case VC_ERR_DURESS:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+VcStatus VcStatusMountSafe (VcStatus s)
+{
+	/* Everything an adversary could learn by trying passphrases becomes one indistinguishable
+	   answer. VC_ERR_WRONG_PASSWORD is the collapse target because it is what stock VeraCrypt already
+	   says for a failed mount, so the fork's mount path stays indistinguishable from upstream's. */
+	if (VcStatusIsCredentialDependent (s))
+		return VC_ERR_WRONG_PASSWORD;
+	return in_range (s) ? s : VC_ERR_INTERNAL;
+}
+
 #endif /* VC_ENABLE_STATUS */
