@@ -21,6 +21,7 @@
 #endif
 #if defined(VC_ENABLE_V2FORMAT)
 #include "Volume/V2FormatBinding.h"
+#include "Volume/V2SectorMacIo.h"
 #endif
 
 #ifdef TC_UNIX
@@ -141,6 +142,52 @@ namespace VeraCrypt
 					SizeDone.Set (WriteOffset - DataStart);
 				}
 			}
+
+#if defined(VC_ENABLE_V2FORMAT)
+			// v2: POPULATE the per-sector MAC table. This is the step that ARMS tamper detection —
+			// before it the table is all zeroes, V2FormatDiscoverMode returns NONE, and the layer is
+			// inert. It must run AFTER the format pass above, because it tags the ciphertext that pass
+			// actually wrote. (--quick is refused for v2 upstream, precisely so that ciphertext exists.)
+			//
+			// WHAT THE MODE VALUE MEANS TODAY — read before trusting it. Data is encrypted with XTS:
+			// VolumeCreator hardcodes EncryptionModeXTS and EncryptionAlgorithm only ever offers XTS, so
+			// no volume is wide-block encrypted yet. The v2 MAC therefore authenticates XTS ciphertext,
+			// which is genuinely useful (it detects exactly the edits XTS's 16-byte malleability
+			// permits), but the V2Mode value is currently only a MAC KEY DOMAIN, not a statement about
+			// how the data is encrypted. Discovery is effectively binary — "this is a v2 volume" —
+			// and ADIANTUM is chosen deterministically as that domain. When wide-block selection is
+			// wired (a header change, so D-10), the value becomes meaningful and this comment must go.
+			if (Options->V2Format && !AbortRequested)
+			{
+				// DO NOT SPLIT AGAIN HERE. VolumeLayoutV2Normal::GetDataSize() returns the header's
+				// stored VolumeDataSize, and CreateVolume already set that to the split's USABLE prefix
+				// (see the V2Format::SplitDataArea call in the header-options block). Applying the split
+				// a second time shrinks an already-shrunk figure and puts the table inside user data.
+				const uint64 usableBytes   = Layout->GetDataSize (HostSize);
+				const uint64 usableSectors = usableBytes / Options->SectorSize;
+				const uint64 tableBase     = DataStart + usableBytes;
+				const uint64 tableBytes    = (uint64) V2FormatMacTableBytes (usableSectors,
+				                                                            (uint32_t) Options->SectorSize);
+
+				V2SectorMacIo mac;
+				mac.Configure (V2_MODE_ADIANTUM, MasterKey.Ptr(), (int) MasterKey.Size(),
+				               Options->SectorSize, tableBase, usableSectors);
+				mac.PopulateTable (*VolumeFile, DataStart);
+
+				// RESERVE THE TABLE REGION AGAINST THE BACKUP HEADER. For a non-quick Normal volume the
+				// backup header is written at the CURRENT SEQUENTIAL POSITION, which the format loop left
+				// at the end of the usable data — i.e. exactly where the table starts. Leaving the
+				// position there wrote the backup header straight over the first 131072 bytes of tags,
+				// and the container ended up short by the table size. The volume still created cleanly
+				// and still mounted; it simply mounted as v1, because the tag the mount path probes for
+				// had been overwritten. Advance past the table so the backup header lands after it.
+				//
+				// The arithmetic closes exactly: usable + table == the full data area, so the finished
+				// container is the size the user asked for, not larger.
+				WriteOffset = tableBase + tableBytes;
+				VolumeFile->SeekAt (WriteOffset);
+			}
+#endif
 
 			if (!AbortRequested)
 			{
@@ -353,12 +400,19 @@ namespace VeraCrypt
 
 #if defined(VC_ENABLE_V2FORMAT)
 			// v2 on-disk format (T1-1): reserve a tail full-volume per-sector MAC table out of the data
-			// area, so the usable data the filesystem sees shrinks by the table size. The table itself is
-			// written/populated by the wide-block + per-sector-MAC I/O layer (T2-4), which is not built
-			// yet; here we only reserve the split so create-time sizing is correct. Nothing stored marks
-			// the volume as v2 — mount discovers the mode by trial (V2FormatDiscoverMode).
+			// area, so the usable data the filesystem sees shrinks by the table size. Nothing stored marks
+			// the volume as v2 — mount discovers the mode by trial (V2FormatDiscoverMode), which only
+			// succeeds once the table is POPULATED at the end of creation (see CreateVolume's format pass).
 			if (options->V2Format)
 			{
+				// A v2 volume CANNOT be quick-formatted. --quick never writes the data area, so its
+				// contents are whatever was on the disk before; per-sector authentication requires knowing
+				// what is actually there. Tagging pre-existing garbage would either need the same full
+				// read pass quick format exists to avoid, or leave every sector failing closed on first
+				// read. Refuse the combination rather than silently producing an unreadable volume.
+				if (options->Quick)
+					throw ParameterIncorrect (SRC_POS);
+
 				V2Format::DataAreaSplit v2 = V2Format::SplitDataArea (
 					(uint64_t) headerOptions.VolumeDataSize, (uint32_t) options->SectorSize);
 				if (!v2.ok)

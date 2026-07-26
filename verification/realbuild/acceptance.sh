@@ -426,6 +426,21 @@ else
     skip "V2 mode discovery — needs BOTH HCTR2_MODE=1 and ADIANTUM_MODE=1"
   fi
 
+  # V2 tamper detection END TO END: create with --v2-format, write, read, flip a ciphertext bit on disk,
+  # require the read to be REFUSED, then require the documented override to recover it and COUNT what it
+  # ignored. This is the only check in the tree that composes the create path with the mount path, and it
+  # is the one that caught three separate reasons the feature was shipping inert while every component
+  # test passed. Gated on the CLI actually carrying --v2-format so a build without V2FORMAT=1 skips.
+  if "$VC" --help 2>&1 | grep -q -- "--v2-format"; then
+    if VC_OR_SKIP_BUILD=1 bash "$HERE/v2_tamper_e2e.sh" $FLAGS >/"$WORK/v2e2e.log" 2>&1; then
+      ok "V2 tamper detection end to end (create -> mount -> tamper -> refused -> override recovers)"
+    else
+      bad "V2 tamper detection end-to-end failed"; sed 's/^/      /' "$WORK/v2e2e.log"
+    fi
+  else
+    skip "V2 tamper detection end to end — product not built with V2FORMAT=1"
+  fi
+
   pend "duress-dismount of ACTUALLY-MOUNTED volumes (dismount-all + scrub needs mounted volumes = kernel dm-crypt; the routing + registration above is proven)"
   # Network-share --ns-* CLI: enrol + unlock against a real MR server over TCP. Self-gating: the probe
   # only runs when the binary actually carries the option, so a build without NETSHARE=1 SKIPs rather

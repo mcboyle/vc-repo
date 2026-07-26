@@ -91,13 +91,22 @@ overselling deniability gets high-risk people hurt.
   ciphertext and the decrypted plaintext changes in a controlled way, undetected. The two wide-block
   modes now shipped (`docs/HCTR2-SPEC.md`, `docs/ADIANTUM-SPEC.md`) **amplify** such an edit — one
   changed bit randomises the whole sector — but amplification is not detection, and neither mode is
-  authenticated. The v2 per-sector MAC table (`docs/V2-FORMAT-SPEC.md`) is the tier that would detect it;
-  **it is designed and specified but the I/O layer is not built**, so nothing in a shipping build detects
-  ciphertext tampering today.
+  authenticated. The v2 per-sector MAC table (`docs/V2-FORMAT-SPEC.md`) is the tier that detects it.
 
-  When that layer lands, the claim it will support is **tamper-EVIDENCE, not tamper-resistance**: the
-  policy is decided (fail closed — a per-sector tag mismatch refuses the read rather than returning the
-  data), so modified ciphertext is detected and withheld. Nothing prevents an adversary with write access
+  **This is now live, but only for volumes created with `--v2-format` (`make V2FORMAT=1`).** Such a
+  volume gets a MAC table populated at creation time; reads verify the tag before decrypting and refuse
+  the sector on a mismatch. Flipping a single ciphertext bit on disk makes that sector's read fail closed
+  with no plaintext returned, verified end to end on a real container
+  (`verification/realbuild/v2_tamper_e2e.sh`, 13/13, CI-gated). Two limits keep the claim narrow: **every
+  existing volume, and every volume created without the flag, is v1 and remains unauthenticated** — this
+  is not a retrofit; and the v2 data is still **XTS**, so the MAC authenticates XTS ciphertext rather
+  than wide-block ciphertext (useful, since it detects exactly the edits XTS's malleability permits, but
+  the recorded mode is currently a MAC key domain, not a statement about encryption). Backup-header
+  mirroring of the table is still absent, so header recovery still drops integrity.
+
+  The claim this supports is **tamper-EVIDENCE, not tamper-resistance**: the policy is fail closed — a
+  per-sector tag mismatch refuses the read rather than returning the
+  data — so modified ciphertext is detected and withheld. Nothing prevents an adversary with write access
   from **destroying** data, and key-commitment — whether a ciphertext could decrypt under two keys —
   remains separately unestablished. Note also the accepted cost of fail-closed: one corrupt sector makes
   that sector unreadable, with no bad-block tolerance, so flash wear-levelling or an interrupted write

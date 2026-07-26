@@ -161,6 +161,27 @@ write-only ORAM `[13]` · decoy fragments `[14]` · AF-split `[15]` · Balloon `
 per-sector auth `[21]` · rollback counter `[22]` · anti-downgrade `[23]` · Sloth/Feldman/Pedersen/RSW
 `[30]`–`[33]` · Catena `[48]` · v2 format `[84]`–`[86]` · HKF v1/v2 mixing `[78]`–`[81]`,`[93]`.
 
+### A PROPERTY anchor that no component test could have supplied — step `[106]`
+
+`verification/realbuild/v2_tamper_e2e.sh` (13/13, CI-gated) is classed **PROPERTY**, like the other v2
+steps, but it is worth calling out separately because of *what kind* of defect it catches. Every v2
+component already had an anchor and every one of them passed: the tag arithmetic `[85]`, the I/O layer in
+isolation (15/15), mode discovery across both real wide-block classes (9/9). The feature was nonetheless
+shipping **inert**, for three independent reasons at once — the data area was split twice, the backup
+header was written over the table because nothing reserved that region, and the mount path derived the
+MAC key from the 256-byte master-key *field* while create used the real 64-byte key. Each ends the same
+way: `V2FormatDiscoverMode` returns `NONE` and the volume opens as v1 with authentication absent,
+silently.
+
+No component anchor can see this. Each side of the seam is internally self-consistent; only their
+COMPOSITION is wrong. The generalisation, and the reason this belongs in this document rather than only
+in the v2 spec: **an anchor proves a component; it does not prove the component is REACHED.** For a
+security control, "not reached" and "absent" are the same thing, and both present as a full green suite.
+Where a control spans a create path and a mount path — or any two independently-written sides of a
+format — the anchor set is not complete until one test composes them on a real artifact. Note also the
+ordering that makes such a test honest: `[106]`'s first assertion is *the volume opens AS v2*, because
+every later "the read was refused" is vacuous if the layer never ran.
+
 ## The rule going forward
 
 When adding a verification step, state its anchor class in the step comment. If the construction claims to
