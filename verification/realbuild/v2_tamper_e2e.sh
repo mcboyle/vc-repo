@@ -211,7 +211,12 @@ if [ "$(id -u)" = 0 ] && [ -c /dev/fuse ]; then
 	if mountv2 >"$WORK/m.log" 2>&1; then
 		DEV="$(props "$CLIVOL" | awk '/Virtual Device/ {print $3}')"
 		if [ -n "$DEV" ] && [ -b "$DEV" ]; then
-			tr '\0' '\245' </dev/zero | dd of="$DEV" bs=512 count=1 seek="$SECTOR" conv=notrunc status=none
+			# Bound the source before `tr`, not after. Feeding it /dev/zero and letting `dd` stop at one
+			# block leaves tr writing into a closed pipe, and it prints "tr: write error: Broken pipe" —
+			# harmless, but a stray write error in the log of a tamper-detection test invites exactly the
+			# wrong conclusion about whether the test is sound.
+			dd if=/dev/zero bs=512 count=1 status=none | tr '\0' '\245' \
+				| dd of="$DEV" bs=512 count=1 seek="$SECTOR" conv=notrunc status=none
 			sync
 			dismount_slot
 
