@@ -294,9 +294,29 @@ the on-disk format design review is **not** waived.
   warn-and-continue was rejected as fail-warn).
   Proven on a **real mount** (`v2_tamper_e2e.sh` tier 5): `dd` of a tampered sector returns an I/O error
   by default, succeeds under `--v2-ignore-tags`, and the ignored-sector count reaches `--list -v`.
-  Remaining T1-1 work: **backup-header mirroring** of the slot table, wide-block mode *selection*
-  (a header change, so D-10), and real-media validation. Note the dm-crypt refusal itself is **not
-  exercised here** — this box has no `/dev/mapper/control`, so that guard needs the VM.
+  **OPEN DECISION — v2 AND HIDDEN VOLUMES COLLIDE (step `[107]`).** The MAC table occupies the tail of
+  the outer's data area; a hidden volume occupies the tail of the outer's data area. Same bytes.
+  Reproduced on real containers (`verification/realbuild/v2_hidden_collision.sh`, 6/6): a 20 MiB v2
+  outer's table is `[20212736, 20840448)` and a 5 MiB hidden volume is `[15597568, 20840448)` — the
+  table is **entirely inside** the hidden volume. The product accepts the combination with no guard;
+  creation damages nothing (VeraCrypt does not wipe the outer's free space); the first **write** to the
+  hidden volume destroys the outer's table, and the outer thereafter opens **as v1, authentication
+  silently gone**. The damage is deferred past the point of decision.
+  Beyond the corruption there is a **D-10 deniability cost that relocating the table would not fix**:
+  under fail-closed, an examiner with the *decoy* password sees reads refused over precisely the hidden
+  volume's extent, where v1 returns unremarkable random bytes. `docs/V2-FORMAT-SPEC.md`'s claim that the
+  two coexist safely assumed *fail-open* for unverifiable sectors and predates the fail-closed decision
+  by one day; it is now marked superseded there. The options differ in kind — make the two mutually
+  exclusive; revert to fail-open (giving up tamper detection); or ship the tell documented — so this is
+  recorded as an owner decision rather than patched. **Until decided: do not create a hidden volume
+  inside a `--v2-format` outer.**
+  ~~Remaining: **backup-header mirroring** of the slot table~~ — **WITHDRAWN, tested and false.** Opening
+  via the backup header already discovers v2 (same stored `VolumeDataSize`), both restore paths preserve
+  it through `ReEncryptVolumeHeaderWithNewSalt`, and the table (16 bytes/sector — ~32 GiB for 1 TiB)
+  could never fit a 64 KiB header slot anyway. See the struck-through entry in the spec.
+  Still genuinely remaining: wide-block mode *selection* (a header change, so D-10) and real-media
+  validation. Note the dm-crypt refusal itself is **not exercised here** — this box has no
+  `/dev/mapper/control`, so that guard needs the VM.
 - **Anti-forensic (AF) key splitting** (LUKS/TKS1) — **core proven AND keyslot-format integration
   built & proven (`[FORMAT]` done); real-flash validation remains.** The concrete answer to the
   SSD-remnant caveat: diffuse a keyslot's wrapped key across s stripes so recovery needs all of them

@@ -441,6 +441,20 @@ else
     skip "V2 tamper detection end to end — product not built with V2FORMAT=1"
   fi
 
+  # v2 x hidden-volume collision. This is a CHARACTERISATION test, not a regression guard: it asserts
+  # that the collision still behaves as documented, so that if someone later resolves it (or makes it
+  # worse) the change is caught here rather than discovered by a user whose decoy stopped being
+  # authenticated. It PASSES while the collision exists — read docs/V2-FORMAT-SPEC.md before "fixing" it.
+  if "$VC" --help 2>&1 | grep -q -- "--v2-format"; then
+    if bash "$HERE/v2_hidden_collision.sh" >/"$WORK/v2hc.log" 2>&1; then
+      ok "V2 x hidden-volume collision reproduces as documented (open design decision, ROADMAP T1-1)"
+    else
+      bad "V2 x hidden-volume collision characterisation changed"; sed 's/^/      /' "$WORK/v2hc.log"
+    fi
+  else
+    skip "V2 x hidden-volume collision — product not built with V2FORMAT=1"
+  fi
+
   pend "duress-dismount of ACTUALLY-MOUNTED volumes (dismount-all + scrub needs mounted volumes = kernel dm-crypt; the routing + registration above is proven)"
   # Network-share --ns-* CLI: enrol + unlock against a real MR server over TCP. Self-gating: the probe
   # only runs when the binary actually carries the option, so a build without NETSHARE=1 SKIPs rather

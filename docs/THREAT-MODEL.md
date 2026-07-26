@@ -101,8 +101,19 @@ overselling deniability gets high-risk people hurt.
   existing volume, and every volume created without the flag, is v1 and remains unauthenticated** — this
   is not a retrofit; and the v2 data is still **XTS**, so the MAC authenticates XTS ciphertext rather
   than wide-block ciphertext (useful, since it detects exactly the edits XTS's malleability permits, but
-  the recorded mode is currently a MAC key domain, not a statement about encryption). Backup-header
-  mirroring of the table is still absent, so header recovery still drops integrity.
+  the recorded mode is currently a MAC key domain, not a statement about encryption).
+
+  **DO NOT COMBINE `--v2-format` WITH A HIDDEN VOLUME.** The two features occupy the same bytes: the MAC
+  table sits at the tail of the outer's data area, and so does a hidden volume. Reproduced on real
+  containers (`verification/realbuild/v2_hidden_collision.sh`, 6/6) — the product accepts the
+  combination with no guard, creation appears harmless, and then the first *write* to the hidden volume
+  overwrites the outer's MAC table, after which the outer opens **as v1 with authentication silently
+  gone**. There is also a deniability cost that survives any relocation of the table: under fail-closed,
+  an examiner holding the *decoy* password sees reads **refused** over exactly the hidden volume's
+  extent, where v1 returns unremarkable random bytes. That is a distinguisher v1 does not have. The
+  v2 spec's original argument that the two coexist safely assumed a *fail-open* treatment of
+  unverifiable sectors and does not survive the fail-closed policy that shipped; it is marked superseded
+  in `docs/V2-FORMAT-SPEC.md`, and how to resolve it is an open decision (ROADMAP → T1-1).
 
   The claim this supports is **tamper-EVIDENCE, not tamper-resistance**: the policy is fail closed — a
   per-sector tag mismatch refuses the read rather than returning the

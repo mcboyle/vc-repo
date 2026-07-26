@@ -277,7 +277,53 @@ only check in the tree that composes the create path with the mount path. Its fi
 `--v2-format` volume opens AS v2* — is load-bearing: without it, every later "the read was refused" is
 vacuous, because a read cannot be refused by a layer that is not running.
 
-### The resolution of the tension (state this explicitly)
+### ⚠ THE RESOLUTION BELOW IS SUPERSEDED — IT DOES NOT SURVIVE FAIL-CLOSED (step `[107]`)
+
+**Read this before the section that follows.** The resolution below was written on 2026-07-24, *before*
+the tag-mismatch policy was decided. It rests entirely on one premise:
+
+> "On reading a sector whose MAC does not verify, v2 treats it as uninitialised / free … it is **not**
+> flagged as tampering."
+
+**The policy that shipped is the opposite of that premise.** FAIL CLOSED (owner, 2026-07-25) means a tag
+mismatch **refuses the read and returns no data**. "Mismatch = free space" and "mismatch = refuse" are
+contradictory behaviours, and every deniability conclusion below is derived from the first one. The two
+decisions were taken a day apart and never reconciled.
+
+**The conflict is also structural, not only behavioural.** The MAC table is placed at the **tail of the
+outer's data area**; a hidden volume is placed at the **tail of the outer's data area**. They are the
+same bytes. Measured on a real 20 MiB outer with a 5 MiB hidden volume
+(`verification/realbuild/v2_hidden_collision.sh`, 6/6):
+
+```
+outer MAC table = [20212736, 20840448)
+hidden volume   = [15597568, 20840448)   <- the table is ENTIRELY inside the hidden volume
+```
+
+Demonstrated end to end on real containers: the outer opens with authentication active; creating the
+hidden volume is **accepted with no guard and damages nothing yet** (VeraCrypt deliberately does not wipe
+the outer's free space); then the first *write* to the hidden volume overwrites the outer's MAC table,
+and the outer thereafter **opens as v1 with authentication silently gone**. The damage is deferred past
+the moment of decision, which is the worst possible time for it to appear.
+
+So under the shipped policy there are two distinct costs, and both are real:
+
+1. **Availability/integrity:** using the hidden volume destroys the outer's authentication outright.
+2. **Deniability (the D-10 concern):** even with the table moved elsewhere, the outer's table still holds
+   slots for the sectors a hidden volume occupies. Under fail-closed, an examiner holding the *decoy*
+   password sees reads **refused** over precisely the hidden volume's extent, where v1 would have
+   returned unremarkable random bytes. That is a new distinguisher that v1 does not have — which is
+   exactly what the D-10 hard rule forbids.
+
+**This is an open design question, not a settled one.** It is recorded here rather than quietly patched
+because the options differ in kind — make v2 and hidden volumes mutually exclusive; revert to fail-open
+for unverifiable sectors (which gives up tamper detection); or ship the combination with the tell
+documented. See `ROADMAP.md` → T1-1. Until it is decided, **do not create a hidden volume inside a
+`--v2-format` outer volume.**
+
+---
+
+### The resolution of the tension — SUPERSEDED, retained for the argument's structure
 
 **v2 provides integrity for what the volume actually wrote — NOT for its free space.** On reading a
 sector whose MAC does not verify, v2 treats it as **uninitialised / free**, exactly as v1 treats random
@@ -302,8 +348,25 @@ free space — it is **not** flagged as tampering. Consequences, each a deniabil
   (`keyed-BLAKE3(master_key, "VeraCrypt/v2/mac/" || mode)`), never the raw master key; see
   `docs/PERSECTOR-AUTH-SPEC.md`. The mode separation is what makes the ciphertext tag double as the
   mount-time mode oracle (above) and provides anti-downgrade binding.
-- The MAC table and any v2 data-area state **must be mirrored into the backup header group** (the 3rd/4th
-  64 KiB slots) or header recovery silently drops integrity — a real-build acceptance item.
+- ~~The MAC table and any v2 data-area state **must be mirrored into the backup header group** (the
+  3rd/4th 64 KiB slots) or header recovery silently drops integrity — a real-build acceptance item.~~
+  **WITHDRAWN — tested and false (step `[107]`).** Three separate things were checked on real v2
+  containers rather than assumed:
+  1. **Opening via the backup header already discovers v2.** `Volume::Open(useBackupHeaders = true)`
+     returns `IsV2() == true` with the identical usable size, because the backup header is produced by
+     re-encrypting *the same* `VolumeHeader` object and therefore carries the same stored
+     `VolumeDataSize` — which is the only v2 geometry the mount path needs.
+  2. **Header restore preserves it.** Both restore paths (internal backup and external backup file) end
+     in `CoreBase::ReEncryptVolumeHeaderWithNewSalt`, which calls `header->EncryptNew(...)` on the
+     decrypted header object. Fields are carried over verbatim; nothing is recomputed from volume size.
+  3. **The table could not be mirrored into a header slot even if it needed to be.** It is one 16-byte
+     slot per data sector — 310 KiB for a 10 MiB volume, ~32 GiB for 1 TiB. A 64 KiB header slot cannot
+     hold it, so the item as written was never implementable.
+
+  The genuine tail-region risk is not header recovery at all: it is the hidden-volume collision
+  documented above. This entry is struck through rather than deleted because "the register named a
+  defect the code does not have" is itself worth remembering — the same failure mode as the withdrawn
+  ChaCha20-Poly1305 row in `docs/VERIFICATION-ANCHORS.md`.
 
 ## Shipping module (`src/Common/V2Format.{c,h}`, step `[85]`)
 
