@@ -460,8 +460,34 @@ integrity. Two things prevent a silent downgrade:
    reinterpreted under the other mode or as unauthenticated v1 without failing verification — the mode
    separation *is* the anti-downgrade binding, at no extra cost.
 2. Forging a valid v1 volume from v2 data would require **re-encrypting under the master key**, which the
-   adversary does not have — so a keyless downgrade yields mount failure, not silent integrity-stripping.
-   A downgrade by someone who *does* hold the password is not a threat (they already have the plaintext).
+   adversary does not have. A downgrade by someone who *does* hold the password is not a threat (they
+   already have the plaintext).
+
+> **CORRECTION (2026-07-26).** Point 2 previously continued "— so a keyless downgrade yields mount
+> failure, not silent integrity-stripping." **That was wrong**, and the error was one of scope: the
+> argument is sound for *forging* a valid v1 volume from v2 data, and says nothing about *stripping* the
+> tags, which needs no key at all.
+>
+> Because nothing on disk marks a volume as v2 (D-10, deliberate), mount-time discovery is a guess: read
+> sector 0 and its tag slot, and if no mode's key reproduces the tag, treat the volume as v1. An adversary
+> with **write access and no password** can therefore zero the 16 bytes at tag slot 0 — or truncate the
+> tail — and the volume then opens as v1 with per-sector authentication **silently absent**. Reproduced
+> on a real container as step [2] of `verification/realbuild/v2_downgrade.sh`, which keeps the defect
+> live as a negative control rather than describing it.
+>
+> **Why the fix is an opt-in assertion, not "always refuse".** A stripped v2 volume and a genuine v1
+> volume are byte-indistinguishable at that point, so nothing inside discovery can separate them — only
+> the caller knows which it expects. Discovery is also non-fatal by design (`Volume.cpp` argues that
+> failing a mount on an unreadable tail "would turn an availability problem into a lockout", which is
+> correct). Hence **`--v2-require`**: assert v2 and the mount fails closed when discovery comes back
+> empty, naming whether the tail was *unreadable* (usually media damage) or *read fine and matched
+> nothing* (never v2, or stripped). `--v2-ignore-tags` remains the recovery path.
+>
+> **Residual limit, stated plainly:** `--v2-require` protects a user who *knows* to pass it. A user who
+> mounts without it still gets the silent-v1 behaviour, and that cannot be fixed without either an
+> on-disk v2 marker (which would break D-10) or making every unreadable tail a lockout. The
+> deniability property and the tamper-evidence property are in genuine tension here; this resolves it
+> in favour of deniability by default, with an explicit override.
 
 This is the same parameter-binding principle proven for the header parameters in the anti-downgrade PoC
 (step `[23]`, `docs/ROLLBACK-COUNTER-SPEC.md`), applied here at the per-sector-MAC-key level.

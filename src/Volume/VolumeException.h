@@ -37,6 +37,23 @@ namespace VeraCrypt
 #define TC_KEYSLOT_EXCEPTION_SET
 #endif
 
+/* --v2-require assertion failures (gated). Nothing on disk marks a volume as v2 — that is the D-10
+   deniability property, deliberate — so an adversary with write access can strip the per-sector MAC
+   table and the volume then opens as v1 with authentication simply absent. Mount-time discovery stays
+   non-fatal by default (an unreadable tail must not become a lockout), so the refusal has to be an
+   assertion the caller opts into. Two distinct causes, because they want different advice:
+   ...NotFound   = the tail read fine and no tag matched (never v2, or stripped)
+   ...Unreadable = the tail could not be read at all (usually media damage)
+   Registered via the exception set so they serialize across the CoreService boundary. Empty in a
+   default build. */
+#if defined(VC_ENABLE_V2FORMAT)
+#define TC_V2REQUIRE_EXCEPTION_SET \
+	TC_EXCEPTION (V2FormatRequiredNotFound); \
+	TC_EXCEPTION (V2FormatRequiredUnreadable);
+#else
+#define TC_V2REQUIRE_EXCEPTION_SET
+#endif
+
 #undef TC_EXCEPTION_SET
 #define TC_EXCEPTION_SET \
 	TC_EXCEPTION (HigherVersionRequired); \
@@ -48,7 +65,8 @@ namespace VeraCrypt
 	TC_EXCEPTION (VolumeHostInUse); \
 	TC_EXCEPTION (VolumeProtected); \
 	TC_EXCEPTION (VolumeReadOnly); \
-	TC_KEYSLOT_EXCEPTION_SET
+	TC_KEYSLOT_EXCEPTION_SET \
+	TC_V2REQUIRE_EXCEPTION_SET
 
 	TC_EXCEPTION_SET;
 

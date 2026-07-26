@@ -158,7 +158,14 @@ namespace VeraCrypt
 		bool IsV2 () const { return V2Mac.IsActive(); }
 		uint64 GetV2IgnoredMismatchCount () const { return V2Mac.GetIgnoredMismatchCount(); }
 		uint64 GetV2FirstIgnoredSector () const { return V2Mac.GetFirstIgnoredSector(); }
+		/* Why discovery came back V2_MODE_NONE, for the benefit of --v2-require's message only.
+		   Discovery stays non-fatal by default (see the rationale at the call site); this just
+		   preserves the distinction the blanket catch used to throw away — "the tail could not be
+		   read" is an availability problem, "the tail read fine and matched nothing" is either a
+		   genuine v1 volume or a stripped v2 one, and those want different words. */
+		bool GetV2DiscoveryReadError () const { return V2DiscoveryReadError; }
 	protected:
+		bool V2DiscoveryReadError;
 #endif
 
 	private:

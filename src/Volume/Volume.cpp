@@ -66,6 +66,9 @@ namespace VeraCrypt
 		TotalDataWritten (0),
 		Pim (0),
 		EncryptionNotCompleted (false)
+#if defined(VC_ENABLE_V2FORMAT)
+		, V2DiscoveryReadError (false)
+#endif
 	{
 	}
 
@@ -318,7 +321,16 @@ namespace VeraCrypt
 							}
 						}
 					}
-					catch (...) { /* not v2, or the tail is unreadable — stay inert */ }
+					catch (...)
+					{
+						// Still non-fatal, for the availability reason argued above — but no longer
+						// SILENT. The blanket catch threw away the one bit that distinguishes "the tail
+						// could not be read" from "the tail read fine and matched nothing", and those
+						// are different situations: the first is an availability problem, the second is
+						// either a genuine v1 volume or a v2 volume whose table has been stripped.
+						// Recording it costs nothing and lets --v2-require say which one happened.
+						V2DiscoveryReadError = true;
+					}
 #endif
 
 					// Volume protection

@@ -444,6 +444,18 @@ else
   # v2 x hidden-volume guard (T1-1, resolved: mutually exclusive and ENFORCED). Now a real regression
   # guard, not a characterisation test: a hidden volume inside a v2 outer must be refused, a hidden volume
   # inside a v1 outer must still work, and an unverifiable host must fail closed.
+  # v2 silent-downgrade guard: the defect stays live as a negative control inside the harness, so this
+  # gate proves BOTH that stripping still strips (step [2]) and that --v2-require refuses it.
+  if "$VC" --help 2>&1 | grep -q -- "--v2-require"; then
+    if bash "$HERE/v2_downgrade.sh" >"$WORK/v2dg.log" 2>&1; then
+      ok "V2 silent-downgrade guard (--v2-require refuses a stripped table, accepts an intact one)"
+    else
+      bad "V2 silent-downgrade guard regressed"; sed 's/^/      /' "$WORK/v2dg.log"
+    fi
+  else
+    skip "V2 silent-downgrade guard — product not built with V2FORMAT=1"
+  fi
+
   if "$VC" --help 2>&1 | grep -q -- "--v2-format"; then
     if bash "$HERE/v2_hidden_guard.sh" >"$WORK/v2hg.log" 2>&1; then
       ok "V2 x hidden-volume guard enforced (refuses v2 host, permits v1 host, fails closed)"
