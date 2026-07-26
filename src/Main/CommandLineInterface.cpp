@@ -226,6 +226,7 @@ namespace VeraCrypt
 		parser.AddSwitch (L"",	L"quick",				_("Enable quick format"));
 #if defined(VC_ENABLE_V2FORMAT)
 		parser.AddSwitch (L"",	L"v2-format",			_("Create a v2-format volume (reserve a per-sector MAC table)"));
+		parser.AddSwitch (L"",	L"v2-ignore-tags",		_("RECOVERY ONLY: mount a v2 volume ignoring per-sector MAC mismatches (unauthenticated reads; count reported by --list -v)"));
 #endif
 		parser.AddOption (L"",	L"size",				_("Size in bytes"));
 		parser.AddOption (L"",	L"slot",				_("Volume slot number"));
@@ -841,6 +842,9 @@ namespace VeraCrypt
 		ArgQuick = parser.Found (L"quick");
 #if defined(VC_ENABLE_V2FORMAT)
 		ArgV2Format = parser.Found (L"v2-format");
+		// The fail-closed override. Per-invocation only: it lives in MountOptions, is never written to
+		// the volume, and a later mount without the flag fails closed again.
+		ArgMountOptions.V2IgnoreTags = parser.Found (L"v2-ignore-tags");
 #endif
 
 		if (parser.Found (L"random-source", &str))

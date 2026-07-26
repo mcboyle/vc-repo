@@ -26,7 +26,16 @@ namespace VeraCrypt
 	class VolumeInfo : public Serializable
 	{
 	public:
+#if defined(VC_ENABLE_V2FORMAT)
+		/* The surrounding POD members are left uninitialised (they are always filled by Set() or
+		   Deserialize()). These are initialised anyway: an uninitialised V2IgnoredMismatchCount would
+		   surface to the user as "N sectors were read without authentication" for a garbage N, which is
+		   a security message nobody should ever see spuriously. */
+		VolumeInfo () : V2Format (false), V2IgnoreTags (false),
+		                V2IgnoredMismatchCount (0), V2FirstIgnoredSector (0) { }
+#else
 		VolumeInfo () { }
+#endif
 		virtual ~VolumeInfo () { }
 
 		TC_SERIALIZABLE (VolumeInfo);
@@ -62,6 +71,19 @@ namespace VeraCrypt
 		VolumeTime VolumeCreationTime;
 		int Pim;
 		bool MasterKeyVulnerable;
+#if defined(VC_ENABLE_V2FORMAT)
+		/* v2 per-sector authentication state, reported to the user.
+		   These MUST be surfaced wherever a mount is described: the fail-closed override is only allowed to
+		   exist because it is LOGGED (docs/V2-FORMAT-SPEC.md, requirement 2). An override that reads past a
+		   bad tag and says nothing is fail-warn with extra steps.
+		   They are carried through VolumeInfo rather than read from the Volume directly because reads happen
+		   in the forked FUSE service process — the counters only exist there, and this serialized struct is
+		   the channel by which that process reports back. */
+		bool   V2Format;                 /* per-sector authentication is ACTIVE for this mount */
+		bool   V2IgnoreTags;             /* the override was requested for this mount */
+		uint64 V2IgnoredMismatchCount;   /* sectors returned WITHOUT valid authentication */
+		uint64 V2FirstIgnoredSector;     /* first such sector, to point the operator at the damage */
+#endif
 	private:
 		VolumeInfo (const VolumeInfo &);
 		VolumeInfo &operator= (const VolumeInfo &);

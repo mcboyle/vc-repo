@@ -642,6 +642,28 @@ namespace VeraCrypt
 			}
 #endif
 
+#if defined(VC_ENABLE_V2FORMAT)
+			// The v2 override is only permitted to exist because it is LOGGED and SURFACED
+			// (docs/V2-FORMAT-SPEC.md, requirement 2). This is where it is surfaced: an override that
+			// silently returns unauthenticated data is fail-warn with extra steps, which is the policy
+			// this feature rejected. Print unconditionally for a v2 mount — the operator needs to be
+			// able to confirm authentication is ON just as much as to learn that it is off.
+			if (volume.V2Format)
+			{
+				prop << L"Per-sector authentication: "
+				     << (volume.V2IgnoreTags ? L"DISABLED (--v2-ignore-tags)" : L"active (fail closed)") << L'\n';
+
+				if (volume.V2IgnoredMismatchCount > 0)
+				{
+					prop << L"  *** " << volume.V2IgnoredMismatchCount
+					     << L" sector(s) returned WITHOUT valid authentication; first at sector "
+					     << volume.V2FirstIgnoredSector << L" ***\n";
+					prop << L"  Treat that data as unverified. Copy what you need off this volume and "
+					        L"stop using it with --v2-ignore-tags.\n";
+				}
+			}
+#endif
+
 			prop << L'\n';
 		}
 
@@ -1168,6 +1190,20 @@ namespace VeraCrypt
 
 		if (volume->MasterKeyVulnerable)
 			ShowWarning ("ERR_XTS_MASTERKEY_VULNERABLE");
+
+#if defined(VC_ENABLE_V2FORMAT)
+		// Warn at the moment the override takes effect, not only in --list. Someone reaching for
+		// --v2-ignore-tags is recovering damaged data and may never run --list afterwards; the count of
+		// what was actually returned unauthenticated is only available there, so say both things:
+		// what is off now, and where to read the consequences.
+		if (volume->V2Format && volume->V2IgnoreTags)
+		{
+			ShowWarning (L"--v2-ignore-tags: per-sector authentication is DISABLED for this mount. "
+			             L"Modified or corrupt sectors will be returned as if intact. Use this only to "
+			             L"recover data, check 'veracrypt --list -v' afterwards for the count of "
+			             L"unauthenticated sectors read, and remount without the flag when done.");
+		}
+#endif
 
 		if (volume->EncryptionAlgorithmMinBlockSize == 8)
 			ShowWarning ("WARN_64_BIT_BLOCK_CIPHER");

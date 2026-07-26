@@ -268,7 +268,7 @@ the on-disk format design review is **not** waived.
   ship. On a real container: flipping one ciphertext bit on disk makes that sector's read throw
   `V2TagMismatch` with no plaintext returned, an untouched sector still reads, the override recovers the
   sector and counts the ignore, and a fresh open fails closed again
-  (`verification/realbuild/v2_tamper_e2e.sh`, 13/13, CI-gated).
+  (`verification/realbuild/v2_tamper_e2e.sh`, 20/20, CI-gated).
   **Scope limits, so this is not read wider than it is:** the data is still **XTS**
   (`VolumeCreator` hardcodes `EncryptionModeXTS`), so the MAC authenticates XTS ciphertext and the
   recorded `V2Mode` is currently only a MAC key *domain*, not a claim about encryption; and only volumes
@@ -279,8 +279,24 @@ the on-disk format design review is **not** waived.
   MAC key from the 256-byte master-key *field* while create used the real 64-byte key. All three fail
   silently to "opens as v1, unauthenticated". An anchor proves a component; it does not prove the
   component is REACHED, and for a security control those are indistinguishable from a green suite.
+  **THE RECOVERY PATH IS NOW REACHABLE, AND THE DEFAULT LINUX MOUNT NO LONGER BYPASSES THE LAYER
+  (step `[107]`).** Two things were wrong once tamper detection was armed:
+  (a) `Volume::SetV2IgnoreTags` existed but **nothing in `src/Main/` called it** — fail-closed with an
+  unreachable override, so a torn write (power loss, pulled USB, bad sector) stranded the volume. Now
+  `--v2-ignore-tags`, warned at mount time, with `--list -v` reporting `N sector(s) returned WITHOUT
+  valid authentication; first at sector M`. Reads happen in the forked FUSE service, so the counters ride
+  back through `VolumeInfo` serialization — tested explicitly, because a count that never arrives leaves
+  the override *unlogged*, i.e. fail-warn with extra steps.
+  (b) `CoreLinux::MountVolumeNative` maps the container onto a loop device and lets **dm-crypt** do the
+  I/O, so `Volume::ReadSectors` is never called and a v2 volume mounted the default way had **no tamper
+  detection at all, silently**. `MountVolumeNative` now throws `NotApplicable` for v2, falling back to
+  FUSE where the MAC is live. **Accepted cost: every v2 mount runs at FUSE speed** (owner decision;
+  warn-and-continue was rejected as fail-warn).
+  Proven on a **real mount** (`v2_tamper_e2e.sh` tier 5): `dd` of a tampered sector returns an I/O error
+  by default, succeeds under `--v2-ignore-tags`, and the ignored-sector count reaches `--list -v`.
   Remaining T1-1 work: **backup-header mirroring** of the slot table, wide-block mode *selection*
-  (a header change, so D-10), and real-media validation.
+  (a header change, so D-10), and real-media validation. Note the dm-crypt refusal itself is **not
+  exercised here** — this box has no `/dev/mapper/control`, so that guard needs the VM.
 - **Anti-forensic (AF) key splitting** (LUKS/TKS1) — **core proven AND keyslot-format integration
   built & proven (`[FORMAT]` done); real-flash validation remains.** The concrete answer to the
   SSD-remnant caveat: diffuse a keyslot's wrapped key across s stripes so recovery needs all of them

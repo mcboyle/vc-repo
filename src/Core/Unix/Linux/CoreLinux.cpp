@@ -490,6 +490,29 @@ namespace VeraCrypt
 			|| (typeid (*volume->GetEncryptionAlgorithm()) == typeid (KuznyechikAES))
 			|| (typeid (*volume->GetEncryptionAlgorithm()) == typeid (KuznyechikSerpentCamellia));
 
+#if defined(VC_ENABLE_V2FORMAT)
+		// A v2 volume MUST NOT be mounted through dm-crypt, because dm-crypt is not a path through this
+		// program at all: it maps the container onto a loop device and the kernel does every read and
+		// write directly against the file. Volume::ReadSectors — where the per-sector MAC is verified —
+		// is never called, so the volume would mount successfully, behave normally, and have NO tamper
+		// detection whatsoever, with nothing anywhere to say so.
+		//
+		// That is the same failure shape as the create/mount disagreements fixed alongside this: the
+		// control is present, the volume opens, the guarantee is absent, and no signal is emitted.
+		// Refusing here is the fail-closed-consistent answer — NotApplicable is the existing "this volume
+		// cannot use kernel crypto" signal, and the caller already falls back to the FUSE service, which
+		// routes I/O through Volume:: where the MAC is live. The user does not have to know any of this
+		// and cannot accidentally opt out of authentication by taking the default path.
+		//
+		// THE COST IS REAL AND IS BEING ACCEPTED, NOT OVERLOOKED: every v2 mount runs at FUSE speed
+		// rather than kernel-crypto speed. That is a permanent throughput penalty on all v2 volumes.
+		// It was chosen over warning-and-continuing (owner decision) because a warning that can be
+		// ignored or scripted past is fail-warn — the policy this feature already rejected for tag
+		// mismatches — and speed is not worth silently losing the property the format exists to provide.
+		if (volume->IsV2())
+			throw NotApplicable (SRC_POS);
+#endif
+
 		if (options.NoKernelCrypto
 			|| !xts
 			|| algoNotSupported

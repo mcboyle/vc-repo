@@ -32,6 +32,9 @@ namespace VeraCrypt
 		TC_CLONE (NoFilesystem);
 		TC_CLONE (NoHardwareCrypto);
 		TC_CLONE (NoKernelCrypto);
+#if defined(VC_ENABLE_V2FORMAT)
+		TC_CLONE (V2IgnoreTags);
+#endif
 		TC_CLONE_SHARED (VolumePassword, Password);
 		TC_CLONE (Pim);
 		if (other.Kdf)
@@ -79,6 +82,9 @@ namespace VeraCrypt
 		sr.Deserialize ("NoFilesystem", NoFilesystem);
 		sr.Deserialize ("NoHardwareCrypto", NoHardwareCrypto);
 		sr.Deserialize ("NoKernelCrypto", NoKernelCrypto);
+#if defined(VC_ENABLE_V2FORMAT)
+		sr.Deserialize ("V2IgnoreTags", V2IgnoreTags);
+#endif
 
 		if (!sr.DeserializeBool ("PasswordNull"))
 			Password = Serializable::DeserializeNew <VolumePassword> (stream);
@@ -150,6 +156,9 @@ namespace VeraCrypt
 		sr.Serialize ("NoFilesystem", NoFilesystem);
 		sr.Serialize ("NoHardwareCrypto", NoHardwareCrypto);
 		sr.Serialize ("NoKernelCrypto", NoKernelCrypto);
+#if defined(VC_ENABLE_V2FORMAT)
+		sr.Serialize ("V2IgnoreTags", V2IgnoreTags);
+#endif
 
 		sr.Serialize ("PasswordNull", Password == nullptr);
 		if (Password)

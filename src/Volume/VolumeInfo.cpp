@@ -56,6 +56,12 @@ namespace VeraCrypt
 		sr.Deserialize ("VolumeCreationTime", VolumeCreationTime);
 		sr.Deserialize ("Pim", Pim);
 		sr.Deserialize ("MasterKeyVulnerable", MasterKeyVulnerable);
+#if defined(VC_ENABLE_V2FORMAT)
+		sr.Deserialize ("V2Format", V2Format);
+		sr.Deserialize ("V2IgnoreTags", V2IgnoreTags);
+		sr.Deserialize ("V2IgnoredMismatchCount", V2IgnoredMismatchCount);
+		sr.Deserialize ("V2FirstIgnoredSector", V2FirstIgnoredSector);
+#endif
 	}
 
 	bool VolumeInfo::FirstVolumeMountedAfterSecond (shared_ptr <VolumeInfo> first, shared_ptr <VolumeInfo> second)
@@ -97,6 +103,12 @@ namespace VeraCrypt
 		sr.Serialize ("VolumeCreationTime", VolumeCreationTime);
 		sr.Serialize ("Pim", Pim);
 		sr.Serialize ("MasterKeyVulnerable", MasterKeyVulnerable);
+#if defined(VC_ENABLE_V2FORMAT)
+		sr.Serialize ("V2Format", V2Format);
+		sr.Serialize ("V2IgnoreTags", V2IgnoreTags);
+		sr.Serialize ("V2IgnoredMismatchCount", V2IgnoredMismatchCount);
+		sr.Serialize ("V2FirstIgnoredSector", V2FirstIgnoredSector);
+#endif
 	}
 
 	void VolumeInfo::Set (const Volume &volume)
@@ -122,6 +134,12 @@ namespace VeraCrypt
 		TotalDataWritten = volume.GetTotalDataWritten();
 		Pim = volume.GetPim ();
 		MasterKeyVulnerable = volume.IsMasterKeyVulnerable();
+#if defined(VC_ENABLE_V2FORMAT)
+		V2Format = volume.IsV2();
+		V2IgnoreTags = volume.GetV2IgnoreTags();
+		V2IgnoredMismatchCount = volume.GetV2IgnoredMismatchCount();
+		V2FirstIgnoredSector = volume.GetV2FirstIgnoredSector();
+#endif
 	}
 
 	TC_SERIALIZER_FACTORY_ADD_CLASS (VolumeInfo);

@@ -179,13 +179,38 @@ than silently returned. It may **not** claim tamper-*resistance* — nothing her
 with write access from destroying data, and a wide-block mode plus a MAC detects and amplifies tampering
 rather than preventing it. Nor does it establish key-commitment (see the three-layer note above).
 
+**THE OVERRIDE IS REACHABLE FROM THE PRODUCT (step `[107]`): `--v2-ignore-tags`.** Until this landed, the
+four requirements above were satisfied by a C++ API (`Volume::SetV2IgnoreTags`) that **nothing in
+`src/Main/` ever called** — so a user whose volume hit a torn write had a volume that failed closed with
+no way to recover it. Fail-closed with an unreachable recovery path is exactly the "worse than the
+tampering it defends against" outcome this section warns about. How each requirement is now met:
+
+1. **Deliberate** — an explicit CLI switch, never a default, with no configuration-file equivalent.
+2. **Logged and surfaced** — a warning at mount time that authentication is disabled, and `--list -v`
+   reports `Per-sector authentication: DISABLED (--v2-ignore-tags)` plus `N sector(s) returned WITHOUT
+   valid authentication; first at sector M`. Reads happen in the **forked FUSE service**, so the counters
+   are carried back through `VolumeInfo` serialization; that channel is explicitly tested, because a
+   count that never arrives leaves the override unlogged, which is fail-warn with extra steps.
+3. **Scoped** — it lives in `MountOptions`, exists only for the life of the mount, and is never written
+   to the volume. A later mount without the flag fails closed again.
+4. **Cheap** — unchanged; the table is a separate region.
+
+**A v2 VOLUME IS REFUSED BY KERNEL CRYPTO (dm-crypt), BY DESIGN.** `CoreLinux::MountVolumeNative` maps
+the container onto a loop device and lets the kernel do every read and write against the file;
+`Volume::ReadSectors` — where tags are verified — is never called. A v2 volume mounted that way would
+open normally and have **no tamper detection at all**, with nothing to say so. `MountVolumeNative` now
+throws `NotApplicable` for a v2 volume, which is the existing "cannot use kernel crypto" signal, so the
+caller falls back to the FUSE service where the MAC is live. **The cost is accepted, not overlooked:
+every v2 mount runs at FUSE speed.** Warning-and-continuing was rejected for the same reason fail-warn
+was rejected above — a warning that can be scripted past is not a control.
+
 **STATUS: this policy is now LIVE, and demonstrated rather than merely implemented (step `[106]`).**
 `--v2-format` creates a volume whose MAC table is populated at creation time; `Volume::Open` discovers
 it; `Volume::ReadSectors` verifies before decrypting and `WriteSectors` re-tags after encrypting. On a
 real container, flipping one ciphertext bit on disk makes the affected sector's read throw
 `V2TagMismatch` with no plaintext returned, an untouched sector still reads, the documented override
 recovers the sector and reports `IgnoredMismatchCount`, and a fresh open fails closed again because the
-override is never persisted (`verification/realbuild/v2_tamper_e2e.sh`, 13/13, CI-gated).
+override is never persisted (`verification/realbuild/v2_tamper_e2e.sh`, 20/20, CI-gated).
 
 Two scope limits, stated so the claim is not read wider than it is:
 
@@ -247,7 +272,7 @@ composing create with mount on one real volume. Treat these as the format's bind
    i.e. **64 bytes** for AES-XTS. Both sides must use the latter length. This one is especially quiet:
    the offsets agree, real tag bytes are read from the right place, and only the HKDF input differs.
 
-The end-to-end guard for all three is `verification/realbuild/v2_tamper_e2e.sh` (13/13), which is the
+The end-to-end guard for all three is `verification/realbuild/v2_tamper_e2e.sh` (20/20), which is the
 only check in the tree that composes the create path with the mount path. Its first assertion — *a
 `--v2-format` volume opens AS v2* — is load-bearing: without it, every later "the read was refused" is
 vacuous, because a read cannot be refused by a layer that is not running.

@@ -154,6 +154,7 @@ namespace VeraCrypt
 		   per-instance, never persisted. Callers that enable it MUST report GetV2IgnoredMismatchCount()
 		   to the user afterwards, or this degrades to fail-warn with extra steps. */
 		void SetV2IgnoreTags (bool ignore) { V2Mac.SetIgnoreTags (ignore); }
+		bool GetV2IgnoreTags () const { return V2Mac.GetIgnoreTags(); }
 		bool IsV2 () const { return V2Mac.IsActive(); }
 		uint64 GetV2IgnoredMismatchCount () const { return V2Mac.GetIgnoredMismatchCount(); }
 		uint64 GetV2FirstIgnoredSector () const { return V2Mac.GetFirstIgnoredSector(); }

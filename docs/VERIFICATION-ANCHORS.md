@@ -163,7 +163,7 @@ per-sector auth `[21]` · rollback counter `[22]` · anti-downgrade `[23]` · Sl
 
 ### A PROPERTY anchor that no component test could have supplied — step `[106]`
 
-`verification/realbuild/v2_tamper_e2e.sh` (13/13, CI-gated) is classed **PROPERTY**, like the other v2
+`verification/realbuild/v2_tamper_e2e.sh` (20/20, CI-gated) is classed **PROPERTY**, like the other v2
 steps, but it is worth calling out separately because of *what kind* of defect it catches. Every v2
 component already had an anchor and every one of them passed: the tag arithmetic `[85]`, the I/O layer in
 isolation (15/15), mode discovery across both real wide-block classes (9/9). The feature was nonetheless
