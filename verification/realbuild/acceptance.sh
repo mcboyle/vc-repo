@@ -441,6 +441,19 @@ else
     skip "V2 tamper detection end to end — product not built with V2FORMAT=1"
   fi
 
+  # v2 x hidden-volume guard (T1-1, resolved: mutually exclusive and ENFORCED). Now a real regression
+  # guard, not a characterisation test: a hidden volume inside a v2 outer must be refused, a hidden volume
+  # inside a v1 outer must still work, and an unverifiable host must fail closed.
+  if "$VC" --help 2>&1 | grep -q -- "--v2-format"; then
+    if bash "$HERE/v2_hidden_guard.sh" >"$WORK/v2hg.log" 2>&1; then
+      ok "V2 x hidden-volume guard enforced (refuses v2 host, permits v1 host, fails closed)"
+    else
+      bad "V2 x hidden-volume guard regressed"; sed 's/^/      /' "$WORK/v2hg.log"
+    fi
+  else
+    skip "V2 x hidden-volume guard — product not built with V2FORMAT=1"
+  fi
+
   pend "duress-dismount of ACTUALLY-MOUNTED volumes (dismount-all + scrub needs mounted volumes = kernel dm-crypt; the routing + registration above is proven)"
   # Network-share --ns-* CLI: enrol + unlock against a real MR server over TCP. Self-gating: the probe
   # only runs when the binary actually carries the option, so a build without NETSHARE=1 SKIPs rather

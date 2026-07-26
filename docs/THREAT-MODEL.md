@@ -101,8 +101,23 @@ overselling deniability gets high-risk people hurt.
   existing volume, and every volume created without the flag, is v1 and remains unauthenticated** — this
   is not a retrofit; and the v2 data is still **XTS**, so the MAC authenticates XTS ciphertext rather
   than wide-block ciphertext (useful, since it detects exactly the edits XTS's malleability permits, but
-  the recorded mode is currently a MAC key domain, not a statement about encryption). Backup-header
-  mirroring of the table is still absent, so header recovery still drops integrity.
+  the recorded mode is currently a MAC key domain, not a statement about encryption).
+
+  **`--v2-format` AND HIDDEN VOLUMES ARE MUTUALLY EXCLUSIVE, AND THIS IS NOW ENFORCED.** The two occupy
+  the same bytes: the MAC table sits at the tail of the outer's data area, and so does a hidden volume.
+  Left unguarded the failure was silent and deferred — creation looked fine, then the first *write* to the
+  hidden volume overwrote the outer's MAC table and the outer opened **as v1 with authentication gone**.
+  Creating a hidden volume inside a v2 outer is now **refused** (`--outer-password` supplies the key the
+  check needs; a wrong/missing one fails closed; `--skip-v2-host-check` is the documented expert bypass).
+  Proven by `verification/realbuild/v2_hidden_guard.sh` (12/12), including that a **v1** outer still
+  accepts and opens a hidden volume, so the guard is specific rather than a blanket ban.
+  The reason mutual exclusion was chosen over the alternatives is a deniability cost that **relocating the
+  table would not have fixed**: under fail-closed, an examiner holding the *decoy* password sees reads
+  **refused** over exactly the hidden volume's extent, where v1 returns unremarkable random bytes — a
+  distinguisher v1 does not have. The v2 spec's original argument that the two coexist safely assumed a
+  *fail-open* treatment of unverifiable sectors and did not survive the fail-closed policy; that section
+  is marked superseded in `docs/V2-FORMAT-SPEC.md`. Scope limit: the guard is in the CLI creation path; a
+  GUI wizard would need the same check.
 
   The claim this supports is **tamper-EVIDENCE, not tamper-resistance**: the policy is fail closed — a
   per-sector tag mismatch refuses the read rather than returning the

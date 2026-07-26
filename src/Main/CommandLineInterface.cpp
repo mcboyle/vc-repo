@@ -227,6 +227,9 @@ namespace VeraCrypt
 #if defined(VC_ENABLE_V2FORMAT)
 		parser.AddSwitch (L"",	L"v2-format",			_("Create a v2-format volume (reserve a per-sector MAC table)"));
 		parser.AddSwitch (L"",	L"v2-ignore-tags",		_("RECOVERY ONLY: mount a v2 volume ignoring per-sector MAC mismatches (unauthenticated reads; count reported by --list -v)"));
+		parser.AddOption (L"",	L"outer-password",		_("Password of the outer volume (creating a hidden volume: proves the host is not v2-format)"));
+		parser.AddOption (L"",	L"outer-pim",			_("PIM of the outer volume (creating a hidden volume)"));
+		parser.AddSwitch (L"",	L"skip-v2-host-check",	_("UNSAFE: create a hidden volume without checking whether the outer volume is v2-format"));
 #endif
 		parser.AddOption (L"",	L"size",				_("Size in bytes"));
 		parser.AddOption (L"",	L"slot",				_("Volume slot number"));
@@ -842,6 +845,23 @@ namespace VeraCrypt
 		ArgQuick = parser.Found (L"quick");
 #if defined(VC_ENABLE_V2FORMAT)
 		ArgV2Format = parser.Found (L"v2-format");
+		ArgSkipV2HostCheck = parser.Found (L"skip-v2-host-check");
+		ArgOuterPim = 0;
+		if (parser.Found (L"outer-password", &str))
+			ArgOuterPassword = ToUTF8Password (str.c_str(), -1, ArgUseLegacyPassword? VolumePassword::MaxLegacySize : VolumePassword::MaxSize);
+		if (parser.Found (L"outer-pim", &str))
+		{
+			try
+			{
+				ArgOuterPim = StringConverter::ToInt32 (wstring (str));
+				if (ArgOuterPim < 0 || ArgOuterPim > 2147468)
+					throw_err (LangString["PARAMETER_INCORRECT"] + L": --outer-pim");
+			}
+			catch (...)
+			{
+				throw_err (LangString["PARAMETER_INCORRECT"] + L": --outer-pim");
+			}
+		}
 		// The fail-closed override. Per-invocation only: it lives in MountOptions, is never written to
 		// the volume, and a later mount without the flag fails closed again.
 		ArgMountOptions.V2IgnoreTags = parser.Found (L"v2-ignore-tags");
