@@ -224,12 +224,14 @@ namespace VeraCrypt
 		parser.AddSwitch (L"",  L"restore-headers",		_("Restore volume headers"));
 		parser.AddSwitch (L"",	L"save-preferences",	_("Save user preferences"));
 		parser.AddSwitch (L"",	L"quick",				_("Enable quick format"));
+#if defined(VC_ENABLE_SPARSE_GUARD)
+		parser.AddSwitch (L"",	L"allow-sparse-host",	_("UNSAFE: create a hidden volume inside a sparse container (its extent map reveals the hidden volume with no password)"));
+#endif
 #if defined(VC_ENABLE_V2FORMAT)
 		parser.AddSwitch (L"",	L"v2-format",			_("Create a v2-format volume (reserve a per-sector MAC table)"));
 		parser.AddSwitch (L"",	L"v2-ignore-tags",		_("RECOVERY ONLY: mount a v2 volume ignoring per-sector MAC mismatches (unauthenticated reads; count reported by --list -v)"));
 		parser.AddOption (L"",	L"outer-password",		_("Password of the outer volume (creating a hidden volume: proves the host is not v2-format)"));
 		parser.AddOption (L"",	L"outer-pim",			_("PIM of the outer volume (creating a hidden volume)"));
-		parser.AddSwitch (L"",	L"allow-sparse-host",	_("UNSAFE: create a hidden volume inside a sparse container (its extent map reveals the hidden volume with no password)"));
 		parser.AddSwitch (L"",	L"skip-v2-host-check",	_("UNSAFE: create a hidden volume without checking whether the outer volume is v2-format"));
 #endif
 		parser.AddOption (L"",	L"size",				_("Size in bytes"));
@@ -844,10 +846,12 @@ namespace VeraCrypt
 		}
 
 		ArgQuick = parser.Found (L"quick");
+#if defined(VC_ENABLE_SPARSE_GUARD)
+		ArgAllowSparseHost = parser.Found (L"allow-sparse-host");
+#endif
 #if defined(VC_ENABLE_V2FORMAT)
 		ArgV2Format = parser.Found (L"v2-format");
 		ArgSkipV2HostCheck = parser.Found (L"skip-v2-host-check");
-		ArgAllowSparseHost = parser.Found (L"allow-sparse-host");
 		ArgOuterPim = 0;
 		if (parser.Found (L"outer-password", &str))
 			ArgOuterPassword = ToUTF8Password (str.c_str(), -1, ArgUseLegacyPassword? VolumePassword::MaxLegacySize : VolumePassword::MaxSize);
