@@ -27,12 +27,18 @@
 #   [6] --skip-v2-host-check bypasses the guard, AND the damage it permits is still real (kept as
 #       evidence: the bypass is what keeps the original hazard demonstrable after the guard landed).
 #
+# MOUNT BACKEND: steps [3] and [6] PREFER kernel dm-crypt and fall back to FUSE, and print which one
+# ran. Read that label before quoting a pass: as of the T1-1 merge only the FUSE path had ever executed,
+# because neither the dev container nor CI has /dev/mapper/control. A green run over FUSE is NOT kernel
+# coverage (ROADMAP T1-1 gap 2).
+#
 # [3] is the test that matters most for regressions: a guard that refused everything would pass [2],[4]
 # and [5] while breaking every legitimate hidden volume.
 #
 # ANCHOR CLASS: PROPERTY (fork-specific layout + a policy decision, not a published standard).
-# NON-DESTRUCTIVE: file containers inside a mktemp -d. [6]'s write step needs root + /dev/fuse and SKIPs
-# without them; every other step runs anywhere the product builds.
+# NON-DESTRUCTIVE: file containers inside a mktemp -d. [3]'s open check and [6]'s write step need root
+# plus a mount backend (dm-crypt or FUSE) and SKIP without them; every other step runs anywhere the
+# product builds.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,6 +69,36 @@ mkhidden() { # $1=host  $2..=extra flags; prints combined output, returns the pr
 		--random-source=/dev/urandom "${@:2}" 2>&1
 }
 
+# Mount PREFERRING the kernel dm-crypt backend, falling back to FUSE (-m nokernelcrypto).
+# Sets MOUNT_BACKEND to "kernel" or "fuse"; returns the product's exit status.
+#
+# Why not just pick one: these steps were originally pinned to FUSE because the box this guard was
+# written on has no /dev/mapper/control. Pinning meant the kernel path — the one real users mount
+# through — was never exercised at all, and a green run silently over-claimed. Now the kernel backend is
+# tried first and every step PRINTS the backend that ran, so "12/12 over FUSE" can never be misread as
+# kernel coverage. Probing /dev/mapper/control is not sufficient on its own: a box can have the device
+# node and still fail on a libdevmapper/kernel version mismatch, so we attempt the mount and react to
+# the result rather than trusting the probe.
+mount_vol() { # $1=volume path  $2=password
+	MOUNT_BACKEND=""
+	if [ -e /dev/mapper/control ]; then
+		if "$VC" --text --mount "$1" --password="$2" --pim=0 --keyfiles="" --protect-hidden=no \
+			--filesystem=none --slot=7 >/dev/null 2>&1; then
+			MOUNT_BACKEND=kernel; return 0
+		fi
+		"$VC" --text -d --slot=7 >/dev/null 2>&1   # clear a half-taken slot before falling back
+	fi
+	if [ -c /dev/fuse ]; then
+		if "$VC" --text --mount "$1" --password="$2" --pim=0 --keyfiles="" --protect-hidden=no \
+			--filesystem=none --slot=7 -m nokernelcrypto >/dev/null 2>&1; then
+			MOUNT_BACKEND=fuse; return 0
+		fi
+	fi
+	return 1
+}
+umount_vol() { "$VC" --text -d --slot=7 >/dev/null 2>&1; sleep 1; }
+can_mount() { [ "$(id -u)" = 0 ] && { [ -e /dev/mapper/control ] || [ -c /dev/fuse ]; }; }
+
 V2="$WORK/v2.hc"; V1="$WORK/v1.hc"
 mkouter "$V2" --v2-format || fail "v2 outer create failed"
 mkouter "$V1" ""          || fail "v1 outer create failed"
@@ -91,16 +127,15 @@ echo "$OUT" | grep -q "v2-format volume CANNOT host a hidden volume"; check "the
 log "=== [3] v1 outer + correct outer password -> ALLOWED (guard is specific, not a blanket ban) ==="
 OUT="$(mkhidden "$V1" --outer-password="$OPW" --outer-pim=0)"; RC=$?
 [ "$RC" -eq 0 ]; check "a hidden volume inside a v1 outer is still permitted" $?
-# ...and it must really be usable, not merely "not refused". Uses the FUSE backend (-m nokernelcrypto)
-# so the assertion is about the volume opening rather than about which mount backend the box has: this
-# box has no /dev/mapper/control, and the kernel dm-crypt path fails here for reasons unrelated to v2.
-if [ "$(id -u)" = 0 ] && [ -c /dev/fuse ]; then
-	"$VC" --text --mount "$V1" --password="$HPW" --pim=0 --keyfiles="" --protect-hidden=no \
-		--filesystem=none --slot=7 -m nokernelcrypto >/dev/null 2>&1
-	RC2=$?; "$VC" --text -d --slot=7 >/dev/null 2>&1; sleep 1
-	[ "$RC2" -eq 0 ]; check "that hidden volume opens with its own password" $?
+# ...and it must really be usable, not merely "not refused". mount_vol prefers kernel dm-crypt and falls
+# back to FUSE, so the assertion is about the volume opening while the reported backend records which
+# path was actually covered.
+if can_mount; then
+	if mount_vol "$V1" "$HPW"; then RC2=0; else RC2=1; fi
+	umount_vol
+	[ "$RC2" -eq 0 ]; check "that hidden volume opens with its own password [backend: ${MOUNT_BACKEND:-none}]" $?
 else
-	echo "  SKIP open-check — needs root + /dev/fuse (creation was still permitted above)"
+	echo "  SKIP open-check — needs root + (dm-crypt or /dev/fuse); creation was still permitted above"
 fi
 
 log "=== [4] v2 outer + WRONG outer password -> REFUSED (fail closed) ==="
@@ -118,30 +153,32 @@ TAG_BEFORE=$(python3 -c "f=open('$V2','rb');f.seek($TBLBASE);print(f.read(16).he
 OUT="$(mkhidden "$V2" --skip-v2-host-check)"; RC=$?
 [ "$RC" -eq 0 ]; check "the documented bypass still works (recovery/expert escape hatch)" $?
 
-if [ "$(id -u)" = 0 ] && [ -c /dev/fuse ]; then
-	"$VC" --text --mount "$V2" --password="$HPW" --pim=0 --keyfiles="" --protect-hidden=no \
-		--filesystem=none --slot=7 -m nokernelcrypto >/dev/null 2>&1
+if can_mount; then
+	mount_vol "$V2" "$HPW" || true
+	HID_BACKEND="${MOUNT_BACKEND:-none}"
 	DEV="$("$VC" --text --list -v 2>/dev/null | awk '/Virtual Device/{print $3}' | head -1)"
 	if [ -n "$DEV" ] && [ -b "$DEV" ]; then
 		dd if=/dev/urandom of="$DEV" bs=1024 count=512 seek=$(( (TBLBASE - HIDSTART) / 1024 )) \
 			conv=notrunc status=none 2>/dev/null
-		sync; "$VC" --text -d --slot=7 >/dev/null 2>&1; sleep 1
+		sync; umount_vol
 		TAG_AFTER=$(python3 -c "f=open('$V2','rb');f.seek($TBLBASE);print(f.read(16).hex())")
-		[ "$TAG_BEFORE" != "$TAG_AFTER" ]; check "writing the bypassed hidden volume overwrites the outer's MAC table" $?
+		[ "$TAG_BEFORE" != "$TAG_AFTER" ]
+		check "writing the bypassed hidden volume overwrites the outer's MAC table [backend: $HID_BACKEND]" $?
 
-		"$VC" --text --mount "$V2" --password="$OPW" --pim=0 --keyfiles="" --protect-hidden=no \
-			--filesystem=none --slot=7 >/dev/null 2>&1
+		# Reopen the OUTER volume. Its authentication must now be gone -- that is the whole point.
+		mount_vol "$V2" "$OPW" || true
 		if "$VC" --text --list -v 2>/dev/null | grep -q "Per-sector authentication: active"; then
 			check "the outer then opens WITHOUT authentication (why the guard exists)" 1
 		else
 			check "the outer then opens WITHOUT authentication (why the guard exists)" 0
 		fi
-		"$VC" --text -d --slot=7 >/dev/null 2>&1
+		umount_vol
 	else
-		echo "  SKIP damage demo — hidden volume exposed no virtual device"
+		echo "  SKIP damage demo — hidden volume exposed no virtual device (backend: $HID_BACKEND)"
+		umount_vol
 	fi
 else
-	echo "  SKIP damage demo — needs root + /dev/fuse ([1] already proves the overlap arithmetically)"
+	echo "  SKIP damage demo — needs root + (dm-crypt or /dev/fuse); [1] already proves the overlap"
 fi
 
 echo

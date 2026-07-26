@@ -336,8 +336,25 @@ on decoys. So the combination is now refused at creation time:
 Proven by `verification/realbuild/v2_hidden_guard.sh` (**12/12**), wired into `acceptance.sh` as a
 regression guard. It asserts the *specificity* of the guard as well as its existence: a hidden volume
 inside a **v1** outer must still be created and must still open, so a guard that refused everything would
-fail. **Note the scope limit:** the guard lives in the CLI creation path, which is where hidden-volume
-creation is driven in this fork. A GUI wizard path would need the same check — it does not inherit it.
+fail.
+
+### What the 12/12 does *not* cover
+
+Three gaps, stated here so the number is not read as more than it is:
+
+1. **The interactive outer-password prompt has never executed.** When `--outer-password` is absent and the
+   session is interactive, the guard calls `AskPassword`/`AskPim` for the outer volume. Every test supplied
+   `--outer-password` or `--non-interactive`, so that branch is **compiled but never run**. It needs a real
+   tty; until then it has the same standing as the YubiKey/FIDO2 backends, which link and fail safe but
+   have never met a device.
+2. **Only the FUSE mount backend has run.** Steps [3] and [6] prefer kernel dm-crypt and fall back to
+   FUSE, reporting which one ran, but the kernel path is still unexercised — neither the dev container nor
+   CI has `/dev/mapper/control`. **CI green means "nothing regressed", not "the guard was proven."** The
+   harness prints the backend it used precisely so a green run cannot be mistaken for kernel coverage.
+3. **Scope limit — the CLI creation path only.** That is where this fork drives hidden-volume creation. A
+   GUI wizard path would need the same check; it does **not** inherit it.
+
+Tracked in `ROADMAP.md` → T1-1 and in its "code that ships but has never been executed" table.
 
 ---
 
