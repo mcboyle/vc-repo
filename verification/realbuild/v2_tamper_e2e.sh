@@ -172,7 +172,90 @@ check "with the override the read proceeds, and the ignore is COUNTED" 0 read_ov
 check "a FRESH open fails closed again (the override is not persisted to the volume)" \
 	0 read_refuse "$V2" "$PW" "$SECTOR"
 
-# --- 5. tally ----------------------------------------------------------------------------------------
+# --- 5. THROUGH THE REAL CLI, ON A REAL MOUNT --------------------------------------------------------
+# Sections 1-4 drive Volume:: in process. That proves the layer works, but NOT that a user can reach it:
+# the override lives in MountOptions, crosses a fork into the FUSE service (where reads actually happen),
+# and the resulting count has to travel BACK through VolumeInfo serialization to be printed. Any link in
+# that chain could break silently — most quietly of all the serialization, which would report "0 sectors
+# ignored" forever while the override worked fine. Since the override is only permitted to exist because
+# it is LOGGED (docs/V2-FORMAT-SPEC.md, requirement 2), a count that never arrives is a policy failure,
+# not a cosmetic one. So drive the actual CLI.
+#
+# Self-gating: needs root, /dev/fuse, and loop devices. Prints SKIP rather than FAIL without them.
+checksh() { # $1=label  $2=0|1 expected success  $3..=command
+	local label="$1" want="$2"; shift 2
+	if "$@" >"$WORK/c.out" 2>&1; then local rc=0; else local rc=1; fi
+	if [ "$rc" = "$want" ]; then echo "  ok   $label"; pass=$((pass+1))
+	else echo "  FAIL $label (rc $rc, wanted $want)"; sed 's/^/       /' "$WORK/c.out"; failc=$((failc+1)); fi
+	return 0
+}
+
+SLOT=9
+props() { "$VC" --text --list -v 2>/dev/null | awk -v RS='' -v p="$1" 'index($0,p)'; }
+dismount_slot() { "$VC" --text -d --slot="$SLOT" >/dev/null 2>&1 || true; sleep 1; }
+
+if [ "$(id -u)" = 0 ] && [ -c /dev/fuse ]; then
+	log "=== [5] through the real CLI on a real mount ==="
+	trap 'dismount_slot; rm -rf "$WORK" "$BINDIR"' EXIT
+
+	CLIVOL="$WORK/cli.hc"
+	mkvol "$CLIVOL" --v2-format || fail "cli v2 create failed: $(tail -3 "$WORK/create.log")"
+
+	mountv2() { # $@ = extra flags
+		"$VC" --text --mount "$CLIVOL" --password="$PW" --pim=0 --keyfiles="" \
+			--protect-hidden=no --filesystem=none --slot="$SLOT" "$@"
+	}
+
+	# Write a known sector through the authenticated path, so the tag on disk is a REAL tag over data we
+	# put there — not format-pass filler whose tag would also verify but prove less.
+	if mountv2 >"$WORK/m.log" 2>&1; then
+		DEV="$(props "$CLIVOL" | awk '/Virtual Device/ {print $3}')"
+		if [ -n "$DEV" ] && [ -b "$DEV" ]; then
+			# Bound the source before `tr`, not after. Feeding it /dev/zero and letting `dd` stop at one
+			# block leaves tr writing into a closed pipe, and it prints "tr: write error: Broken pipe" —
+			# harmless, but a stray write error in the log of a tamper-detection test invites exactly the
+			# wrong conclusion about whether the test is sound.
+			dd if=/dev/zero bs=512 count=1 status=none | tr '\0' '\245' \
+				| dd of="$DEV" bs=512 count=1 seek="$SECTOR" conv=notrunc status=none
+			sync
+			dismount_slot
+
+			checksh "tamper one ciphertext bit of that sector on disk" 0 "$BIN" tamper "$CLIVOL" "$PW" "$SECTOR"
+
+			# --- A. default mount: the refusal must reach the BLOCK DEVICE, not just the C++ API -------
+			mountv2 >"$WORK/m.log" 2>&1
+			checksh "default mount: reading the tampered sector fails (fail-closed reaches the device)" \
+				1 dd if="$DEV" of=/dev/null bs=512 count=1 skip="$SECTOR" status=none
+			checksh "...and --list -v reports authentication ACTIVE" 0 \
+				bash -c "props() { \"$VC\" --text --list -v 2>/dev/null | awk -v RS='' -v p=\"$CLIVOL\" 'index(\$0,p)'; }; props | grep -q 'Per-sector authentication: active'"
+			checksh "...and reports NO ignored sectors (nothing was silently let through)" 1 \
+				bash -c "\"$VC\" --text --list -v 2>/dev/null | grep -q 'WITHOUT valid authentication'"
+			dismount_slot
+
+			# --- B. --v2-ignore-tags: the recovery path, and the logging that justifies it -------------
+			mountv2 --v2-ignore-tags >"$WORK/m.log" 2>&1
+			checksh "--v2-ignore-tags warns at mount time that authentication is disabled" 0 \
+				grep -q "authentication is DISABLED" "$WORK/m.log"
+			checksh "--v2-ignore-tags: the tampered sector now READS (recovery works)" \
+				0 dd if="$DEV" of=/dev/null bs=512 count=1 skip="$SECTOR" status=none
+			# THE LOAD-BEARING ONE: the count is produced in the forked FUSE process and must survive
+			# VolumeInfo serialization to get here. Without it the override is unlogged = fail-warn.
+			checksh "...and --list -v reports the ignored sector, with its index (count crossed the fork)" 0 \
+				bash -c "\"$VC\" --text --list -v 2>/dev/null | grep -q '1 sector(s) returned WITHOUT valid authentication; first at sector $SECTOR'"
+			dismount_slot
+		else
+			skipmsg="virtual device not exposed (got '${DEV:-none}')"
+			echo "  SKIP real-CLI mount tier — $skipmsg"
+			dismount_slot
+		fi
+	else
+		echo "  SKIP real-CLI mount tier — mount failed: $(tail -1 "$WORK/m.log")"
+	fi
+else
+	echo "  SKIP real-CLI mount tier — needs root + /dev/fuse (in-process tiers above still ran)"
+fi
+
+# --- 6. tally ----------------------------------------------------------------------------------------
 echo
 log "V2 TAMPER E2E: $pass passed, $failc failed"
 [ "$failc" -eq 0 ] || { echo "[v2-tamper-e2e] FAILED"; exit 1; }

@@ -1130,6 +1130,16 @@ namespace VeraCrypt
 			break;
 		}
 
+#if defined(VC_ENABLE_V2FORMAT)
+		// Apply the v2 fail-closed override BEFORE FuseService::Mount, because that call forks the
+		// service process: after it, this Volume object and the one servicing reads are in different
+		// address spaces and setting the flag here would have no effect there.
+		// Scoped by construction — the flag lives only in this process's Volume instance and its forked
+		// child, is never written to the volume, and dies with the mount.
+		if (options.V2IgnoreTags)
+			volume->SetV2IgnoreTags (true);
+#endif
+
 		if (options.Path->IsDevice())
 		{
 			const uint32 devSectorSize = volume->GetFile()->GetDeviceSectorSize();

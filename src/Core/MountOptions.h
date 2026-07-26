@@ -40,6 +40,9 @@ namespace VeraCrypt
 			Removable (false),
 			SharedAccessAllowed (false),
 			SlotNumber (0),
+#if defined(VC_ENABLE_V2FORMAT)
+			V2IgnoreTags (false),
+#endif
 			UseBackupHeaders (false)
 		{
 		}
@@ -78,6 +81,13 @@ namespace VeraCrypt
 		VolumeSlotNumber SlotNumber;
 		bool UseBackupHeaders;
 		bool EMVSupportEnabled;
+#if defined(VC_ENABLE_V2FORMAT)
+		/* The v2 fail-closed override (docs/V2-FORMAT-SPEC.md §"Tag-mismatch policy"). Carried through
+		   to the mounted Volume so the FUSE service — which is where reads actually happen — honours it.
+		   Deliberately per-mount: it is never written to the volume, so a fresh mount without the flag
+		   fails closed again. */
+		bool V2IgnoreTags;
+#endif
 
 	protected:
 		void CopyFrom (const MountOptions &other);

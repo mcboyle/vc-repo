@@ -170,8 +170,16 @@ jobs:
       # three such disagreements were shipping while every unit test passed.
       # The flag set below MUST match the full-featured build step above, same as open_roundtrip.sh:
       # the harness compares its resolved -D set against src/.build-flags and refuses on a mismatch.
+      # Run under sudo -E: tier 5 drives a REAL mount (FUSE + loop device) and self-gates on root +
+      # /dev/fuse. Without sudo that tier silently SKIPs, and it is the only place the override's
+      # reporting path — MountOptions -> fork -> FUSE service -> VolumeInfo serialization -> --list -v —
+      # is exercised. A count that never crosses the fork would leave the override unlogged, which is the
+      # one property that justifies its existence. -E preserves VC_OR_SKIP_BUILD so no rebuild happens.
+      # If the runner cannot mount, the tier still SKIPs rather than failing the job.
       - name: V2 tamper detection end to end (real product objects)
-        run: VC_OR_SKIP_BUILD=1 bash verification/realbuild/v2_tamper_e2e.sh NOGUI=1 HKF=1 HKF_SIMULATOR=1 HKF_MIX_V2_SALTBIND=1 KEYSCRUB=1 DURESS=1 KEYSLOTS=1 SHARECODE=1 SHAMIRMAC=1 FLASH_WARN=1 ARGON2PARAMS=1 ADIANTUM_MODE=1 BALLOON=1 HCTR2_MODE=1 V2FORMAT=1
+        run: sudo -E bash verification/realbuild/v2_tamper_e2e.sh NOGUI=1 HKF=1 HKF_SIMULATOR=1 HKF_MIX_V2_SALTBIND=1 KEYSCRUB=1 DURESS=1 KEYSLOTS=1 SHARECODE=1 SHAMIRMAC=1 FLASH_WARN=1 ARGON2PARAMS=1 ADIANTUM_MODE=1 BALLOON=1 HCTR2_MODE=1 V2FORMAT=1
+        env:
+          VC_OR_SKIP_BUILD: 1
 
       - name: In-process Volume::Open round-trip (real product objects)
         run: VC_OR_SKIP_BUILD=1 ./verification/realbuild/open_roundtrip.sh NOGUI=1 HKF=1 HKF_SIMULATOR=1 HKF_MIX_V2_SALTBIND=1 KEYSCRUB=1 DURESS=1 KEYSLOTS=1 SHARECODE=1 SHAMIRMAC=1 FLASH_WARN=1 ARGON2PARAMS=1 ADIANTUM_MODE=1 BALLOON=1 HCTR2_MODE=1 V2FORMAT=1

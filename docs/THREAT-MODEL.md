@@ -97,7 +97,7 @@ overselling deniability gets high-risk people hurt.
   volume gets a MAC table populated at creation time; reads verify the tag before decrypting and refuse
   the sector on a mismatch. Flipping a single ciphertext bit on disk makes that sector's read fail closed
   with no plaintext returned, verified end to end on a real container
-  (`verification/realbuild/v2_tamper_e2e.sh`, 13/13, CI-gated). Two limits keep the claim narrow: **every
+  (`verification/realbuild/v2_tamper_e2e.sh`, 20/20, CI-gated). Two limits keep the claim narrow: **every
   existing volume, and every volume created without the flag, is v1 and remains unauthenticated** — this
   is not a retrofit; and the v2 data is still **XTS**, so the MAC authenticates XTS ciphertext rather
   than wide-block ciphertext (useful, since it detects exactly the edits XTS's malleability permits, but
