@@ -1138,6 +1138,28 @@ namespace VeraCrypt
 		// child, is never written to the volume, and dies with the mount.
 		if (options.V2IgnoreTags)
 			volume->SetV2IgnoreTags (true);
+
+		// --v2-require: fail closed when the caller asserted v2 and discovery did not find it.
+		//
+		// This is the answer to the silent-downgrade path. Nothing on disk marks a volume as v2 (that
+		// is the D-10 deniability property, deliberate), so an adversary with write access can zero the
+		// 16 bytes at tag slot 0 or truncate the tail, discovery returns V2_MODE_NONE, and the volume
+		// opens as v1 with authentication simply absent and nothing said. Default behaviour stays
+		// non-fatal on purpose — an unreadable tail must not become a lockout, and a real v1 volume has
+		// no table to find — so the fix cannot be "always refuse". It has to be an assertion the caller
+		// opts into, and this is it.
+		//
+		// Enforced here rather than inside Volume::Open because discovery has already run by the time
+		// Open returns: we are checking its result, not participating in it. Same placement constraint
+		// as the flag above — before FuseService::Mount forks.
+		if (options.V2Require && !volume->IsV2())
+		{
+			const bool readError = volume->GetV2DiscoveryReadError();
+			volume->Close();
+			if (readError)
+				throw V2FormatRequiredUnreadable (SRC_POS);
+			throw V2FormatRequiredNotFound (SRC_POS);
+		}
 #endif
 
 		if (options.Path->IsDevice())

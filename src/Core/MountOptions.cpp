@@ -34,6 +34,7 @@ namespace VeraCrypt
 		TC_CLONE (NoKernelCrypto);
 #if defined(VC_ENABLE_V2FORMAT)
 		TC_CLONE (V2IgnoreTags);
+		TC_CLONE (V2Require);
 #endif
 		TC_CLONE_SHARED (VolumePassword, Password);
 		TC_CLONE (Pim);
@@ -84,6 +85,7 @@ namespace VeraCrypt
 		sr.Deserialize ("NoKernelCrypto", NoKernelCrypto);
 #if defined(VC_ENABLE_V2FORMAT)
 		sr.Deserialize ("V2IgnoreTags", V2IgnoreTags);
+		sr.Deserialize ("V2Require", V2Require);
 #endif
 
 		if (!sr.DeserializeBool ("PasswordNull"))
@@ -158,6 +160,7 @@ namespace VeraCrypt
 		sr.Serialize ("NoKernelCrypto", NoKernelCrypto);
 #if defined(VC_ENABLE_V2FORMAT)
 		sr.Serialize ("V2IgnoreTags", V2IgnoreTags);
+		sr.Serialize ("V2Require", V2Require);
 #endif
 
 		sr.Serialize ("PasswordNull", Password == nullptr);

@@ -42,6 +42,7 @@ namespace VeraCrypt
 			SlotNumber (0),
 #if defined(VC_ENABLE_V2FORMAT)
 			V2IgnoreTags (false),
+			V2Require (false),
 #endif
 			UseBackupHeaders (false)
 		{
@@ -87,6 +88,11 @@ namespace VeraCrypt
 		   Deliberately per-mount: it is never written to the volume, so a fresh mount without the flag
 		   fails closed again. */
 		bool V2IgnoreTags;
+		// --v2-require: assert this volume IS v2-format. Discovery stays non-fatal by default (an
+		// unreadable tail must not become a lockout), so without this flag a stripped table is
+		// indistinguishable from a v1 volume and opens unauthenticated. This is the opt-in that
+		// turns that into a refusal. Per-invocation only; never written to the volume.
+		bool V2Require;
 #endif
 
 	protected:

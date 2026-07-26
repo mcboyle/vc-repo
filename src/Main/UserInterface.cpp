@@ -893,6 +893,10 @@ namespace VeraCrypt
 #endif
 
 		EX2MSG (VolumeAlreadyMounted,				LangString["VOL_ALREADY_MOUNTED"]);
+#if defined(VC_ENABLE_V2FORMAT)
+		EX2MSG (V2FormatRequiredNotFound,			_("--v2-require was given, but this volume is NOT v2-format: no per-sector MAC tag matched. Either it was never v2-format, or its MAC table has been stripped or overwritten -- which an adversary with write access can do WITHOUT the password. The volume was not mounted."));
+		EX2MSG (V2FormatRequiredUnreadable,			_("--v2-require was given, but the per-sector MAC table could not be READ, so v2-format could not be confirmed. This is usually media damage rather than tampering. The volume was not mounted; --v2-ignore-tags mounts unauthenticated for recovery."));
+#endif
 		EX2MSG (VolumeEncryptionNotCompleted,		LangString["ERR_ENCRYPTION_NOT_COMPLETED"]);
 		EX2MSG (VolumeHostInUse,					LangString["LINUX_EX2MSG_VOLUMEHOSTINUSE"]);
 		EX2MSG (VolumeSlotUnavailable,				LangString["LINUX_EX2MSG_VOLUMESLOTUNAVAILABLE"]);
@@ -2221,6 +2225,10 @@ const FileManager fileManagers[] = {
 		VC_CONVERT_EXCEPTION (UnsupportedSectorSizeHiddenVolumeProtection);
 		VC_CONVERT_EXCEPTION (UnsupportedSectorSizeNoKernelCrypto);
 		VC_CONVERT_EXCEPTION (VolumeAlreadyMounted);
+#if defined(VC_ENABLE_V2FORMAT)
+		VC_CONVERT_EXCEPTION (V2FormatRequiredNotFound);
+		VC_CONVERT_EXCEPTION (V2FormatRequiredUnreadable);
+#endif
 		VC_CONVERT_EXCEPTION (VolumeSlotUnavailable);
 		VC_CONVERT_EXCEPTION (UserInterfaceException);
 		VC_CONVERT_EXCEPTION (MissingArgument);
