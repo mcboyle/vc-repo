@@ -159,6 +159,7 @@ export VC_ENABLE_HCTR2_MODE ?= 0
 export VC_ENABLE_NETSHARE ?= 0
 export VC_ENABLE_FLASH_WARN ?= 0
 export VC_ENABLE_V2FORMAT ?= 0
+export VC_ENABLE_SPARSE_GUARD ?= 0
 export VC_ENABLE_CTAES ?= 0
 export VC_ENABLE_POLY1305 ?= 0
 export VC_ENABLE_ADIANTUM ?= 0
@@ -378,6 +379,14 @@ endif
 # v2 on-disk format core (opt-in; T1-1). `make V2FORMAT=1` links Common/V2Format.o (per-mode per-sector
 # MAC + mount-time mode discovery + MAC-table layout, HMAC-SHA256 over the in-tree Sha2.c). Design only
 # until the C++ mount/create wiring lands; a plain `make` stays byte-for-byte stock. docs/V2-FORMAT-SPEC.md.
+# Sparse-container guard (opt-in). `make SPARSE_GUARD=1` refuses to create a hidden volume inside a
+# sparsely-allocated host, because the host filesystem's extent map then discloses the hidden volume's
+# offset and size with no password, from a single image (verification/realbuild/sparse_leak.sh).
+ifeq "$(origin SPARSE_GUARD)" "command line"
+	VC_ENABLE_SPARSE_GUARD := 1
+	C_CXX_FLAGS += -DVC_ENABLE_SPARSE_GUARD
+endif
+
 ifeq "$(origin V2FORMAT)" "command line"
 	VC_ENABLE_V2FORMAT := 1
 	C_CXX_FLAGS += -DVC_ENABLE_V2FORMAT
