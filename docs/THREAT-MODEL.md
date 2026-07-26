@@ -103,6 +103,26 @@ overselling deniability gets high-risk people hurt.
   than wide-block ciphertext (useful, since it detects exactly the edits XTS's malleability permits, but
   the recorded mode is currently a MAC key domain, not a statement about encryption).
 
+  **A SPARSE CONTAINER DISCLOSES ITS HIDDEN VOLUME WITH NO PASSWORD, FROM A SINGLE IMAGE.** This is
+  **stronger than the multi-snapshot adversary named above as the principal limitation**, and it is worth
+  reading in that light: multi-snapshot needs two images taken at different times, this needs one copy of
+  the file and no key at all. A container created with `--quick` is sized by `ftruncate`, so the host
+  filesystem records it as mostly hole. Writing to a hidden volume inside it allocates blocks **exactly
+  where the hidden volume lives**, and the extent map then names its offset and how much has been
+  written. Measured on ext4: a 20 MiB `--quick` outer showed only its two header regions allocated; after
+  creating a 5 MiB hidden volume and writing 2 MiB, a third extent appeared at `[15597568, 17694720)` —
+  the hidden volume's exact start. Encryption cannot defend against this: the leak is host-filesystem
+  metadata *about* the container, not anything inside it.
+  Creating a hidden volume inside a sparse host is now **refused** (`verification/realbuild/sparse_leak.sh`,
+  9/9, which keeps the leak itself live as step [2]); `--allow-sparse-host` is the documented override,
+  and a fully-allocated host is still accepted, so the guard is specific rather than a blanket ban.
+  The pre-existing `--quick` warning was accurate and named the right mechanism, but it fires at *outer*
+  creation — possibly months before anyone decides to add a hidden volume — and is advisory. **Scope
+  limits:** the check is `SEEK_HOLE`-based, so it detects sparseness on filesystems that report holes
+  (ext4 here); it says nothing about CoW filesystems (btrfs/ZFS) or thin-provisioned block layers, which
+  can leak comparably by other means and remain unmeasured. It also cannot help a container that was
+  already sparse and already written.
+
   **`--v2-format` AND HIDDEN VOLUMES ARE MUTUALLY EXCLUSIVE, AND THIS IS NOW ENFORCED.** The two occupy
   the same bytes: the MAC table sits at the tail of the outer's data area, and so does a hidden volume.
   Left unguarded the failure was silent and deferred — creation looked fine, then the first *write* to the

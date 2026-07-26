@@ -116,6 +116,12 @@ namespace VeraCrypt
 		int ArgOuterPim;                                  // --outer-pim
 		bool ArgSkipV2HostCheck;                          // --skip-v2-host-check: UNSAFE bypass
 #endif
+#if defined(VC_ENABLE_SPARSE_GUARD)
+		// --allow-sparse-host: UNSAFE override for the sparse-container guard. A sparse outer volume
+		// discloses a hidden volume's offset and size through the host filesystem's extent map, with no
+		// password and from a single image.
+		bool ArgAllowSparseHost;
+#endif
 		FilesystemPath ArgRandomSourcePath;
 		uint64 ArgSize;
 		shared_ptr <VolumePath> ArgVolumePath;

@@ -755,6 +755,50 @@ namespace VeraCrypt
 			if (hostSize < TC_MIN_HIDDEN_VOLUME_HOST_SIZE)
 				throw_err (StringFormatter (_("Minimum outer volume size is {0}."), SizeToString (TC_MIN_HIDDEN_VOLUME_HOST_SIZE)));
 
+#if defined(VC_ENABLE_SPARSE_GUARD)
+			// SPARSE-HOST GUARD: refuse to put a hidden volume inside a sparsely-allocated container.
+			//
+			// A file container created with --quick is allocated by ftruncate, so the host filesystem
+			// records it as mostly HOLE. Writing to the hidden volume allocates blocks exactly where the
+			// hidden volume lives, and the resulting extent map is readable by anyone with the file —
+			// no password, no key, ONE image. Measured on ext4: a 20 MiB --quick outer showed
+			// DATA [0,131072) and [20840448,20971520) (the two headers) and nothing else; after creating
+			// a 5 MiB hidden volume and writing 2 MiB to it, a third extent appeared at
+			// [15597568,17694720) — the hidden volume's exact offset, and its written length.
+			//
+			// This is STRICTLY STRONGER than the multi-snapshot attack docs/THREAT-MODEL.md names as its
+			// principal limitation: that one needs two images taken at different times, this needs one.
+			// It is also outside what the encryption can defend — the leak is host filesystem metadata
+			// about the container, not anything inside it.
+			//
+			// The existing --quick warning is accurate as far as it goes (it names sparse-file support
+			// and says not to use --quick for an outer volume intended to hold a hidden one), but it is
+			// advisory, fires at OUTER creation time, and by here the user has already ignored or
+			// forgotten it. This is the mechanical check at the point where it still matters.
+			{
+				int hf = open (string (options->Path).c_str(), O_RDONLY);
+				if (hf != -1)
+				{
+					bool sparse = false;
+					const off_t end = lseek (hf, 0, SEEK_END);
+					if (end > 0)
+					{
+						// A hole anywhere before EOF means the file is not fully allocated. SEEK_HOLE
+						// returns end-of-file when there is no hole, so hole < end is the test.
+						const off_t hole = lseek (hf, 0, SEEK_HOLE);
+						if (hole != (off_t) -1 && hole < end)
+							sparse = true;
+					}
+					close (hf);
+
+					if (sparse && !CmdLine->ArgAllowSparseHost)
+						throw_err (_("The outer volume is a SPARSE file: the host filesystem has not allocated all of its blocks. Writing to a hidden volume inside it would allocate blocks only where the hidden volume lives, and the resulting extent map reveals the hidden volume's exact offset and size to anyone holding the container file - with NO password, from a SINGLE copy. This is stronger than the multi-snapshot attack the threat model describes, and encryption cannot defend against it because the leak is host filesystem metadata, not volume content. Re-create the outer volume WITHOUT --quick (or preallocate it, e.g. 'fallocate -l <size> <file>'), then create the hidden volume. Use --allow-sparse-host to override (UNSAFE)."));
+				}
+				// A host we cannot open is left to the existing code paths to report; this guard does not
+				// invent a new failure for it.
+			}
+#endif
+
 #if defined(VC_ENABLE_V2FORMAT)
 			// T1-1 GUARD: refuse to create a hidden volume inside a v2-format outer volume.
 			//
