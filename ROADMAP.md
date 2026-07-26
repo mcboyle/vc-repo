@@ -306,8 +306,22 @@ the on-disk format design review is **not** waived.
   must still be created and must still open, so a guard that refused everything would fail.
   Fail-open was rejected (it gives up tamper detection: an attacker's edit becomes indistinguishable from
   free space) and "ship it documented" was rejected (it knowingly ships a deniability regression to the
-  users most dependent on decoys). Scope limit: the guard is in the CLI creation path, which is where this
-  fork drives hidden-volume creation; a GUI wizard would need the same check.
+  users most dependent on decoys).
+  **STILL UNPROVEN in this guard — three named gaps, none closed by the merge (step `[108]`):**
+  1. **The interactive outer-password prompt branch has never executed.** In `TextUserInterface.cpp` the
+     `if (!outerPassword)` branch calls `AskPassword`/`AskPim` for the *outer* volume when no
+     `--outer-password` was given and the session is interactive. Every test to date supplied
+     `--outer-password` or `--non-interactive`, so that branch is **compiled but never run** — the same
+     standing as the YubiKey/FIDO2 backends, which link and fail safe but have never met a device. Needs a
+     real tty: create a v2 outer, then `--create --volume-type=hidden` with no `--outer-password`, and
+     confirm both the correct-password refusal (naming v2) and the wrong-password fail-closed.
+  2. **The harness mount steps ran only over FUSE.** Steps [3] and [6] of
+     `verification/realbuild/v2_hidden_guard.sh` now prefer the kernel dm-crypt backend and fall back to
+     FUSE, reporting which one ran — but the kernel path has not yet been exercised anywhere, because
+     neither the dev container nor CI has `/dev/mapper/control`. **CI green therefore means "nothing
+     regressed", not "the guard was proven."**
+  3. **Scope limit: the guard is in the CLI creation path**, which is where this fork drives
+     hidden-volume creation; a GUI wizard would need the same check and does *not* inherit it.
   The original finding, retained because it is the justification:
   **v2 AND HIDDEN VOLUMES COLLIDE (step `[107]`).** The MAC table occupies the tail of
   the outer's data area; a hidden volume occupies the tail of the outer's data area. Same bytes.
@@ -568,3 +582,13 @@ See `docs/THREAT-MODEL.md`. In brief: hidden-volume deniability is weak against 
 is unaffected by any post-hoc measure; for the split-key factor, **share distribution** is the real
 risk surface, not the math; and the **real-hardware USB round-trip** for YubiKey/FIDO2 is the one
 thing not testable in a sandbox — validate it on a physical device.
+
+**Code that ships but has never been executed.** Kept as an explicit list, because "compiled and linked"
+reads as "working" and is not the same claim:
+
+| surface | standing | what would close it |
+|---|---|---|
+| YubiKey `YK_HMAC_SHA1`, FIDO2 `FIDO2_HMAC_SECRET` backends | link against the real libraries, fail safe with no device | a physical token over USB passthrough |
+| v2 hidden-guard **interactive outer-password prompt** (`TextUserInterface.cpp`) | compiled in every `V2FORMAT=1` build; all tests passed `--outer-password` or `--non-interactive` | drive it from a real tty (ROADMAP T1-1 gap 1) |
+| v2 hidden-guard mount steps over **kernel dm-crypt** | harness prefers kernel, falls back to FUSE; only FUSE has ever run | a box with `/dev/mapper/control` (ROADMAP T1-1 gap 2) |
+| KeyScrub **logind screen-lock / udev device-connect** triggers | OS glue, asserted in docs, never observed firing | a real desktop seat (a dm-crypt-only box is not one) |
