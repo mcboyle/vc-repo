@@ -163,5 +163,15 @@ jobs:
       - name: V2 mode discovery (both real EncryptionMode classes)
         run: VC_V2_SKIP_BUILD=1 bash verification/realbuild/v2_mode_discovery.sh
 
+      # V2 tamper detection END TO END. The only check that composes the CREATE path with the MOUNT path:
+      # --v2-format create, write, read, flip a ciphertext bit on disk, require the read to be refused,
+      # then require the override to recover it and count the ignore. Component tests cannot see a
+      # create/mount disagreement — each side is self-consistent and only the composition is wrong — and
+      # three such disagreements were shipping while every unit test passed.
+      # The flag set below MUST match the full-featured build step above, same as open_roundtrip.sh:
+      # the harness compares its resolved -D set against src/.build-flags and refuses on a mismatch.
+      - name: V2 tamper detection end to end (real product objects)
+        run: VC_OR_SKIP_BUILD=1 bash verification/realbuild/v2_tamper_e2e.sh NOGUI=1 HKF=1 HKF_SIMULATOR=1 HKF_MIX_V2_SALTBIND=1 KEYSCRUB=1 DURESS=1 KEYSLOTS=1 SHARECODE=1 SHAMIRMAC=1 FLASH_WARN=1 ARGON2PARAMS=1 ADIANTUM_MODE=1 BALLOON=1 HCTR2_MODE=1 V2FORMAT=1
+
       - name: In-process Volume::Open round-trip (real product objects)
         run: VC_OR_SKIP_BUILD=1 ./verification/realbuild/open_roundtrip.sh NOGUI=1 HKF=1 HKF_SIMULATOR=1 HKF_MIX_V2_SALTBIND=1 KEYSCRUB=1 DURESS=1 KEYSLOTS=1 SHARECODE=1 SHAMIRMAC=1 FLASH_WARN=1 ARGON2PARAMS=1 ADIANTUM_MODE=1 BALLOON=1 HCTR2_MODE=1 V2FORMAT=1

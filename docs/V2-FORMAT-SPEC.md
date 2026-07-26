@@ -179,6 +179,24 @@ than silently returned. It may **not** claim tamper-*resistance* — nothing her
 with write access from destroying data, and a wide-block mode plus a MAC detects and amplifies tampering
 rather than preventing it. Nor does it establish key-commitment (see the three-layer note above).
 
+**STATUS: this policy is now LIVE, and demonstrated rather than merely implemented (step `[106]`).**
+`--v2-format` creates a volume whose MAC table is populated at creation time; `Volume::Open` discovers
+it; `Volume::ReadSectors` verifies before decrypting and `WriteSectors` re-tags after encrypting. On a
+real container, flipping one ciphertext bit on disk makes the affected sector's read throw
+`V2TagMismatch` with no plaintext returned, an untouched sector still reads, the documented override
+recovers the sector and reports `IgnoredMismatchCount`, and a fresh open fails closed again because the
+override is never persisted (`verification/realbuild/v2_tamper_e2e.sh`, 13/13, CI-gated).
+
+Two scope limits, stated so the claim is not read wider than it is:
+
+- **The data is still XTS.** `VolumeCreator` hardcodes `EncryptionModeXTS` and `EncryptionAlgorithm`
+  offers only XTS, so no volume is wide-block encrypted yet. The MAC authenticates XTS ciphertext — which
+  is genuinely useful, since it detects exactly the edits XTS's 16-byte malleability permits — but the
+  `V2Mode` value is at present only a **MAC key domain**, not a statement about how data is encrypted.
+  Discovery is effectively binary ("this is a v2 volume").
+- **Backup-header mirroring of the table is still absent**, so header recovery still drops integrity
+  (see "Keys and backup" below). That remains a real-build acceptance item.
+
 ### Layout
 
 A contiguous **MAC table** sized for **every** data sector of the volume, placed at a deterministic
@@ -197,6 +215,42 @@ fixed-width slot:
 
 Because a real tag and a keystream slot are both pseudorandom, the table as a whole is uniform random —
 so its *presence and size* leak nothing about *which* sectors are used.
+
+### Geometry and key contract between create and mount — the three ways this silently broke
+
+The table is found by *agreement*, not by a stored pointer: nothing on disk says "this is a v2 volume".
+Create writes tags somewhere and mount probes somewhere, and if those two computations disagree by even
+one byte — or if the two sides feed the MAC KDF different key material — `V2FormatDiscoverMode` returns
+`NONE`, the layer stays inert, and the volume opens **as v1 with authentication absent**. Nothing throws
+and nothing is logged. All three of the following were shipping simultaneously while
+`v2_sector_mac_io_test` passed 15/15 and `v2_mode_discovery.sh` passed 9/9; step `[106]` found them by
+composing create with mount on one real volume. Treat these as the format's binding contract:
+
+1. **The usable/table split is applied EXACTLY ONCE, at header-creation time.**
+   `VolumeCreator::CreateVolume` calls `V2Format::SplitDataArea` and stores the resulting *usable* prefix
+   in the header's `VolumeDataSize`. `VolumeLayoutV2Normal::GetDataSize()` returns that stored value — so
+   on a v2 volume it is **already the usable size**. Anything downstream that splits it again shrinks an
+   already-shrunk figure and puts the table inside user data. Mount must likewise treat
+   `VolumeDataSize` as the boundary and the table as beginning immediately after it.
+
+2. **The table region must be reserved against the backup header.** For a non-quick Normal volume the
+   backup header is written at the **current sequential file position**, which the format loop leaves at
+   the end of the usable data — i.e. exactly where the table starts. The population step must therefore
+   advance the write position past `V2FormatMacTableBytes(usableSectors, sectorSize)` before returning,
+   or the backup header lands on top of the first 128 KiB of tags and the container comes out short by
+   the table size. The arithmetic closes exactly: `usable + table == the full data area`, so a correctly
+   built v2 container is the size the user asked for, not larger.
+
+3. **The MAC key is derived from the REAL master key, not the master-key field.**
+   `VolumeHeader::GetMasterKeys()` returns the entire fixed **256-byte** key field (sized for the largest
+   cascade), while `VolumeCreator` derives from the key it actually generated — `EA->GetKeySize() * 2`,
+   i.e. **64 bytes** for AES-XTS. Both sides must use the latter length. This one is especially quiet:
+   the offsets agree, real tag bytes are read from the right place, and only the HKDF input differs.
+
+The end-to-end guard for all three is `verification/realbuild/v2_tamper_e2e.sh` (13/13), which is the
+only check in the tree that composes the create path with the mount path. Its first assertion — *a
+`--v2-format` volume opens AS v2* — is load-bearing: without it, every later "the read was refused" is
+vacuous, because a read cannot be refused by a layer that is not running.
 
 ### The resolution of the tension (state this explicitly)
 

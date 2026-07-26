@@ -261,11 +261,26 @@ the on-disk format design review is **not** waived.
   layer, same pattern as `hkf_cli_test.cpp`). The **create-side call site is wired** (real-build compile
   only, gated `VC_ENABLE_V2FORMAT`): `--v2-format` CLI → `VolumeCreationOptions::V2Format` →
   `VolumeCreator.cpp` reserves the tail MAC table via `V2Format::SplitDataArea` (threads like `--quick`;
-  default build byte-for-byte stock so CI's compile matrix doesn't exercise it). Remaining T1-1 work is the
-  **mount-side** `DiscoverMode` call site + **populating** the reserved table + backup-header mirroring +
-  real-media validation — all blocked on the wide-block cipher mode classes (HCTR2/Adiantum as an
-  `EncryptionMode`, T2-3/T2-4): no mode to select, no sector-0 read, nothing to write the table until those
-  exist.
+  default build byte-for-byte stock so CI's compile matrix doesn't exercise it).
+  **TAMPER DETECTION IS NOW ARMED AND PROVEN END TO END (step `[106]`).** The mount-side `DiscoverMode`
+  call site, the per-sector MAC I/O layer (`src/Volume/V2SectorMacIo.h` — verify-before-decrypt,
+  update-after-encrypt, fail closed, logged operator override) and **create-time table population** all
+  ship. On a real container: flipping one ciphertext bit on disk makes that sector's read throw
+  `V2TagMismatch` with no plaintext returned, an untouched sector still reads, the override recovers the
+  sector and counts the ignore, and a fresh open fails closed again
+  (`verification/realbuild/v2_tamper_e2e.sh`, 13/13, CI-gated).
+  **Scope limits, so this is not read wider than it is:** the data is still **XTS**
+  (`VolumeCreator` hardcodes `EncryptionModeXTS`), so the MAC authenticates XTS ciphertext and the
+  recorded `V2Mode` is currently only a MAC key *domain*, not a claim about encryption; and only volumes
+  created with `--v2-format` are v2 — this is not a retrofit.
+  **The lesson worth carrying (`docs/VERIFICATION-ANCHORS.md` `[106]`):** the feature was shipping inert
+  for THREE independent reasons while every component test passed — the data area was split twice, the
+  backup header was written over the table because nothing reserved that region, and mount derived the
+  MAC key from the 256-byte master-key *field* while create used the real 64-byte key. All three fail
+  silently to "opens as v1, unauthenticated". An anchor proves a component; it does not prove the
+  component is REACHED, and for a security control those are indistinguishable from a green suite.
+  Remaining T1-1 work: **backup-header mirroring** of the slot table, wide-block mode *selection*
+  (a header change, so D-10), and real-media validation.
 - **Anti-forensic (AF) key splitting** (LUKS/TKS1) — **core proven AND keyslot-format integration
   built & proven (`[FORMAT]` done); real-flash validation remains.** The concrete answer to the
   SSD-remnant caveat: diffuse a keyslot's wrapped key across s stripes so recovery needs all of them

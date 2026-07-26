@@ -159,18 +159,32 @@ namespace VeraCrypt
 			// wired (a header change, so D-10), the value becomes meaningful and this comment must go.
 			if (Options->V2Format && !AbortRequested)
 			{
-				const uint64 usableBytes = Layout->GetDataSize (HostSize)
-					- (uint64) V2FormatMacTableBytes (Layout->GetDataSize (HostSize) / Options->SectorSize,
-					                                  (uint32_t) Options->SectorSize);
+				// DO NOT SPLIT AGAIN HERE. VolumeLayoutV2Normal::GetDataSize() returns the header's
+				// stored VolumeDataSize, and CreateVolume already set that to the split's USABLE prefix
+				// (see the V2Format::SplitDataArea call in the header-options block). Applying the split
+				// a second time shrinks an already-shrunk figure and puts the table inside user data.
+				const uint64 usableBytes   = Layout->GetDataSize (HostSize);
 				const uint64 usableSectors = usableBytes / Options->SectorSize;
+				const uint64 tableBase     = DataStart + usableBytes;
+				const uint64 tableBytes    = (uint64) V2FormatMacTableBytes (usableSectors,
+				                                                            (uint32_t) Options->SectorSize);
 
 				V2SectorMacIo mac;
 				mac.Configure (V2_MODE_ADIANTUM, MasterKey.Ptr(), (int) MasterKey.Size(),
-				               Options->SectorSize, DataStart + usableBytes, usableSectors);
+				               Options->SectorSize, tableBase, usableSectors);
 				mac.PopulateTable (*VolumeFile, DataStart);
 
-				// The sequential write position is used by the code after this block; PopulateTable
-				// seeks all over the file, so restore it explicitly rather than relying on luck.
+				// RESERVE THE TABLE REGION AGAINST THE BACKUP HEADER. For a non-quick Normal volume the
+				// backup header is written at the CURRENT SEQUENTIAL POSITION, which the format loop left
+				// at the end of the usable data — i.e. exactly where the table starts. Leaving the
+				// position there wrote the backup header straight over the first 131072 bytes of tags,
+				// and the container ended up short by the table size. The volume still created cleanly
+				// and still mounted; it simply mounted as v1, because the tag the mount path probes for
+				// had been overwritten. Advance past the table so the backup header lands after it.
+				//
+				// The arithmetic closes exactly: usable + table == the full data area, so the finished
+				// container is the size the user asked for, not larger.
+				WriteOffset = tableBase + tableBytes;
 				VolumeFile->SeekAt (WriteOffset);
 			}
 #endif

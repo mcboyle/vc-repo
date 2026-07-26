@@ -281,6 +281,12 @@ namespace VeraCrypt
 					// never to "refuse the mount". Failing a mount because the tail of the disk is
 					// unreadable would turn an availability problem into a lockout, and a v1 volume
 					// legitimately has no table to read.
+					// WHERE THE TABLE IS, and why VolumeDataSize is already the right boundary.
+					// VolumeLayoutV2Normal::GetDataSize() returns the value STORED IN THE HEADER, and on
+					// a v2 volume VolumeCreator stored the split's USABLE prefix there — not the raw
+					// data-area size. So VolumeDataSize is the usable data, and the table begins
+					// immediately after it. Do NOT re-derive the split here: that would shrink an
+					// already-shrunk figure and point the probe into the middle of user data.
 					try
 					{
 						const uint64 dataSectors = VolumeDataSize / SectorSize;
@@ -291,13 +297,25 @@ namespace VeraCrypt
 							VolumeFile->ReadAt (sector0, VolumeDataOffset);
 							VolumeFile->ReadAt (tag0, VolumeDataOffset + VolumeDataSize + V2FormatSlotOffset (0));
 
+							// KEY LENGTH MUST MATCH THE CREATE SIDE EXACTLY. GetMasterKeys() hands back
+							// the whole master-key FIELD of the header — a fixed 256 bytes sized for the
+							// largest cascade — while VolumeCreator derives the MAC key from the actual
+							// key it generated, EA->GetKeySize() * 2 (64 bytes for AES-XTS). Feeding the
+							// full field here changes the HKDF input and therefore every tag, so
+							// discovery matched nothing and the volume opened as v1 with authentication
+							// silently absent. Truncate to the real key length, the same figure the
+							// creator used.
 							const ConstBufferPtr mk = header->GetMasterKeys();
-							V2Mode v2mode = (V2Mode) V2Format::DiscoverMode (mk.Get(), (int) mk.Size(),
-								sector0.Ptr(), SectorSize, tag0.Ptr());
+							const size_t mkLen = EA->GetKeySize() * 2;
+							if (mkLen > 0 && mkLen <= mk.Size())
+							{
+								V2Mode v2mode = (V2Mode) V2Format::DiscoverMode (mk.Get(), (int) mkLen,
+									sector0.Ptr(), SectorSize, tag0.Ptr());
 
-							if (v2mode != V2_MODE_NONE)
-								V2Mac.Configure (v2mode, mk.Get(), (int) mk.Size(), SectorSize,
-								                 VolumeDataOffset + VolumeDataSize, dataSectors);
+								if (v2mode != V2_MODE_NONE)
+									V2Mac.Configure (v2mode, mk.Get(), (int) mkLen, SectorSize,
+									                 VolumeDataOffset + VolumeDataSize, dataSectors);
+							}
 						}
 					}
 					catch (...) { /* not v2, or the tail is unreadable — stay inert */ }
