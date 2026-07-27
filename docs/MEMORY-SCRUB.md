@@ -84,6 +84,29 @@ secret ^= ChaCha12_keystream(key, cipherIV)                                   # 
   obfuscation key, so a memory image must recover the whole area — and the address-bound `encID`
   term — to decrypt a secret. This is the "decoy key-derivation region like the Windows ChaCha
   scheme" from the roadmap.
+### Reachability — corrected 2026-07-26
+
+Until this change, everything below described a primitive that **was called on nothing**. `VcKsRamProtect`
+had exactly two call sites in the tree, `VcKsRamProtectInit` and `VcKsRamProtectShutdown`, so
+`HKFConfig.rawSecret` / `simSecret` / `fidoPin` sat in **cleartext for the whole process lifetime**. The
+transform was correct and byte-anchored ([6], and the ChaCha layer to libsodium at [98]); it simply never
+touched a secret.
+
+That is the failure mode recorded at step `[106]`: **an anchor proves a component, not that the component
+is reached.** A KAT over `VcKsRamTransform` cannot notice that nobody calls it.
+
+The secrets are now protected on adoption (`HKFSetActiveConfig`) and revealed only for the duration of one
+`HKFComputeResponse`, so the readable window is a single challenge-response rather than the process
+lifetime. `verification/ram_protect_test.c` (8/8, suite-wired) proves it by **observing memory** rather
+than asserting control flow: a sentinel secret must be absent from the config's storage while at rest,
+present in the returned response, and absent again afterwards — with a negative control showing the
+sentinel search still finds it when protection is unavailable, so "protected" cannot be confused with "the
+search is broken". The real-product round trip is unchanged (create with a factor, open with it, reject
+without it, reject with a wrong one).
+
+**Still true, and still the honest limit:** this covers user-space secrets only. A *mounted* volume's
+master key lives in the kernel device-mapper and no user-space measure reaches it.
+
 - It is a **stream cipher**, hence its own inverse: `VcKsRamProtect`/`VcKsRamUnprotect` are the same
   operation. A secret is unprotected only for the moment it is mixed into the password, then
   re-protected or scrubbed.

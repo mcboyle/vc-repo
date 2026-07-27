@@ -115,6 +115,19 @@ if "$KS_CC" -O2 $KS_WNO $KS_NOASM $KS_DEF $INC -c "$SRCROOT/Common/KeyScrub.c" -
 	else
 		echo "    MISMATCH"; diff /tmp/ks_c_ref.txt /tmp/ks_py.txt; exit 1
 	fi
+	# REACHABILITY: the transform above is anchored, but an anchor proves a COMPONENT, not that the
+	# component is REACHED (step [106]). VcKsRamProtect had only Init/Shutdown call sites, so the HKF
+	# factor secrets sat in cleartext for the process lifetime. ram_protect_test.c observes memory
+	# rather than control flow -- the sentinel must be absent while at rest and the response must
+	# still be correct -- and carries a negative control so "protected" cannot be confused with
+	# "the sentinel search is broken".
+	if "$KS_CC" -O2 $KS_WNO $KS_NOASM $KS_DEF $INC "$HERE/ram_protect_test.c" \
+	     /tmp/ks_keyscrub.o /tmp/ks_hkf.o /tmp/ks_t1ha2.o /tmp/ks_chacha256.o /tmp/ks_chachaRng.o \
+	     -lpthread -o /tmp/ram_protect_test 2>>/tmp/ks_cc.log; then
+		if /tmp/ram_protect_test; then
+			echo "    MATCH: HKF factor secrets are ChaCha-protected at rest (reachability, not just the KAT)"
+		else echo "    RAM-PROTECT REACHABILITY FAILED"; exit 1; fi
+	else echo "    ram_protect_test.c did not build"; sed -n '1,20p' /tmp/ks_cc.log; exit 1; fi
 	# all boolean self-checks must report YES (incl. the [L] present-before/absent-after liveness pairs)
 	if grep -Eq ': NO$' /tmp/ks_c.txt; then echo "    KEYSCRUB SELFTEST FAILED"; exit 1; fi
 	# Negative control (ROI item 2): rebuild the SAME selftest with the wipe disabled and confirm the
@@ -1415,10 +1428,19 @@ for c in clang gcc cc; do if command -v "$c" >/dev/null 2>&1; then LR_CC="$c"; b
 LR_WNO="-Wno-implicit-function-declaration -Wno-duplicate-decl-specifier"
 LR_NOASM="-DCRYPTOPP_DISABLE_ASM -DCRYPTOPP_DISABLE_SSE2 -DCRYPTOPP_DISABLE_SSSE3"
 LR_DEF="-DVC_ENABLE_HKF -DVC_ENABLE_KEYSCRUB"
+# KeyScrub objects are linked because HardwareKeyFactor.c genuinely calls VcKsRamProtect when
+# KEYSCRUB is defined (the factor secrets are ChaCha-protected at rest). Without them the link fails
+# and this step SKIPs -- which is worse than failing, because a skip quietly lowers the coverage line
+# while the board stays green. That is the exact hazard D05-1/--strict exists to catch, and it caught
+# this.
 if [ -n "$LR_CC" ] \
    && "$LR_CC" -O2 $LR_WNO $LR_NOASM $LR_DEF $INC -c "$SRCROOT/Common/HardwareKeyFactor.c" -o /tmp/lr_hkf.o 2>/tmp/lr_log \
-   && "$LR_CC" -O2 $LR_WNO $LR_DEF $INC "$HERE/log_redaction_test.c" /tmp/lr_hkf.o -o /tmp/lr_norm 2>>/tmp/lr_log \
-   && "$LR_CC" -O2 $LR_WNO $LR_DEF -DVC_LOGLEAK $INC "$HERE/log_redaction_test.c" /tmp/lr_hkf.o -o /tmp/lr_leak 2>>/tmp/lr_log; then
+   && "$LR_CC" -O2 $LR_WNO $LR_NOASM $LR_DEF $INC -c "$SRCROOT/Common/KeyScrub.c"    -o /tmp/lr_ks.o  2>>/tmp/lr_log \
+   && "$LR_CC" -O2 $LR_WNO $LR_NOASM $INC -c "$SRCROOT/Crypto/t1ha2.c"     -o /tmp/lr_t1.o  2>>/tmp/lr_log \
+   && "$LR_CC" -O2 $LR_WNO $LR_NOASM $INC -c "$SRCROOT/Crypto/chacha256.c" -o /tmp/lr_cc.o  2>>/tmp/lr_log \
+   && "$LR_CC" -O2 $LR_WNO $LR_NOASM $INC -c "$SRCROOT/Crypto/chachaRng.c" -o /tmp/lr_cr.o  2>>/tmp/lr_log \
+   && "$LR_CC" -O2 $LR_WNO $LR_DEF $INC "$HERE/log_redaction_test.c" /tmp/lr_hkf.o /tmp/lr_ks.o /tmp/lr_t1.o /tmp/lr_cc.o /tmp/lr_cr.o -lpthread -o /tmp/lr_norm 2>>/tmp/lr_log \
+   && "$LR_CC" -O2 $LR_WNO $LR_DEF -DVC_LOGLEAK $INC "$HERE/log_redaction_test.c" /tmp/lr_hkf.o /tmp/lr_ks.o /tmp/lr_t1.o /tmp/lr_cc.o /tmp/lr_cr.o -lpthread -o /tmp/lr_leak 2>>/tmp/lr_log; then
 	/tmp/lr_norm > /tmp/lr_norm.txt
 	/tmp/lr_leak > /tmp/lr_leak.txt
 	PIN="REDACT_SENTINEL_PIN_7c1f9a2b"
