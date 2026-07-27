@@ -120,5 +120,12 @@ all, we ship **A′ only** (read-only + expiry, both robust) and drop max-attemp
    recommendation, no oracle) vs. a distinct "slot expired" error (friendlier, but an oracle that a
    slot exists). Recommendation: silent at the constant-time mount path, explicit at the admin
    `--keyslot-list` path.
+
+   **Now enforced, not just recommended.** `VcStatusMountSafe()` (`src/Common/VcStatus.h`) collapses
+   `slot_expired` and `slot_locked` — along with wrong-password, missing-factor and duress — into one
+   equivalence class on the mount path, while the admin path keeps the fine-grained taxonomy exactly as
+   this section wanted. Before that, distinct exit codes 75 and 76 told anyone who could run the binary
+   that per-slot expiry and lockout policies existed on this volume. `verification/no_oracle_test.c`
+   pins the partition and asserts the admin codes stay distinct.
 3. **clock source for expiry:** wall-clock only, or also refuse if the clock looks rolled back vs. the
    volume's last-modified? (Wall-clock only for v1 of this feature; note the caveat.)

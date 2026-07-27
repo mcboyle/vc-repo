@@ -1690,6 +1690,20 @@ if [ -n "$SS_CC" ] && "$SS_CC" -O2 -Wno-implicit-function-declaration -DVC_ENABL
 		if diff -q /tmp/ss_c_ref.txt /tmp/ss_py.txt >/dev/null; then
 			echo "    MATCH: exit-code contract (real VcStatus.c) == independent python pin"
 		else echo "    MISMATCH"; diff /tmp/ss_c_ref.txt /tmp/ss_py.txt; exit 1; fi
+		# Mount-path partition: the fine-grained taxonomy is a COERCION ORACLE on the mount path
+		# (distinct codes for factor_missing / slot_expired / slot_locked / duress tell an adversary
+		# holding the decoy passphrase what exists). VcStatusMountSafe collapses exactly the
+		# credential-dependent outcomes; no_oracle_test.c asserts the partition and carries its own
+		# negative control, and the MOUNTSAFE line is diffed against the python re-derivation.
+		if "$SS_CC" -O2 -Wno-implicit-function-declaration -DVC_ENABLE_STATUS $INC "$HERE/no_oracle_test.c" "$SRCROOT/Common/VcStatus.c" -o /tmp/no_oracle_test 2>>/tmp/ss_log; then
+			if /tmp/no_oracle_test > /tmp/no_c.txt; then grep -v '^MOUNTSAFE' /tmp/no_c.txt
+				grep '^MOUNTSAFE' /tmp/no_c.txt > /tmp/no_c_ms.txt
+				python3 "$HERE/status_reference.py" --mountsafe | grep '^MOUNTSAFE' > /tmp/no_py_ms.txt
+				if diff -q /tmp/no_c_ms.txt /tmp/no_py_ms.txt >/dev/null; then
+					echo "    MATCH: mount-path partition (real VcStatus.c) == independent python derivation"
+				else echo "    MISMATCH"; diff /tmp/no_c_ms.txt /tmp/no_py_ms.txt; exit 1; fi
+			else grep -v '^MOUNTSAFE' /tmp/no_c.txt; echo "    NO-ORACLE PARTITION FAILED"; exit 1; fi
+		else echo "    no_oracle_test.c did not build"; exit 1; fi
 	else grep -v '^REF' /tmp/ss_c.txt; echo "    STATUS TAXONOMY FAILED"; exit 1; fi
 else
 	skip_step " no compiler accepted the sources for the status taxonomy test (see /tmp/ss_log)"

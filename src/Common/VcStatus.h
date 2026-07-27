@@ -42,6 +42,48 @@ const char *VcStatusName     (VcStatus s);
 /* Human-readable one-line description. Never NULL. */
 const char *VcStatusString   (VcStatus s);
 
+/* ---------------------------------------------------------------------------------------------
+   MOUNT-PATH PARTITION — the anti-coercion-oracle mapping.
+
+   The table above is deliberately fine-grained: an administrator running --keyslot-list or a
+   recovery tool wants to know EXACTLY why something failed. On the MOUNT path that same precision
+   is a coercion oracle. An adversary holding the decoy passphrase who can see distinct outcomes for
+   "wrong password" (77), "factor missing" (69), "slot expired" (75), "slot locked" (76) and
+   "duress" (78) learns that a hardware/threshold factor is configured, that keyslot policies exist,
+   and -- worst -- that a duress passphrase was recognised. Two shipped specs already require the
+   opposite: KEYSLOT-POLICY-DESIGN.md mandates SILENT expiry, and DURESS-DISMOUNT-SPEC.md mandates
+   that a duress passphrase be indistinguishable from an ordinary failure.
+
+   VcStatusMountSafe collapses exactly the CREDENTIAL-DEPENDENT outcomes into one class. Membership
+   is decided by a single question: "can an adversary learn this by trying passphrases?"
+
+     COLLAPSED (credential-dependent -> VC_ERR_WRONG_PASSWORD):
+       VC_ERR_WRONG_PASSWORD, VC_ERR_FACTOR_MISSING, VC_ERR_SLOT_EXPIRED,
+       VC_ERR_SLOT_LOCKED, VC_ERR_DURESS
+     NOT COLLAPSED (independent of which credential was supplied):
+       VC_OK           -- success is observable anyway
+       VC_ERR_PARAM    -- bad usage; the user typed the command, no secret involved
+       VC_ERR_IO       -- the file is missing/unreadable; visible without any passphrase
+       VC_ERR_UNSUPPORTED -- a build-configuration fact, identical for every passphrase
+       VC_ERR_INTERNAL -- a bug; suppressing it would hide faults without hiding secrets
+       VC_ERR_TAMPERED -- a DIFFERENT axis. Tamper detection is a feature this fork deliberately
+                          surfaces (v2 fail-closed reads, --list -v). It reports that the MEDIUM was
+                          modified, which an adversary who modified it already knows, and it is not
+                          learned by guessing passphrases. Collapsing it would silently undo shipped
+                          tamper-evidence to buy nothing.
+
+   COLLAPSING DURESS DOES NOT DISABLE THE DURESS ACTION. The dismount-all-and-scrub path still runs
+   exactly as before; only the OUTCOME REPORTED to the caller becomes generic. That is the whole
+   point -- the action must be invisible, not absent.
+
+   Callers on the mount path must route every status through this before it reaches an exit code, a
+   --json field, or a message. Fine-grained codes remain correct for admin/recovery paths.
+   --------------------------------------------------------------------------------------------- */
+VcStatus    VcStatusMountSafe (VcStatus s);
+/* 1 if s is credential-dependent and therefore collapsed by VcStatusMountSafe; 0 otherwise.
+   Exposed so tests can assert the partition directly rather than re-deriving the membership list. */
+int         VcStatusIsCredentialDependent (VcStatus s);
+
 #if defined(__cplusplus)
 }
 #endif
