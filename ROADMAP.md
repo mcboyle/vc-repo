@@ -575,6 +575,22 @@ brief:
 
 ---
 
+## Build queue — see `docs/BUILD-QUEUE-50.md`
+
+The 775-idea tracker was triaged against master `a3ec1e2` on 2026-07-26 and reduced to a planned queue of
+**50 items across 24 PRs**. Two results from that pass matter beyond the queue itself:
+
+- **124 tracker rows are already built, already declined with a recorded verdict, or already upstream.**
+  The spreadsheet overstates remaining work by roughly a sixth. Check `docs/BUILD-QUEUE-50.md` §3 before
+  scheduling anything from it.
+- **The top of the queue is findings, not features.** Ten defects in shipped code, each contradicting
+  something this repo asserts in its own docs — independently re-verified with file:line evidence. The
+  sharpest: v2 authentication can be stripped by zeroing 16 bytes because `Volume.cpp:321` swallows every
+  discovery failure in a blanket `catch (...)`, while `V2-FORMAT-SPEC.md:463` claims a keyless downgrade
+  "yields mount failure, not silent integrity-stripping"; and `--quick` containers are `ftruncate`-sparse,
+  so the host extent map discloses a hidden volume with **no password from a single image** — strictly
+  stronger than the multi-snapshot attack `THREAT-MODEL.md` names as its #1 limitation.
+
 ## Known limitations / honest threat model
 
 See `docs/THREAT-MODEL.md`. In brief: hidden-volume deniability is weak against a **multi-snapshot**
